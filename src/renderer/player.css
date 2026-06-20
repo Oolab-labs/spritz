@@ -1,0 +1,251 @@
+:root {
+  color-scheme: dark;
+  --accent: #0583ff;
+}
+* { box-sizing: border-box; }
+/* Page is transparent so the native video layer (below the web contents) shows
+   through; only the welcome screen + controls paint. */
+html, body {
+  margin: 0; height: 100%; background: transparent; overflow: hidden;
+  font: 13px -apple-system, system-ui, sans-serif; color: #e7e7ea;
+  user-select: none; cursor: default;
+}
+.hidden { display: none !important; }
+
+/* window dragging — -webkit-app-region is unreliable on this transparent window,
+   so dragging is done manually in JS (mousedown on these regions → IPC move). */
+#dragbar { position: fixed; top: 0; left: 0; right: 0; height: 34px; z-index: 14; }
+#home, #dragbar { cursor: default; }
+
+/* custom window controls (native traffic lights are suppressed by transparent:true) —
+   macOS-style dots, top-left, above the drag region so clicks land on the buttons. */
+#winctl { position: fixed; top: 10px; left: 12px; z-index: 30; display: flex; gap: 8px; }
+#winctl .wc {
+  width: 13px; height: 13px; border-radius: 50%; border: none; padding: 0; margin: 0;
+  display: grid; place-items: center; cursor: default; -webkit-app-region: no-drag;
+}
+#winctl .wc svg { width: 9px; height: 9px; opacity: 0; transition: opacity .12s; }
+#winctl .wc svg path { stroke: rgba(0,0,0,.55); stroke-width: 1.4; stroke-linecap: round; fill: none; }
+#winctl:hover .wc svg { opacity: 1; }
+.wc-close { background: #ff5f57; }
+.wc-min   { background: #febc2e; }
+.wc-full  { background: #28c840; }
+#winctl .wc:active { filter: brightness(.85); }
+/* fade the dots out together with the auto-hidden controls (idle / fullscreen) */
+body:has(.controls.idle) #winctl { opacity: 0; pointer-events: none; transition: opacity .2s; }
+
+/* ---------- welcome ---------- */
+#home {
+  position: fixed; inset: 0; z-index: 10; background: #0b0b0f;
+  display: grid; place-items: center;
+}
+.home-inner { text-align: center; }
+.home-actions { display: flex; gap: 12px; justify-content: center; margin-top: 20px; }
+/* When the Continue-Watching row is present, center the hero in the space ABOVE it (not the whole
+   viewport) so the logo/title/buttons sit balanced instead of floating low with a big void up top and
+   the row crammed against the bottom. Falls back to full-viewport centering when there's no history. */
+#home:has(#continue-watching:not(.hidden)) { padding-bottom: 176px; }
+.logo { font-size: 56px; line-height: 1; }
+#home h1 { margin: 6px 0 2px; font-size: 26px; font-weight: 650; }
+.tagline { margin: 0 0 22px; color: #8b8b96; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; }
+.drop-hint { margin-top: 16px; color: #6a6a76; }
+.btn {
+  font: inherit; border: 0; border-radius: 9px; padding: 10px 22px; cursor: pointer;
+  background: rgba(255,255,255,.08); color: #e7e7ea; transition: background .15s;
+}
+.btn:hover { background: rgba(255,255,255,.14); }
+.btn.primary { background: var(--accent); color: #fff; font-weight: 600; }
+.btn.primary:hover { background: #2a93ff; }
+body.dragging #home { outline: 2px dashed var(--accent); outline-offset: -10px; }
+
+/* Continue Watching wall (home screen, built from watch history) */
+#continue-watching { position: fixed; left: 0; right: 0; bottom: 34px; z-index: 11; padding: 0 40px; }
+.cw-title { font-size: 13px; font-weight: 650; color: #cfcfd6; margin-bottom: 10px; }
+.cw-row { display: flex; gap: 14px; overflow-x: auto; padding-bottom: 8px; }
+.cw-card { flex: 0 0 auto; width: 168px; cursor: pointer; }
+.cw-thumb { position: relative; width: 168px; height: 94px; border-radius: 8px; overflow: hidden;
+  background: linear-gradient(135deg, #1d1d27 0%, #131319 100%); border: 1px solid rgba(255,255,255,.08);
+  display: grid; place-items: center; transition: border-color .15s, transform .15s, box-shadow .15s; }
+.cw-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cw-thumb .cw-glyph { font-size: 30px; opacity: .7; }
+.cw-prog { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(255,255,255,.2); }
+.cw-prog > span { display: block; height: 100%; background: var(--accent); }
+.cw-name { margin-top: 7px; font-size: 11px; color: #c7c7d0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color .15s; }
+.cw-card:hover .cw-thumb { border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 8px 22px rgba(0,0,0,.45); }
+.cw-card:hover .cw-name { color: #fff; }
+
+/* ---------- player ---------- */
+#player { position: fixed; inset: 0; z-index: 5; }
+
+.spinner { position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none; }
+.ring { width: 46px; height: 46px; border-radius: 50%;
+  border: 3px solid rgba(255,255,255,.18); border-top-color: #fff; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* control bar (auto-hide) — above the casting overlay (z-index 12) so it works as a remote */
+.controls {
+  position: fixed; left: 0; right: 0; bottom: 0; padding: 28px 16px 12px; z-index: 13;
+  background: linear-gradient(to top, rgba(0,0,0,.72), rgba(0,0,0,0));
+  transition: opacity .25s; opacity: 1;
+}
+.controls.idle { opacity: 0; pointer-events: none; }
+
+.progressbar { padding: 0 4px 8px; position: relative; }
+/* downloaded torrent ranges, painted behind the scrubber (transparent track lets it show through) */
+.buffered { position: absolute; left: 4px; right: 4px; top: 0; height: 4px; border-radius: 2px;
+  background: rgba(255,255,255,.18); overflow: hidden; pointer-events: none; }
+.buffered .seg { position: absolute; top: 0; bottom: 0; background: rgba(255,255,255,.42); }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 4px;
+  border-radius: 2px; background: rgba(255,255,255,.2); cursor: pointer; outline: none; }
+input[type=range].slider {
+  position: relative; display: block; margin: 0; background: transparent;
+  background-image: linear-gradient(to right, var(--accent) var(--p,0%), transparent var(--p,0%));
+}
+input[type=range]:disabled { cursor: default; opacity: .55; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.5); }
+input[type=range]:disabled::-webkit-slider-thumb { background: rgba(255,255,255,.5); }
+
+.controlbar { display: flex; align-items: center; gap: 12px; padding: 0 4px; }
+.button { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px;
+  color: #d9d9e2; cursor: pointer; transition: background .12s, color .12s; }
+.button:hover { background: rgba(255,255,255,.12); color: #fff; }
+.ic { width: 22px; height: 22px; fill: currentColor; }
+
+.timestamp { font-variant-numeric: tabular-nums; color: #cfcfd6; margin-left: 4px; white-space: nowrap; }
+.timestamp .sep { margin: 0 5px; color: #6a6a76; }
+.spacer { flex: 1; }
+/* Playing-title in the middle of the control bar (doubles as the flexible spacer when empty). */
+.title { min-width: 0; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: #cfcfd6; font-size: 13px; padding: 0 12px; opacity: .92; }
+
+.volume-group { display: flex; align-items: center; }
+.volume-control { width: 0; overflow: hidden; transition: width .18s; }
+.volume-group:hover .volume-control, .volume-group.active .volume-control { width: 84px; }
+.volume-slider { width: 76px; margin: 0 8px 0 2px;
+  background: linear-gradient(to right, #cfcfd6 var(--p,100%), rgba(255,255,255,.2) var(--p,100%)); }
+.volume-slider::-webkit-slider-thumb { width: 11px; height: 11px; }
+
+.quality { font-size: 10px; font-weight: 700; letter-spacing: .04em; padding: 2px 6px;
+  border-radius: 4px; background: rgba(255,255,255,.14); color: #fff; }
+
+/* track/subtitle popups */
+.menu { position: fixed; bottom: 64px; right: 16px; z-index: 15; min-width: 180px;
+  max-height: 50vh; overflow-y: auto; padding: 6px; border-radius: 10px;
+  background: rgba(22,22,28,.97); border: 1px solid rgba(255,255,255,.1);
+  box-shadow: 0 10px 30px rgba(0,0,0,.5); backdrop-filter: blur(10px); }
+#menu-audio { right: 56px; }
+.menu-title { font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+  color: #7c7c88; padding: 4px 10px 6px; }
+.menu .list { list-style: none; margin: 0; padding: 0; }
+.menu li { padding: 7px 10px; border-radius: 6px; cursor: pointer; color: #d9d9e2; }
+.menu li:hover { background: rgba(255,255,255,.08); }
+/* AirPlay row: the native AVRoutePickerView is overlaid here and draws its glyph at the left;
+   pad to leave room for it so the "AirPlay" label sits to its right. */
+.cast-airplay { padding-left: 32px !important; position: relative; }
+.menu li.active { color: #fff; }
+.menu li.active::after { content: '✓'; float: right; color: var(--accent); }
+.menu-sep { height: 1px; margin: 6px 4px; background: rgba(255,255,255,.08); }
+.menu-action { padding: 7px 10px; border-radius: 6px; cursor: pointer; color: #9ab; }
+.menu-action:hover { background: rgba(255,255,255,.08); color: #cde; }
+.delay-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; color: #cfcfd6; font-size: 12px; }
+.delay-row span:first-child { flex: 1; }
+.delay-val { font-variant-numeric: tabular-nums; min-width: 38px; text-align: center; color: #fff; }
+.delay-btn { width: 24px; height: 24px; border: 0; border-radius: 6px; background: rgba(255,255,255,.1);
+  color: #fff; font-size: 15px; line-height: 1; cursor: pointer; }
+.delay-btn:hover { background: rgba(255,255,255,.2); }
+/* playlist menu items + repeat/shuffle row */
+#menu-playlist .list { max-height: 240px; overflow-y: auto; }
+.pl-item { display: flex; align-items: center; gap: 8px; }
+.pl-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-remove { color: #889; opacity: 0; font-size: 11px; }
+.pl-item:hover .pl-remove { opacity: 1; }
+.pl-remove:hover { color: #f66; }
+.menu-row { display: flex; gap: 6px; padding: 4px 6px; }
+.pl-toggle { flex: 1; border: 0; border-radius: 6px; padding: 7px 6px; background: rgba(255,255,255,.08);
+  color: #cfcfd6; font-size: 11px; cursor: pointer; }
+.pl-toggle:hover { background: rgba(255,255,255,.16); color: #fff; }
+/* a couple of control-bar menus get a touch wider for their longer rows */
+#menu-playback, #menu-playlist { min-width: 184px; }
+
+/* Open URL modal */
+.modal { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: rgba(0,0,0,.5); }
+.modal-box { width: 460px; max-width: 90vw; padding: 18px; border-radius: 12px;
+  background: #16161c; border: 1px solid rgba(255,255,255,.1); box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+.modal-title { font-size: 15px; font-weight: 650; margin-bottom: 12px; }
+#url-input, .url-extra { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,.14);
+  background: rgba(255,255,255,.04); color: #e7e7ea; font: inherit; outline: none; }
+#url-input:focus, .url-extra:focus { border-color: var(--accent); }
+.url-extra { margin-top: 8px; font-size: 12px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
+
+/* Settings panel */
+#settings-modal .modal-box { width: 480px; }
+.setting-row { display: flex; align-items: center; gap: 16px; padding: 12px 2px; border-bottom: 1px solid rgba(255,255,255,.07); }
+.setting-row:last-of-type { border-bottom: 0; }
+.setting-text { flex: 1; }
+.setting-name { font-size: 13px; font-weight: 600; color: #e7e7ea; }
+.setting-desc { font-size: 11px; color: #8b8b96; margin-top: 3px; line-height: 1.35; }
+#settings-modal select { background: rgba(255,255,255,.06); color: #e7e7ea; border: 1px solid rgba(255,255,255,.14);
+  border-radius: 7px; padding: 6px 8px; font: inherit; outline: none; }
+.switch { position: relative; display: inline-block; width: 42px; height: 24px; flex: 0 0 auto; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch-track { position: absolute; inset: 0; cursor: pointer; border-radius: 999px; background: rgba(255,255,255,.18); transition: background .15s; }
+.switch-track::before { content: ''; position: absolute; left: 3px; top: 3px; width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; transition: transform .15s; }
+.switch input:checked + .switch-track { background: var(--accent); }
+.switch input:checked + .switch-track::before { transform: translateX(18px); }
+
+/* the native AVRoutePickerView overlays this slot; keep it empty (no DOM glyph) */
+.airplay-button { width: 34px; height: 34px; }
+/* During cast, audio/subtitle buttons are driven by the AVPlayer's media selection
+   (see populateAirTracks) — JS shows them only when the cast asset has tracks. */
+body.casting .quality { display: none; }
+
+#casting-overlay { position: fixed; inset: 0; z-index: 12; display: grid; place-items: center;
+  background: radial-gradient(120% 120% at 50% 42%, #16161f 0%, #0a0a0e 78%); }
+#casting-overlay .cast-glyph { width: 74px; height: 74px; fill: var(--accent);
+  filter: drop-shadow(0 0 20px rgba(5,131,255,.45)); animation: castPulse 2.6s ease-in-out infinite; }
+@keyframes castPulse { 0%, 100% { opacity: .88; transform: scale(1); } 50% { opacity: 1; transform: scale(1.045); } }
+#casting-overlay .cast-text { margin: 18px 0 22px; font-size: 17px; font-weight: 600; color: #ececf2; letter-spacing: .01em; }
+#cast-stop { padding: 9px 22px; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.14); }
+#cast-stop:hover { background: rgba(255,76,76,.16); border-color: rgba(255,90,90,.55); color: #ffe0e0; }
+
+#torrent-status { position: fixed; left: 14px; bottom: 70px; z-index: 16; padding: 4px 10px;
+  border-radius: 999px; background: rgba(0,0,0,.5);
+  font: 10px ui-monospace, monospace; color: #aeb6c2; pointer-events: none;
+  transition: opacity .25s; opacity: 1; display: inline-flex; align-items: center; gap: 6px; }
+#torrent-status.controls-hidden { opacity: 0; } /* auto-hides with the control bar */
+/* Seeding-health "light" (ported from the old app): green = excellent, orange = good, red = poor.
+   Reflects download speed/peers so you can tell at a glance whether the stream will sustain. */
+#torrent-status .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: currentColor; }
+#torrent-status .dot.excellent { color: #36d399; }
+#torrent-status .dot.good { color: #fbbd23; }
+#torrent-status .dot.poor { color: #f87272; }
+
+/* resume-playback prompt (shown for a few seconds on load) */
+#resume-btn { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 18;
+  display: flex; align-items: center; gap: 8px; padding: 11px 18px; border: 0; border-radius: 11px;
+  background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer;
+  box-shadow: 0 8px 26px rgba(0,0,0,.55); transition: opacity .3s, transform .3s; }
+#resume-btn:hover { background: #2a93ff; }
+#resume-btn svg { width: 17px; height: 17px; fill: currentColor; }
+#resume-btn.hidden { opacity: 0; pointer-events: none; transform: translateX(-50%) translateY(8px); }
+body.casting #torrent-status { display: none; }  /* never overlay the cast remote */
+#torrent-file-list { max-height: 46vh; overflow-y: auto; }
+
+/* scrubber thumbnail preview */
+#thumb-preview { position: fixed; bottom: 80px; z-index: 19; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px;
+  background: rgba(0,0,0,.85); border: 1px solid rgba(255,255,255,.15); border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.5); pointer-events: none; }
+#thumb-img { width: 160px; min-height: 90px; height: auto; display: block; border-radius: 4px; background: #000; }
+#thumb-time { font: 11px ui-monospace, monospace; color: #fff; }
+
+#stats-panel { position: fixed; top: 12px; right: 12px; z-index: 22; min-width: 230px; padding: 10px 13px;
+  background: rgba(0,0,0,.74); border: 1px solid rgba(255,255,255,.12); border-radius: 9px;
+  font: 11px ui-monospace, monospace; color: #cfe3ff; white-space: pre; pointer-events: none; line-height: 1.55; }
+
+.debug { position: fixed; top: 10px; left: 10px; z-index: 20; padding: 8px 12px;
+  background: rgba(0,0,0,.6); border: 1px solid rgba(255,255,255,.1); border-radius: 8px;
+  font: 11px ui-monospace, monospace; color: #9ad; white-space: pre; pointer-events: none; }

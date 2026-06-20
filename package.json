@@ -1,0 +1,83 @@
+{
+  "name": "spritz",
+  "productName": "Spritz",
+  "version": "2.0.0-alpha.0",
+  "description": "Spritz — a modern, arm64-native macOS media player that plays anything (libmpv), streams torrents, and casts to AirPlay, Chromecast, and DLNA. Inspired by classic streaming media players.",
+  "main": "src/main/main.js",
+  "author": "Spritz contributors",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "start": "electron .",
+    "start:trace": "electron . --enable-logging",
+    "rebuild": "electron-rebuild -f -w mpv-render",
+    "dist": "electron-builder --mac --arm64",
+    "postinstall": "electron-builder install-app-deps || true"
+  },
+  "build": {
+    "appId": "app.spritz.player",
+    "productName": "Spritz",
+    "asar": true,
+    "asarUnpack": [
+      "native/**/*.node",
+      "vendor/mpv/**"
+    ],
+    "files": [
+      "src/**",
+      "native/**/*.node",
+      "vendor/mpv/**",
+      "vendor/shaders/**",
+      "!**/*.{o,obj,cpp,mm,h}",
+      "!native/**/build/**"
+    ],
+    "mac": {
+      "category": "public.app-category.video",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "minimumSystemVersion": "11.0",
+      "extendInfo": {
+        "NSLocalNetworkUsageDescription": "Spritz streams your media to AirPlay devices on your local network.",
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
+      },
+      "fileAssociations": [
+        { "ext": ["mp4", "mkv", "webm", "mov", "avi", "m4v", "flv", "ts", "wmv", "mpg", "mpeg", "m3u", "m3u8", "pls"], "role": "Viewer", "name": "Video" },
+        { "ext": ["torrent"], "role": "Viewer", "name": "Torrent" }
+      ],
+      "protocols": [
+        { "name": "Magnet link", "schemes": ["magnet"] },
+        { "name": "Spritz", "schemes": ["spritz"] }
+      ]
+    },
+    "dmg": {
+      "writeUpdateInfo": false
+    }
+  },
+  "devDependencies": {
+    "electron": "^42.4.0",
+    "node-addon-api": "^8.8.0",
+    "node-gyp": "^12.4.0"
+  },
+  "dependencies": {
+    "castv2-client": "^1.2.0",
+    "dns-txt": "^2.0.2",
+    "multicast-dns": "^7.2.5",
+    "webtorrent": "^3.0.16"
+  }
+}

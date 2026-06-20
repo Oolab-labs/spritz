@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'" />
+  <title>Spritz</title>
+  <link rel="stylesheet" href="./player.css" />
+</head>
+<body>
+  <!-- Custom window controls. The window is transparent+frame:true, which suppresses
+       the native macOS traffic lights, so we draw our own (close / minimize / fullscreen).
+       Global over both the welcome and player screens; sits above the drag region. -->
+  <div id="winctl">
+    <button class="wc wc-close" id="wc-close" title="Close" aria-label="Close"><svg viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+    <button class="wc wc-min" id="wc-min" title="Minimize" aria-label="Minimize"><svg viewBox="0 0 12 12"><path d="M3 6h6"/></svg></button>
+    <button class="wc wc-full" id="wc-full" title="Fullscreen" aria-label="Fullscreen"><svg viewBox="0 0 12 12"><path d="M4 2H2v2M8 2h2v2M4 10H2V8M8 10h2V8"/></svg></button>
+  </div>
+
+  <!-- Welcome screen (opaque). Hidden while media is loaded; hiding it reveals
+       the transparent web layer and the native video underneath. -->
+  <section id="home">
+    <div class="home-inner">
+      <div class="logo">🫧</div>
+      <h1>Spritz</h1>
+      <div class="home-actions">
+        <button class="btn primary" id="open-file">Open File</button>
+        <button class="btn" id="open-url">Open URL</button>
+      </div>
+      <p class="drop-hint">or drop a video here</p>
+    </div>
+    <div id="continue-watching" class="hidden">
+      <div class="cw-title">Continue Watching</div>
+      <div class="cw-row" id="cw-row"></div>
+    </div>
+  </section>
+
+  <!-- Player surface. Transparent — the video is the native GL layer below. -->
+  <section id="player" class="hidden">
+    <div id="dragbar"></div>
+    <div class="spinner hidden" id="spinner"><div class="ring"></div></div>
+
+    <div class="controls" id="controls">
+      <div id="thumb-preview" class="hidden"><img id="thumb-img" alt="" /><span id="thumb-time">0:00</span></div>
+      <div class="progressbar">
+        <div class="buffered" id="seek-buffered"></div>
+        <input type="range" class="slider" id="seek" min="0" max="100" value="0" step="0.01" disabled />
+      </div>
+      <div class="controlbar">
+        <div class="button prev-button hidden" id="btn-prev" title="Previous">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M7 6h2v12H7V6zm3.5 6 8.5 6V6l-8.5 6z"/></svg>
+        </div>
+        <div class="button play-pause-button" id="playpause" title="Play/Pause">
+          <svg class="ic pause" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+          <svg class="ic play hidden" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          <svg class="ic replay hidden" viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg>
+        </div>
+        <div class="button next-button hidden" id="btn-next" title="Next">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M17 6h-2v12h2V6zM5 18l8.5-6L5 6v12z"/></svg>
+        </div>
+        <div class="button stop-button" id="stop" title="Stop">
+          <svg class="ic" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>
+        </div>
+        <div class="timestamp"><span class="current">0:00</span><span class="sep">/</span><span class="total">0:00</span></div>
+        <div class="quality hidden" id="quality"></div>
+
+        <div class="spacer title" id="player-title"></div>
+
+        <div class="volume-group" id="volgroup">
+          <div class="button volume-button" id="mute" title="Mute">
+            <svg class="ic vol-on" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>
+            <svg class="ic vol-off hidden" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3z"/><path d="M16 8l5 5m0-5l-5 5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+          </div>
+          <div class="volume-control"><input type="range" class="volume-slider" id="vol" min="0" max="100" value="100" /></div>
+        </div>
+
+        <div class="button playback-button" id="btn-tune" data-menu="menu-playback" title="Speed & aspect">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0-2a2 2 0 1 1 0-4 2 2 0 0 1 0 4zM3 13h4v-2H3v2zm14 0h4v-2h-4v2zM11 3v4h2V3h-2zm0 14v4h2v-4h-2z"/></svg>
+        </div>
+        <div class="button playlist-button hidden" id="btn-playlist" data-menu="menu-playlist" title="Playlist">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M3 6h12v2H3V6zm0 4h12v2H3v-2zm0 4h8v2H3v-2zm12 .5v6l5-3-5-3z"/></svg>
+        </div>
+        <div class="button audio-tracks-button hidden" id="btn-audio" data-menu="menu-audio" title="Audio track">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zm7 9a7 7 0 0 1-6 6.92V21h-2v-2.08A7 7 0 0 1 5 12h2a5 5 0 0 0 10 0h2z"/></svg>
+        </div>
+        <div class="button subtitles-button hidden" id="btn-subs" data-menu="menu-subs" title="Subtitles">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM6 13v2h6v-2H6zm8 0v2h4v-2h-4zM6 9v2h4V9H6zm6 0v2h6V9h-6z"/></svg>
+        </div>
+        <div class="button cast-button hidden" id="cast" data-menu="menu-cast" title="Cast / AirPlay">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M1 18v3h3a3 3 0 0 0-3-3zm0-4v2a5 5 0 0 1 5 5h2a7 7 0 0 0-7-7zm0-4v2a9 9 0 0 1 9 9h2A11 11 0 0 0 1 10zm20-7H3a2 2 0 0 0-2 2v3h2V5h18v14h-7v2h7a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/></svg>
+        </div>
+        <div class="button fullscreen-button" id="fullscreen" title="Fullscreen">
+          <svg class="ic fs-enter" viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+          <svg class="ic fs-leave hidden" viewBox="0 0 24 24"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="menu hidden" id="menu-audio">
+      <div class="menu-title">Audio</div>
+      <ul class="list"></ul>
+      <div class="menu-sep"></div>
+      <div class="delay-row"><span>Audio delay</span>
+        <button class="delay-btn" data-delay="audio" data-step="-0.1">−</button>
+        <span class="delay-val" id="audio-delay-val">0.0s</span>
+        <button class="delay-btn" data-delay="audio" data-step="0.1">+</button>
+      </div>
+    </div>
+    <div class="menu hidden" id="menu-subs">
+      <div class="menu-title">Subtitles</div>
+      <ul class="list"><li data-sid="off" class="active">Off</li></ul>
+      <div class="menu-sep"></div>
+      <div class="delay-row"><span>Subtitle delay</span>
+        <button class="delay-btn" data-delay="sub" data-step="-0.1">−</button>
+        <span class="delay-val" id="sub-delay-val">0.0s</span>
+        <button class="delay-btn" data-delay="sub" data-step="0.1">+</button>
+      </div>
+      <div class="menu-sep"></div>
+      <div class="menu-action" id="sub-online">Download Subtitles (OpenSubtitles)</div>
+      <div class="menu-action" id="sub-add">Add Subtitle…</div>
+      <div class="menu-action" id="sub-generate">Generate Subtitles (Whisper)</div>
+    </div>
+    <div class="menu hidden" id="menu-cast">
+      <div class="menu-title">Cast / AirPlay</div>
+      <ul class="list">
+        <!-- AirPlay is always available; the native AVRoutePickerView overlays this row and draws
+             its own glyph at the left (padding clears space for it). Text-only to avoid a 2nd glyph. -->
+        <li class="cast-airplay" id="cast-airplay-row">AirPlay</li>
+        <!-- discovered Chromecast / DLNA devices are appended below -->
+      </ul>
+    </div>
+    <div class="menu hidden" id="menu-playback">
+      <div class="menu-title">Speed</div>
+      <ul class="list" id="speed-list"></ul>
+      <div class="menu-sep"></div>
+      <div class="menu-title">Aspect ratio</div>
+      <ul class="list" id="aspect-list"></ul>
+      <div class="menu-sep"></div>
+      <div class="delay-row"><span>Zoom</span>
+        <button class="delay-btn" data-zoom="-0.1">−</button>
+        <span class="delay-val" id="zoom-val">0%</span>
+        <button class="delay-btn" data-zoom="0.1">+</button>
+      </div>
+    </div>
+    <div class="menu hidden" id="menu-playlist">
+      <div class="menu-title">Playlist</div>
+      <ul class="list" id="playlist-list"></ul>
+      <div class="menu-sep"></div>
+      <div class="menu-row">
+        <button class="pl-toggle" id="pl-repeat" title="Repeat">↻ Repeat: Off</button>
+        <button class="pl-toggle" id="pl-shuffle" title="Shuffle">🔀 Shuffle: Off</button>
+      </div>
+      <div class="menu-action" id="pl-add">Add files…</div>
+    </div>
+
+    <div id="torrent-status" class="hidden"></div>
+    <div id="stats-panel" class="hidden"></div>
+
+    <button id="resume-btn" class="hidden" title="Resume playback">
+      <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+      <span>Resume from <span id="resume-time">0:00</span></span>
+    </button>
+
+    <div id="casting-overlay" class="hidden">
+      <svg viewBox="0 0 24 24" class="cast-glyph"><path d="M4 5h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-5v-2h4V7H5v2H3V6a1 1 0 0 1 1-1zM3 13l5 5H3v-5z"/></svg>
+      <div class="cast-text">Playing on AirPlay</div>
+      <button class="btn" id="cast-stop">Stop AirPlay</button>
+    </div>
+
+    <div class="debug hidden" id="debug"></div>
+  </section>
+
+  <div class="modal hidden" id="url-modal">
+    <div class="modal-box">
+      <div class="modal-title">Open URL</div>
+      <input type="text" id="url-input" placeholder="https://…  (HLS / direct video / stream)" spellcheck="false" />
+      <input type="text" id="url-referer" class="url-extra" placeholder="Referer (optional — for hotlink-protected links)" spellcheck="false" />
+      <div class="modal-actions">
+        <button class="btn" id="url-cancel">Cancel</button>
+        <button class="btn primary" id="url-open">Open</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="settings-modal">
+    <div class="modal-box">
+      <div class="modal-title">Settings</div>
+      <div class="setting-row">
+        <div class="setting-text"><div class="setting-name">Motion interpolation</div>
+          <div class="setting-desc">Smooth judder by resampling frames to the display rate. GPU-heavier; off by default.</div></div>
+        <label class="switch"><input type="checkbox" id="set-interp" /><span class="switch-track"></span></label>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text"><div class="setting-name">Anime4K upscaling</div>
+          <div class="setting-desc">Real-time shader upscaling, tuned for anime.</div></div>
+        <select id="set-anime4k">
+          <option value="">Off</option><option value="A">Mode A · 1080p</option>
+          <option value="B">Mode B · 720p</option><option value="C">Mode C · 480p</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text"><div class="setting-name">Skip sponsors (YouTube)</div>
+          <div class="setting-desc">Auto-skip sponsor / intro / outro segments via SponsorBlock.</div></div>
+        <label class="switch"><input type="checkbox" id="set-sponsors" /><span class="switch-track"></span></label>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text"><div class="setting-name">Subtitle size</div>
+          <div class="setting-desc">On-screen subtitle text size.</div></div>
+        <select id="set-subsize">
+          <option value="36">Small</option><option value="46" selected>Medium</option>
+          <option value="58">Large</option><option value="72">Huge</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text"><div class="setting-name">Subtitle background</div>
+          <div class="setting-desc">Draw a translucent box behind subtitles for readability.</div></div>
+        <label class="switch"><input type="checkbox" id="set-subbg" /><span class="switch-track"></span></label>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text"><div class="setting-name">Only torrent over VPN</div>
+          <div class="setting-desc">Block torrents unless a VPN tunnel is active. <span id="vpn-state">VPN: checking…</span></div></div>
+        <label class="switch"><input type="checkbox" id="set-requirevpn" /><span class="switch-track"></span></label>
+      </div>
+      <div class="modal-actions"><button class="btn primary" id="settings-close">Done</button></div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="torrent-modal">
+    <div class="modal-box">
+      <div class="modal-title">Choose a file</div>
+      <ul class="list" id="torrent-file-list"></ul>
+      <div class="modal-actions"><button class="btn" id="torrent-cancel">Cancel</button></div>
+    </div>
+  </div>
+
+  <script src="./renderer.js"></script>
+</body>
+</html>

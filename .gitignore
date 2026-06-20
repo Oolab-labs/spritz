@@ -1,0 +1,74 @@
+# ---- Spritz .gitignore (repo root = app/) ----
+
+# Dependencies (reinstalled via npm; electron-builder pulls/builds the *.node addons)
+node_modules/
+
+# Spritz's own pre-session source backup — NEVER publish
+src.orig-backup/
+
+# Native addon build output + compiled binaries
+native/**/build/
+*.node
+*.o
+*.obj
+*.a
+*.dylib
+
+# Packaged app output
+dist/
+out/
+release/
+*.dmg
+*.zip
+*.app
+
+# Bundled runtime binaries (ffmpeg/ffprobe/yt-dlp/libmpv) — GPL, distributed separately, never committed
+bin/
+vendor/mpv/
+*.icns
+
+# Logs (incl. the opt-in /tmp diagnostics if ever pointed into the tree)
+*.log
+logs/
+npm-debug.log*
+
+# Downloaded torrent / remux / HLS scratch data (normally in OS temp; defensive)
+torrents/
+remux/
+hls/
+*.part
+
+# Copyrighted media must never be committed
+*.mp4
+*.mkv
+*.webm
+*.avi
+*.mov
+*.m4v
+*.flv
+*.ts
+*.wmv
+*.mpg
+*.mpeg
+*.torrent
+
+# macOS / editor cruft
+.DS_Store
+._*
+*.swp
+*~
+.idea/
+.vscode/
+
+# Local env / secrets (none today — keep them out forever)
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.mobileprovision
+
+# Force-keep source the app loads / needs to package (must override broader rules above)
+!vendor/shaders/
+!vendor/shaders/**
+!build/entitlements.mac.plist
