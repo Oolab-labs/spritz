@@ -22,6 +22,7 @@ and no index of any kind.
 ### Runs on
 - **macOS 11 (Big Sur) or later**
 - **Apple Silicon (arm64)** — M1 and newer
+- **Intel Macs are not supported** — Spritz is a native arm64 build and won't run under Rosetta
 
 ### Casts to
 Any device on the **same local network** (your Mac and the receiver must share the Wi-Fi/LAN):
@@ -36,6 +37,20 @@ Any device on the **same local network** (your Mac and the receiver must share t
 - For **4K HDR**, prefer the DLNA route (shown as *"native 4K/HDR (best)"* in the cast menu). AirPlay is limited to 1080p H.264/SDR.
 - **Dolby Vision** is not passed through; **HDR10 / HDR10+** is. (DV titles play as their HDR10 base layer on TVs that support it.)
 - Developed and tested primarily against an **LG NANO80T6A (webOS)**, which exposes Chromecast-built-in, AirPlay 2, and DLNA simultaneously.
+
+## Install
+
+> **Apple Silicon (M1 or newer) · macOS 11+.** Intel Macs are **not** supported — Spritz is a native arm64 app and won't run under Rosetta.
+
+**Download:** prebuilt Apple-Silicon `.dmg` builds are posted on the [Releases](https://github.com/Oolab-labs/spritz/releases) page — open the `.dmg` and drag **Spritz** to Applications.
+
+Builds aren't notarized yet, so on first launch macOS may refuse to open it. Either **right-click Spritz → Open → Open**, or clear the quarantine flag:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Spritz.app
+```
+
+**Build it yourself:** see [Build & run from source](#build--run-from-source) below.
 
 ## Status & known limitations
 
@@ -84,6 +99,25 @@ npm start
 To produce a distributable `.app`/`.dmg`: `npm run dist` (electron-builder). If you
 redistribute a build that bundles the GPL `ffmpeg`/`libmpv` binaries, you must also
 carry the corresponding-source offer described under [License](#license).
+
+### Releasing a signed build (maintainers)
+
+`npm run dist` alone produces an **ad-hoc-signed** `.dmg` — it runs, but users hit the
+Gatekeeper prompt (see [Install](#install)). A friction-free release needs an Apple
+Developer account ($99/yr):
+
+1. Install your **Developer ID Application** certificate in the login keychain.
+2. Enable notarization in `package.json` → `build.mac`: `"notarize": { "teamId": "<TEAMID>" }`.
+3. Export credentials and build:
+   ```sh
+   export APPLE_ID="you@example.com"
+   export APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"   # appleid.apple.com → App-Specific Passwords
+   npm run dist
+   ```
+4. Publish the `.dmg` to a GitHub Release (don't commit it to the repo):
+   ```sh
+   gh release create v2.0.0-alpha.0 dist/Spritz-*-arm64.dmg --title "v2.0.0-alpha.0" --notes "First public alpha."
+   ```
 
 ## License
 
