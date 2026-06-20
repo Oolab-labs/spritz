@@ -37,6 +37,24 @@ Any device on the **same local network** (your Mac and the receiver must share t
 - **Dolby Vision** is not passed through; **HDR10 / HDR10+** is. (DV titles play as their HDR10 base layer on TVs that support it.)
 - Developed and tested primarily against an **LG NANO80T6A (webOS)**, which exposes Chromecast-built-in, AirPlay 2, and DLNA simultaneously.
 
+## Status & known limitations
+
+**Spritz is alpha — in active development.** It works day to day, but expect rough edges; the areas below are known and being improved.
+
+**4K / HDR casting**
+- **DLNA is the reliable 4K path** — the original file is streamed untouched and the TV decodes it natively (4K HEVC / HDR10 / HDR10+).
+- **Chromecast** does native 4K HEVC + HDR10 on capable TVs.
+- **AirPlay is 1080p H.264 / SDR only** — 4K/HDR is transcoded down and HDR looks washed out (the bundled ffmpeg has no HDR→SDR tone-mapping). Use DLNA for 4K HDR.
+- **Dolby Vision is not passed through**, and some 4K DV files are still rejected by strict DLNA TVs ("file cannot be recognized") — being worked on.
+
+**Audio-track switching** — reliable for local playback, but **not yet reliable while casting**: switching language/track mid-cast can fail or need a re-cast, and not every container switches cleanly.
+
+**Subtitles** — embedded text subtitles and external SRT generally work, but **bitmap subtitles (PGS/VOBSUB) and styled ASS don't reliably render over casting** (the bundled ffmpeg has no libass), and the subtitle toggle can drop on some cast sessions. OpenSubtitles lookup is best-effort.
+
+**Torrent streaming** — usually starts fine but can occasionally need a retry; 4K-over-torrent at marginal bandwidth will rebuffer.
+
+Bug reports and PRs welcome.
+
 ## Requirements
 
 - macOS 11+ on Apple Silicon (arm64)
