@@ -17,6 +17,26 @@ and no index of any kind.
 - **Subtitles** — embedded tracks, external files, OpenSubtitles lookup, and (optional) Whisper generation.
 - **Continue Watching**, playlists/queues, keyboard shortcuts, playback speed, Anime4K upscaling.
 
+## Compatibility
+
+### Runs on
+- **macOS 11 (Big Sur) or later**
+- **Apple Silicon (arm64)** — M1 and newer
+
+### Casts to
+Any device on the **same local network** (your Mac and the receiver must share the Wi-Fi/LAN):
+
+| Protocol | Devices | What Spritz sends |
+|---|---|---|
+| **AirPlay 2** | Apple TV, AirPlay-2 TVs & receivers | H.264 / SDR up to **1080p** (4K/HDR is transcoded down; AC3/E-AC3 surround passes through) |
+| **Chromecast / Google Cast** | Chromecast dongles, Chromecast-built-in TVs (LG webOS, Android TV / Google TV, …) | Negotiated per device — modern 4K TVs get **native 4K HEVC + HDR10**; older 1080p dongles get H.264. Audio-only Cast devices are excluded |
+| **DLNA / UPnP** | Many LG (webOS), Samsung, Sony, Vizio, TCL, Philips smart TVs & standalone DLNA renderers | The **original file, untouched** — best path for native **4K HEVC / HDR10 / HDR10+** with no Mac-side transcode |
+
+### Notes
+- For **4K HDR**, prefer the DLNA route (shown as *"native 4K/HDR (best)"* in the cast menu). AirPlay is limited to 1080p H.264/SDR.
+- **Dolby Vision** is not passed through; **HDR10 / HDR10+** is. (DV titles play as their HDR10 base layer on TVs that support it.)
+- Developed and tested primarily against an **LG NANO80T6A (webOS)**, which exposes Chromecast-built-in, AirPlay 2, and DLNA simultaneously.
+
 ## Requirements
 
 - macOS 11+ on Apple Silicon (arm64)
