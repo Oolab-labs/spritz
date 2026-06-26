@@ -6,7 +6,7 @@
 //   renderer control input → IPC → main → addon (command/setProperty/loadfile)
 //   addon events (TSFN)      → main → IPC('player-event') → renderer
 
-const { app, BrowserWindow, ipcMain, dialog, powerSaveBlocker, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, powerSaveBlocker, Menu, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -194,6 +194,9 @@ if (!gotLock) {
   app.on('open-file', (e, p) => { e.preventDefault(); openSource(p); });   // macOS Finder/dock file
   app.on('open-url', (e, url) => { e.preventDefault(); openSource(url); }); // macOS magnet:/spritz:
   ipcMain.on('renderer:ready', () => { rendererReady = true; if (pendingOpen) { send('open-source', { src: pendingOpen }); pendingOpen = null; } });
+  // Clipboard read lives in main so the renderer can run sandboxed (the `clipboard` module isn't
+  // exposed to a sandboxed preload). Synchronous to preserve the renderer's sync auto-paste path.
+  ipcMain.on('clipboard:read', (e) => { try { e.returnValue = clipboard.readText(); } catch (_) { e.returnValue = ''; } });
 
   app.on('second-instance', (_event, argv) => {
     if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
@@ -219,7 +222,7 @@ if (!gotLock) {
         preload: path.join(__dirname, '..', 'preload', 'preload.js'),
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false,
+        sandbox: true,
         backgroundThrottling: false
       }
     });

@@ -11,9 +11,10 @@
 #import <AppKit/AppKit.h>
 #import <MediaPlayer/MediaPlayer.h>
 #include <string>
+#include <atomic>
 
 static Napi::ThreadSafeFunction gTsfn;
-static bool gHasTsfn = false;
+static std::atomic<bool> gHasTsfn{false}; // read by main-queue command handlers, set by SetEventListener
 
 static void emitCmd(const char* cmd, double value) {
   if (!gHasTsfn) return;
@@ -59,6 +60,7 @@ Napi::Value SetEventListener(const Napi::CallbackInfo& info) {
 
 Napi::Value SetInfo(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsObject()) { Napi::TypeError::New(env, "setInfo expects an object").ThrowAsJavaScriptException(); return env.Undefined(); }
   Napi::Object o = info[0].As<Napi::Object>();
   std::string title = o.Has("title") ? o.Get("title").As<Napi::String>().Utf8Value() : "";
   double dur = o.Has("duration") ? o.Get("duration").As<Napi::Number>().DoubleValue() : 0;

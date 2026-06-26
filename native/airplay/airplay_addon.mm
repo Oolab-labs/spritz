@@ -23,10 +23,11 @@
 #include <string>
 #include <memory>
 #include <vector>
+#include <atomic>
 
 // ---- event pump → JS (plain C++ payload; no ObjC bridging) ----
 static Napi::ThreadSafeFunction gTsfn;
-static bool gHasTsfn = false;
+static std::atomic<bool> gHasTsfn{false}; // emit() (main-queue blocks/KVO) vs SetEventListener race
 
 struct ApEv {
   std::string type;     // routes | external | status | time | ended | error
@@ -61,6 +62,7 @@ static NSView*            gContent = nil;
 static id                 gTimeObs = nil;
 static id                 gEndObs = nil;
 static id                 gFailObs = nil;
+static AVPlayerItem*      gObservedItem = nil; // the EXACT item the "status" KVO is registered on (balanced removal)
 
 static void teardownPlayer();
 
@@ -105,7 +107,9 @@ static void teardownPlayer() {
   if (gFailObs) { [[NSNotificationCenter defaultCenter] removeObserver:gFailObs]; gFailObs = nil; }
   if (gPlayer) {
     @try { [gPlayer removeObserver:gObserver forKeyPath:@"externalPlaybackActive"]; } @catch (...) {}
-    if (gPlayer.currentItem) { @try { [gPlayer.currentItem removeObserver:gObserver forKeyPath:@"status"]; } @catch (...) {} }
+    // Remove the "status" observer from the EXACT item it was registered on — NOT gPlayer.currentItem,
+    // which the replaceCurrentItemWithPlayerItem:nil below nils out (leaving the observer leaked/imbalanced).
+    if (gObservedItem) { @try { [gObservedItem removeObserver:gObserver forKeyPath:@"status"]; } @catch (...) {} gObservedItem = nil; }
     // End the external (AirPlay) session, not just our player — otherwise the system
     // route stays selected, the TV stays on the AirPlay screen, and the next prepare()
     // binds to an already-connected route that never fires a fresh externalPlaybackActive
@@ -167,6 +171,7 @@ Napi::Value AttachPicker(const Napi::CallbackInfo& info) {
 
 // updatePickerRect(x, y, w, h, visible) — reposition (or park offscreen when hidden).
 Napi::Value UpdatePickerRect(const Napi::CallbackInfo& info) {
+  if (info.Length() < 4 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber() || !info[3].IsNumber()) return info.Env().Undefined();
   double x = info[0].As<Napi::Number>().DoubleValue(), y = info[1].As<Napi::Number>().DoubleValue();
   double w = info[2].As<Napi::Number>().DoubleValue(), h = info[3].As<Napi::Number>().DoubleValue();
   bool visible = info.Length() > 4 ? info[4].As<Napi::Boolean>().Value() : true;
@@ -181,8 +186,9 @@ Napi::Value UpdatePickerRect(const Napi::CallbackInfo& info) {
 // prepare(url, startSec) — create the AVPlayer (paused, muted) bound to the picker.
 Napi::Value Prepare(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsString()) { Napi::TypeError::New(env, "prepare expects (url[,startSec])").ThrowAsJavaScriptException(); return env.Undefined(); }
   std::string urlStr = info[0].As<Napi::String>().Utf8Value();
-  double startSec = info.Length() > 1 ? info[1].As<Napi::Number>().DoubleValue() : 0;
+  double startSec = (info.Length() > 1 && info[1].IsNumber()) ? info[1].As<Napi::Number>().DoubleValue() : 0;
   NSURL* url = [NSURL URLWithString:[NSString stringWithUTF8String:urlStr.c_str()]];
   if (!url) { Napi::Error::New(env, "bad url").ThrowAsJavaScriptException(); return env.Undefined(); }
   RunOnMain(^{
@@ -194,6 +200,7 @@ Napi::Value Prepare(const Napi::CallbackInfo& info) {
     if (gPicker) gPicker.player = gPlayer;
     [gPlayer addObserver:gObserver forKeyPath:@"externalPlaybackActive" options:NSKeyValueObservingOptionNew context:nil];
     [item addObserver:gObserver forKeyPath:@"status" options:NSKeyValueObservingOptionNew context:nil];
+    gObservedItem = item; // remember the precise item so teardown removes the observer from it (not a nil'd currentItem)
     gTimeObs = [gPlayer addPeriodicTimeObserverForInterval:CMTimeMakeWithSeconds(0.5, 600) queue:dispatch_get_main_queue() usingBlock:^(CMTime t) {
       ApEv* e = new ApEv(); e->type = "time"; e->cur = CMTimeGetSeconds(t);
       CMTime d = gPlayer.currentItem.duration; e->dur = (CMTIME_IS_INDEFINITE(d) || CMTIME_IS_INVALID(d)) ? 0 : CMTimeGetSeconds(d);
@@ -212,11 +219,13 @@ Napi::Value Prepare(const Napi::CallbackInfo& info) {
 Napi::Value Play(const Napi::CallbackInfo& info)  { RunOnMain(^{ [gPlayer play]; }); return info.Env().Undefined(); }
 Napi::Value Pause(const Napi::CallbackInfo& info) { RunOnMain(^{ [gPlayer pause]; }); return info.Env().Undefined(); }
 Napi::Value Seek(const Napi::CallbackInfo& info)  {
+  if (info.Length() < 1 || !info[0].IsNumber()) return info.Env().Undefined();
   double t = info[0].As<Napi::Number>().DoubleValue();
   RunOnMain(^{ [gPlayer seekToTime:CMTimeMakeWithSeconds(t, 600) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero]; });
   return info.Env().Undefined();
 }
 Napi::Value SetVolume(const Napi::CallbackInfo& info) {
+  if (info.Length() < 1 || !info[0].IsNumber()) return info.Env().Undefined();
   float v = (float)info[0].As<Napi::Number>().DoubleValue();
   RunOnMain(^{ gPlayer.volume = v; gPlayer.muted = NO; });
   return info.Env().Undefined();
@@ -282,6 +291,7 @@ Napi::Value MediaTracks(const Napi::CallbackInfo& info) {
 
 // selectMedia(kind, index) — kind = "audio" | "subs"; index = option index, or -1 = off (subs)
 Napi::Value SelectMedia(const Napi::CallbackInfo& info) {
+  if (info.Length() < 2 || !info[0].IsString() || !info[1].IsNumber()) return info.Env().Undefined();
   std::string kind = info[0].As<Napi::String>().Utf8Value();
   int idx = info[1].As<Napi::Number>().Int32Value();
   bool isSubs = (kind == "subs");

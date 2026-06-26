@@ -40,16 +40,30 @@ findings are NOT yet changed** and need a macOS build+test cycle (see note below
 - CSP tightened — dropped `style-src 'unsafe-inline'`, added `connect-src`/`frame-src`/`form-action` (`index.html`); `paintBuffered` rebuilt with DOM APIs so no inline style remains (`renderer.js`).
 - Consistent `try/catch` + toast on user-triggered IPC calls; fail-closed VPN kill-switch (`renderer.js`).
 
-**Deferred — native addons (need a macOS toolchain to compile/run, unavailable in this Linux CI):**
-On close reading, several native findings appear **already mitigated** by the existing
-teardown ordering — `DetachCore` **joins the event-pump thread before** `gTsfn.Release()`
-(a proper barrier, undercutting the C1 use-after-free), drives teardown from the window
-`'closed'` handler (C2), and calls `stopDisplayLink()` before `mpv_render_context_free`
-(H1). The remaining native hardening (N-API argument validation, `std::atomic` for the
-airplay/nowplaying `gHasTsfn`, `nodeToJson` depth/locale) is real but lower-severity and
-should be applied and **verified against an actual `npm run rebuild` + runtime** rather
-than committed blind. Also deferred: enabling `sandbox:true` (needs `clipboard` moved to a
-main IPC handler) and the dependency refresh (`castv2-client`, `node-gyp` 13, dev-dep verify).
+### Follow-up round (also in this branch)
+
+**Native addon hardening (⚠️ NOT yet compiled — needs `npm run rebuild` on macOS):**
+- AirPlay KVO balance (H2) — track the exact observed `AVPlayerItem` (`gObservedItem`) and remove the `status` observer from it before `replaceCurrentItemWithPlayerItem:nil`, instead of the nil'd `currentItem` (`airplay_addon.mm`).
+- `gHasTsfn` → `std::atomic<bool>` in airplay & nowplaying (H4) (mpv already was) (`airplay_addon.mm`, `nowplaying_addon.mm`).
+- N-API argument validation (H3) — length/type guards on `prepare`/`seek`/`setVolume`/`selectMedia`/`updatePickerRect` (airplay), `setInfo` (nowplaying), `loadFile`/`setProperty` (mpv) before any side effects.
+- `nodeToJson` (M3) — recursion depth cap + `%.17g` locale-independent double formatting (`mpv_addon.mm`).
+
+The C1/C2/H1 native findings were left as-is: on close reading the existing teardown
+already mitigates them — `DetachCore` **joins the event-pump thread before** `gTsfn.Release()`
+(barrier), drives teardown from the window `'closed'` handler, and calls `stopDisplayLink()`
+before `mpv_render_context_free`. Re-verify under a real build.
+
+**`sandbox: true` enabled** — moved `clipboard.readText()` to a synchronous `clipboard:read`
+main IPC handler (`ipcRenderer.sendSync`, preserving the renderer's sync auto-paste path) and
+dropped `clipboard` from the preload so it only requires sandbox-safe modules (`contextBridge`,
+`ipcRenderer`, `webUtils`). ⚠️ Needs runtime verification: drag-drop file paths (`webUtils.getPathForFile`),
+clipboard auto-paste, and all IPC under the sandbox.
+
+**Dependency refresh — BLOCKED in this environment** (npm registry returns 403; no install/audit
+possible). Recommended actions to run where the registry is reachable: verify `node-addon-api`
+resolves (npm showed 8.7.0 latest vs the pinned `^8.8.0` — fix the pin if it doesn't resolve);
+bump `node-gyp` 12 → 13 and re-`npm run rebuild`; plan migration off the abandoned `castv2-client`;
+keep `electron` current (don't let 42 age out of the 3-major support window). Run `npm audit` once installed.
 
 ## Top priorities (cross-subsystem)
 
