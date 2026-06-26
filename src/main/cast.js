@@ -148,7 +148,10 @@ module.exports = function createCast() {
 
   function probeEureka(host, done) {
     let fired = false;
-    const next = () => { if (!fired) { fired = true; done(); } }; // advance the pump exactly once
+    let guard = null;
+    const next = () => { if (fired) return; fired = true; if (guard) { clearTimeout(guard); guard = null; } done(); }; // advance the pump exactly once
+    // The socket `timeout` is an INACTIVITY timer (reset on each byte); a host that trickles bytes under
+    // the 1 MiB cap would never fire it and would leak a pump slot forever. Cap total wall-clock instead.
     const req = http.get({ host, port: 8008, path: '/setup/eureka_info?options=detail', timeout: 2000 }, (res) => {
       let body = '', len = 0, over = false;
       res.on('data', (d) => {
@@ -165,6 +168,7 @@ module.exports = function createCast() {
     });
     req.on('error', () => next());
     req.on('timeout', () => { req.destroy(); next(); });
+    guard = setTimeout(() => { try { req.destroy(); } catch (e) {} next(); }, 4000); // overall deadline (defeats slow-trickle)
   }
 
   function stopDiscovery() {

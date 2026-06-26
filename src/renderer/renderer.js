@@ -597,9 +597,10 @@ document.querySelectorAll('.delay-btn[data-delay]').forEach((b) => b.addEventLis
 const openUrlBtn = $('#open-url'), urlModal = $('#url-modal'), urlInput = $('#url-input'),
   urlReferer = $('#url-referer'), urlOpen = $('#url-open'), urlCancel = $('#url-cancel');
 // A clipboard string worth auto-pasting: magnet/.torrent or any http(s) URL.
-function clipboardSource() {
-  let t = ''; try { t = (soda.readClipboard() || '').trim(); } catch (e) {}
-  return (isTorrentSrc(t) || /^https?:\/\/\S+$/i.test(t)) ? t : null;
+function classifyClip(t) { t = (t || '').trim(); return (isTorrentSrc(t) || /^https?:\/\/\S+$/i.test(t)) ? t : null; }
+function clipboardSource() { // sync — only for the modal's one-shot auto-paste fill
+  let t = ''; try { t = soda.readClipboard() || ''; } catch (e) {}
+  return classifyClip(t);
 }
 function showUrlModal() {
   urlModal.classList.remove('hidden');
@@ -610,9 +611,10 @@ function showUrlModal() {
 // When the window regains focus on the home screen, a freshly-copied magnet pops the Open-URL
 // box pre-filled — copy a link in the browser, switch to Spritz, hit Enter.
 let lastClip = null;
-window.addEventListener('focus', () => {
+window.addEventListener('focus', async () => {
   if (!home.classList.contains('hidden') && urlModal.classList.contains('hidden')) {
-    const c = clipboardSource();
+    let t = ''; try { t = await soda.readClipboardAsync(); } catch (e) {} // async: don't block the renderer on every focus
+    const c = classifyClip(t);
     if (c && c !== lastClip && isTorrentSrc(c)) { lastClip = c; showUrlModal(); }
   }
 });

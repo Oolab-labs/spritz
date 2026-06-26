@@ -145,5 +145,6 @@ contextBridge.exposeInMainWorld('soda', {
   pathForFile: (file) => webUtils.getPathForFile(file), // drag-drop → absolute path
   getVersions: () => ipcRenderer.invoke('app:getVersions'),
   readClipboard: () => { try { return ipcRenderer.sendSync('clipboard:read'); } catch (e) { return ''; } }, // magnet auto-paste (sync IPC; clipboard lives in main under sandbox)
+  readClipboardAsync: () => ipcRenderer.invoke('clipboard:read').catch(() => ''), // non-blocking variant for hot paths (window focus)
   vpnStatus: () => ipcRenderer.invoke('vpn:status') // {active, name} — kill-switch check
 });

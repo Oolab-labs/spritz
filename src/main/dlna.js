@@ -64,14 +64,14 @@ function httpReq(opts, body, cb) {
   let done = false;
   const fin = (e, res, d) => { if (done) return; done = true; cb(e, res, d); };
   const req = http.request(opts, (res) => {
-    let d = '', len = 0;
+    const chunks = []; let len = 0;
     res.on('data', (c) => {
       if (done) return;
       len += c.length;
       if (len > MAX_BODY) { res.destroy(); req.destroy(); return fin(new Error('response too large')); }
-      d += c;
+      chunks.push(c); // keep raw Buffers; decode once at end so a multibyte char split across a TCP boundary isn't corrupted
     });
-    res.on('end', () => fin(null, res, d));
+    res.on('end', () => fin(null, res, Buffer.concat(chunks).toString('utf8')));
   });
   req.on('error', (e) => fin(e)); req.setTimeout(6000, () => req.destroy(new Error('timeout')));
   if (body) req.write(body); req.end();

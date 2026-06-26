@@ -227,7 +227,11 @@ module.exports = function createTorrent(send) {
   }
 
   function selectFile(index) {
-    if (active && active.files[index]) startServerAndPlay(active.files[index]);
+    // Gate the renderer-supplied index through the SAME playability + DL_DIR containment check the
+    // metadata picker uses — selectFile must not be a bypass for a traversal/absolute-path entry.
+    const f = active && active.files[index];
+    if (f && isPlayable(f)) startServerAndPlay(f);
+    else send('torrent:error', { message: "That file can't be played." });
   }
 
   function cancel() {

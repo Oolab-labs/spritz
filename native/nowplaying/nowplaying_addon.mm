@@ -62,10 +62,12 @@ Napi::Value SetInfo(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (info.Length() < 1 || !info[0].IsObject()) { Napi::TypeError::New(env, "setInfo expects an object").ThrowAsJavaScriptException(); return env.Undefined(); }
   Napi::Object o = info[0].As<Napi::Object>();
-  std::string title = o.Has("title") ? o.Get("title").As<Napi::String>().Utf8Value() : "";
-  double dur = o.Has("duration") ? o.Get("duration").As<Napi::Number>().DoubleValue() : 0;
-  double elapsed = o.Has("elapsed") ? o.Get("elapsed").As<Napi::Number>().DoubleValue() : 0;
-  double rate = o.Has("rate") ? o.Get("rate").As<Napi::Number>().DoubleValue() : 0;
+  // Check each field's type too — As<T>() does NOT coerce, so a non-string title / non-number field
+  // would throw a C++ Napi exception that main.js silently swallows (Now Playing stops updating).
+  std::string title = (o.Has("title") && o.Get("title").IsString()) ? o.Get("title").As<Napi::String>().Utf8Value() : "";
+  double dur = (o.Has("duration") && o.Get("duration").IsNumber()) ? o.Get("duration").As<Napi::Number>().DoubleValue() : 0;
+  double elapsed = (o.Has("elapsed") && o.Get("elapsed").IsNumber()) ? o.Get("elapsed").As<Napi::Number>().DoubleValue() : 0;
+  double rate = (o.Has("rate") && o.Get("rate").IsNumber()) ? o.Get("rate").As<Napi::Number>().DoubleValue() : 0;
   NSString* t = [NSString stringWithUTF8String:title.c_str()];
   dispatch_async(dispatch_get_main_queue(), ^{
     NSMutableDictionary* d = [NSMutableDictionary dictionary];

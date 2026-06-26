@@ -197,6 +197,7 @@ if (!gotLock) {
   // Clipboard read lives in main so the renderer can run sandboxed (the `clipboard` module isn't
   // exposed to a sandboxed preload). Synchronous to preserve the renderer's sync auto-paste path.
   ipcMain.on('clipboard:read', (e) => { try { e.returnValue = clipboard.readText(); } catch (_) { e.returnValue = ''; } });
+  ipcMain.handle('clipboard:read', () => { try { return clipboard.readText(); } catch (_) { return ''; } }); // async variant (avoids blocking the renderer on the focus hot path)
 
   app.on('second-instance', (_event, argv) => {
     if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
