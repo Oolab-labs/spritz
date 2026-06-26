@@ -147,16 +147,24 @@ module.exports = function createCast() {
   }
 
   function probeEureka(host, done) {
+    let fired = false;
+    const next = () => { if (!fired) { fired = true; done(); } }; // advance the pump exactly once
     const req = http.get({ host, port: 8008, path: '/setup/eureka_info?options=detail', timeout: 2000 }, (res) => {
-      let body = '';
-      res.on('data', (d) => { body += d; });
+      let body = '', len = 0, over = false;
+      res.on('data', (d) => {
+        if (over) return;
+        len += d.length;
+        if (len > 1024 * 1024) { over = true; res.destroy(); next(); return; } // cap eureka JSON at 1 MiB (untrusted LAN host)
+        body += d;
+      });
       res.on('end', () => {
-        done();
+        next();
+        if (over) return;
         try { const j = JSON.parse(body); if (j && j.name) addDevice(host, String(j.name), capsFromEureka(j)); } catch (e) {}
       });
     });
-    req.on('error', () => done());
-    req.on('timeout', () => { req.destroy(); done(); });
+    req.on('error', () => next());
+    req.on('timeout', () => { req.destroy(); next(); });
   }
 
   function stopDiscovery() {

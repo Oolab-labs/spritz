@@ -57,9 +57,23 @@ function soapFault(xml) {
   return null;
 }
 
+// Cap on a single response body. DLNA descriptions / SOAP replies are a few KB; a hostile or buggy
+// LAN renderer could otherwise stream unbounded data into the main process and exhaust memory.
+const MAX_BODY = 4 * 1024 * 1024; // 4 MiB
 function httpReq(opts, body, cb) {
-  const req = http.request(opts, (res) => { let d = ''; res.on('data', (c) => { d += c; }); res.on('end', () => cb(null, res, d)); });
-  req.on('error', (e) => cb(e)); req.setTimeout(6000, () => req.destroy(new Error('timeout')));
+  let done = false;
+  const fin = (e, res, d) => { if (done) return; done = true; cb(e, res, d); };
+  const req = http.request(opts, (res) => {
+    let d = '', len = 0;
+    res.on('data', (c) => {
+      if (done) return;
+      len += c.length;
+      if (len > MAX_BODY) { res.destroy(); req.destroy(); return fin(new Error('response too large')); }
+      d += c;
+    });
+    res.on('end', () => fin(null, res, d));
+  });
+  req.on('error', (e) => fin(e)); req.setTimeout(6000, () => req.destroy(new Error('timeout')));
   if (body) req.write(body); req.end();
 }
 const httpGet = (url, cb) => { try { const u = new URL(url); httpReq({ host: u.hostname, port: u.port || 80, path: u.pathname + u.search, method: 'GET' }, null, cb); } catch (e) { cb(e); } };
@@ -96,8 +110,12 @@ module.exports = function createDlna() {
       };
       const avControl = ctrl(AVT);
       if (!avControl) { dlog('[dlna] DROPPED "' + name + '" — has AVTransport in XML but no controlURL parsed · ' + location); return; }
+      // Re-validate the RESOLVED control URLs, not just the LOCATION: a malicious description could set
+      // an absolute controlURL pointing off the validated host, redirecting our SOAP POSTs elsewhere.
+      if (!isLanUrl(avControl)) { dlog('[dlna] DROPPED "' + name + '" — avControl resolved off-LAN: ' + avControl); return; }
+      const rcControl = ctrl(RCS);
       dlog('[dlna] FOUND renderer: "' + name + '" · avControl=' + avControl);
-      devices.set(location, { location, host: new URL(location).hostname, name, avControl, rcControl: ctrl(RCS) });
+      devices.set(location, { location, host: new URL(location).hostname, name, avControl, rcControl: (rcControl && isLanUrl(rcControl)) ? rcControl : null });
       emitDevices();
     });
   }

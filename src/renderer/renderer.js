@@ -212,14 +212,17 @@ function open(src, opts) {
   soda.power.block();
 }
 async function openFileDialog() {
-  const r = await soda.dialog.openFile({
-    properties: ['openFile', 'multiSelections'],
-    filters: [
-      { name: 'Video', extensions: ['mp4', 'mkv', 'webm', 'mov', 'avi', 'm4v', 'flv', 'ts', 'wmv', 'mpg', 'm3u', 'm3u8', 'pls'] },
-      { name: 'Torrent', extensions: ['torrent'] },
-      { name: 'All Files', extensions: ['*'] }
-    ]
-  });
+  let r;
+  try {
+    r = await soda.dialog.openFile({
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: 'Video', extensions: ['mp4', 'mkv', 'webm', 'mov', 'avi', 'm4v', 'flv', 'ts', 'wmv', 'mpg', 'm3u', 'm3u8', 'pls'] },
+        { name: 'Torrent', extensions: ['torrent'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    });
+  } catch (e) { toast('Could not open the file dialog', 3000); return; }
   if (r && !r.canceled && r.filePaths && r.filePaths.length) {
     if (r.filePaths.length > 1) enqueue(r.filePaths); // multi-select → queue
     else routeSource(r.filePaths[0]);
@@ -556,24 +559,27 @@ document.addEventListener('click', (e) => {
 });
 subAddBtn.addEventListener('click', async () => {
   closeMenus();
-  const r = await soda.dialog.openFile({
-    properties: ['openFile'],
-    filters: [{ name: 'Subtitles', extensions: ['srt', 'ass', 'ssa', 'sub', 'smi', 'vtt'] }]
-  });
+  let r;
+  try { r = await soda.dialog.openFile({ properties: ['openFile'], filters: [{ name: 'Subtitles', extensions: ['srt', 'ass', 'ssa', 'sub', 'smi', 'vtt'] }] }); }
+  catch (e) { toast('Could not open the file dialog', 3000); return; }
   if (r && !r.canceled && r.filePaths && r.filePaths[0]) soda.player.addSubtitleFile(r.filePaths[0]);
 });
 $('#sub-online').addEventListener('click', async () => {
   closeMenus();
   if (!currentLocalPath) { toast('Online subtitles need a local file', 3000); return; }
   toast('Searching OpenSubtitles…', 2500);
-  const res = await soda.player.onlineSubtitles(currentLocalPath);
+  let res;
+  try { res = await soda.player.onlineSubtitles(currentLocalPath); }
+  catch (e) { toast('Online subtitle lookup failed', 4000); return; }
   if (res && res.ok) { soda.player.addSubtitleFile(res.srt); toast('Subtitles added: ' + (res.name || 'OpenSubtitles') + ' ✓', 3000); }
   else toast((res && res.error) || 'No subtitles found — try Whisper', 4000);
 });
 $('#sub-generate').addEventListener('click', async () => {
   closeMenus();
   if (!currentLocalPath) { showSponsorToast('AI subs need a local file'); return; }
-  const res = await soda.player.generateSubtitles(currentLocalPath); // Whisper (async; main posts progress notices)
+  let res;
+  try { res = await soda.player.generateSubtitles(currentLocalPath); } // Whisper (async; main posts progress notices)
+  catch (e) { toast('Subtitle generation failed', 4000); return; }
   if (res && res.ok) soda.player.addSubtitleFile(res.srt);
   else toast((res && res.error) || 'Subtitle generation failed', 4000);
 });
@@ -713,7 +719,9 @@ $('#pl-repeat').addEventListener('click', (e) => { e.stopPropagation(); settings
 $('#pl-shuffle').addEventListener('click', (e) => { e.stopPropagation(); settings.shuffle = !settings.shuffle; saveSettings(); renderPlaylistMenu(); });
 $('#pl-add').addEventListener('click', async () => {
   closeMenus();
-  const r = await soda.dialog.openFile({ properties: ['openFile', 'multiSelections'], filters: [{ name: 'Media', extensions: ['mp4', 'mkv', 'webm', 'mov', 'avi', 'm4v', 'flv', 'ts', 'mp3', 'm4a', 'flac', 'wav'] }] });
+  let r;
+  try { r = await soda.dialog.openFile({ properties: ['openFile', 'multiSelections'], filters: [{ name: 'Media', extensions: ['mp4', 'mkv', 'webm', 'mov', 'avi', 'm4v', 'flv', 'ts', 'mp3', 'm4a', 'flac', 'wav'] }] }); }
+  catch (e) { toast('Could not open the file dialog', 3000); return; }
   if (r && !r.canceled && r.filePaths && r.filePaths.length) { playQueue.push(...r.filePaths); syncNavButtons(); renderPlaylistMenu(); }
 });
 
@@ -736,7 +744,7 @@ function playNext() {
   if (qIndex >= 0 && qIndex < playQueue.length - 1) { routeSource(playQueue[++qIndex], true); return true; }
   if (settings.repeat === 'all' && playQueue.length > 1) { qIndex = 0; routeSource(playQueue[0], true); return true; } // wrap to start
   if (currentLocalPath) { // no queue left → try the next episode in the folder
-    soda.fsSiblings(currentLocalPath).then((info) => { if (info && info.next) routeSource(info.next, true); });
+    soda.fsSiblings(currentLocalPath).then((info) => { if (info && info.next) routeSource(info.next, true); }).catch(() => {});
     return true;
   }
   return false;
@@ -890,7 +898,7 @@ function routeSource(src, fromQueue, opts) {
   st.vw = 0; st.vh = 0; updateQuality();
   prefAppliedFor = null; // re-apply the show's saved language to this newly-loaded episode
   if (!fromQueue) { // user-initiated open
-    if (isPlaylistFile(s)) { soda.parsePlaylist(s).then((items) => { if (items && items.length) enqueue(items.map((i) => i.url)); }); return; }
+    if (isPlaylistFile(s)) { soda.parsePlaylist(s).then((items) => { if (items && items.length) enqueue(items.map((i) => i.url)); }).catch(() => toast('Could not read that playlist', 3500)); return; }
     playQueue = [s]; qIndex = 0; advancing = false; // single-item queue
     castAdvanceHost = null; // a manual open cancels any pending auto-next re-cast
     if (!isTorrentSrc(s)) { torrentQueue = []; torrentIdx = -1; } // a new non-torrent open clears the torrent playlist (a new torrent repopulates via onMetadata)
@@ -901,14 +909,14 @@ function routeSource(src, fromQueue, opts) {
   hideResume();
   syncNavButtons(); // prev/next/playlist visibility — show for a real queue OR a multi-file torrent
   sponsorSegments = []; const vid = youtubeId(s); // SponsorBlock: fetch skip segments for YouTube
-  if (vid && skipSponsors) soda.sponsorSegments(vid).then((segs) => { if (currentKey === s) sponsorSegments = segs || []; });
+  if (vid && skipSponsors) soda.sponsorSegments(vid).then((segs) => { if (currentKey === s) sponsorSegments = segs || []; }).catch(() => {});
   if (isTorrentSrc(s)) {
     // VPN kill-switch: when enabled, refuse to start a torrent unless a tunnel is up.
     if (settings.requireVpn) {
       soda.vpnStatus().then((v) => {
         if (v && v.active) startTorrent(s);
         else toast('Torrent blocked — no VPN active (kill-switch is on in Settings)', 5000);
-      });
+      }).catch(() => toast('Torrent blocked — could not verify VPN status (kill-switch is on)', 5000)); // fail closed
       return;
     }
     startTorrent(s);
@@ -958,8 +966,16 @@ const seekBuffered = $('#seek-buffered');
 // safe to seek to. ranges = [[startFrac,endFrac],…] of the file (≈ of the timeline).
 function paintBuffered(ranges) {
   if (!seekBuffered) return;
-  seekBuffered.innerHTML = (ranges || []).map(([a, b]) =>
-    `<span class="seg" style="left:${(a * 100).toFixed(2)}%;width:${Math.max(0, (b - a) * 100).toFixed(2)}%"></span>`).join('');
+  // Build with DOM APIs + numeric .style props rather than string-concatenated innerHTML: keeps
+  // runtime (torrent-layer) values out of the HTML parser, and lets the CSP drop style 'unsafe-inline'.
+  seekBuffered.textContent = '';
+  for (const [a, b] of (ranges || [])) {
+    const seg = document.createElement('span');
+    seg.className = 'seg';
+    seg.style.left = (a * 100).toFixed(2) + '%';
+    seg.style.width = Math.max(0, (b - a) * 100).toFixed(2) + '%';
+    seekBuffered.appendChild(seg);
+  }
 }
 soda.torrent.onProgress(({ peers, speed, buffered }) => {
   paintBuffered(buffered); // always update the scrubber overlay, even once the pill is hidden

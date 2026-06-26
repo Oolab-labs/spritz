@@ -21,6 +21,36 @@ renderer is solid. The findings below are the gaps that remain.
 
 ---
 
+## Implementation status (this branch)
+
+A first round of fixes is implemented for the **JS / Electron / renderer** layer — all
+self-contained, reviewed, and `node --check`-clean. **The native Objective-C++ addon
+findings are NOT yet changed** and need a macOS build+test cycle (see note below).
+
+**Implemented:**
+- Navigation hardening — `setWindowOpenHandler`→deny + `will-navigate` file-only guard (`main.js`).
+- yt-dlp / ffmpeg argument-injection guards — http(s) validation, `--` end-of-options, leading-`-` neutralization (`main.js`).
+- WebTorrent `0.0.0.0` index exposure (C1) — request-handler wrapper that 404s the enumerable `/webtorrent/` listing, leaving exact-URL streaming intact (`torrent.js`). _Note: the bind stays `0.0.0.0` because AirPlay of MP4 torrents fetches it at the LAN IP; the full proxy-only refactor remains future work._
+- mpv command/property denylist extended (`stream-record`, `dump-cache`, `screenshot-to-file`, `external-files`, `sub-files`) (`main.js`).
+- DLNA proxy loopback allowlist (`lanserver.js`); resolved DLNA control-URL re-validation with `isLanUrl` (`dlna.js`).
+- Response-body size caps on DLNA description/SOAP (`dlna.js`) and eureka JSON (`cast.js`).
+- HLS path-traversal: resolve-and-verify instead of `..`-substring (`lanserver.js`).
+- LAN server `headersTimeout`/`keepAliveTimeout` (slowloris) (`lanserver.js`).
+- Torrent file-path containment within `DL_DIR` (`torrent.js`).
+- CSP tightened — dropped `style-src 'unsafe-inline'`, added `connect-src`/`frame-src`/`form-action` (`index.html`); `paintBuffered` rebuilt with DOM APIs so no inline style remains (`renderer.js`).
+- Consistent `try/catch` + toast on user-triggered IPC calls; fail-closed VPN kill-switch (`renderer.js`).
+
+**Deferred — native addons (need a macOS toolchain to compile/run, unavailable in this Linux CI):**
+On close reading, several native findings appear **already mitigated** by the existing
+teardown ordering — `DetachCore` **joins the event-pump thread before** `gTsfn.Release()`
+(a proper barrier, undercutting the C1 use-after-free), drives teardown from the window
+`'closed'` handler (C2), and calls `stopDisplayLink()` before `mpv_render_context_free`
+(H1). The remaining native hardening (N-API argument validation, `std::atomic` for the
+airplay/nowplaying `gHasTsfn`, `nodeToJson` depth/locale) is real but lower-severity and
+should be applied and **verified against an actual `npm run rebuild` + runtime** rather
+than committed blind. Also deferred: enabling `sandbox:true` (needs `clipboard` moved to a
+main IPC handler) and the dependency refresh (`castv2-client`, `node-gyp` 13, dev-dep verify).
+
 ## Top priorities (cross-subsystem)
 
 | # | Severity | Area | Issue | Where |

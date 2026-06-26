@@ -97,7 +97,10 @@ module.exports = function createTorrent(send) {
   }
 
   const msg = (e) => String((e && e.message) || e);
-  const isPlayable = (f) => VIDEO_EXT.test(f.name) && f.length >= MIN_LEN && !IGNORE.test(f.name);
+  // Defense-in-depth on top of webtorrent's own sanitization: never select/serve a torrent file whose
+  // (untrusted-metadata) path would resolve outside DL_DIR — refuse absolute or `..`-escaping entries.
+  const withinDlDir = (f) => { try { const p = path.resolve(DL_DIR, f.path || f.name); return p === path.resolve(DL_DIR) || p.startsWith(path.resolve(DL_DIR) + path.sep); } catch (e) { return false; } };
+  const isPlayable = (f) => VIDEO_EXT.test(f.name) && f.length >= MIN_LEN && !IGNORE.test(f.name) && withinDlDir(f);
   const natSort = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
 
   // Peers actually sending us data right now (vs idle/choked connections) — a truer "will this sustain" signal.
@@ -126,7 +129,24 @@ module.exports = function createTorrent(send) {
     // Bind 0.0.0.0 (not 127.0.0.1) so the same server is reachable both at localhost
     // (for mpv on this Mac) AND at the Mac's LAN IP (for the Apple TV during AirPlay).
     const fresh = !server;
-    if (!server) { server = client.createServer(); server.server.listen(0, '0.0.0.0'); } // once, reused
+    if (!server) {
+      server = client.createServer();
+      // The server must bind 0.0.0.0 (an Apple TV fetches MP4 torrents at the Mac's LAN IP during
+      // AirPlay — see resolveCastable). But webtorrent's bare server also exposes an ENUMERABLE index
+      // at /webtorrent/ that lists every active torrent and lets any LAN device walk the store. Wrap
+      // webtorrent's request handler to 404 anything that isn't an exact /webtorrent/<infoHash>/<file>
+      // URL: streaming (mpv/AVPlayer always hold the full URL) keeps working, but the listing — and
+      // thus enumeration — is gone, so a peer would need the unguessable 160-bit infoHash. (Audit C1.)
+      const wt = server.server.listeners('request').slice();
+      if (wt.length) { // only interpose if webtorrent's handler was captured — never 404-wall streaming
+        server.server.removeAllListeners('request');
+        server.server.on('request', (req, res) => {
+          if (!/^\/webtorrent\/[^/]+\/.+/i.test((req.url || '').split('?')[0])) { res.writeHead(404); return res.end(); }
+          for (const h of wt) h.call(server.server, req, res);
+        });
+      }
+      server.server.listen(0, '0.0.0.0');
+    } // once, reused
     const go = () => {
       try { active.files.forEach((f) => f.deselect()); } catch (e) {}
       try { file.select(); } catch (e) {} // stream this file; webtorrent's sequential strategy downloads in order
