@@ -182,6 +182,11 @@ module.exports = function createLanServer(opts) {
   function ensure(cb) {
     if (server && server.listening) return cb();
     server = http.createServer(handle);
+    // Bound slow/half-open clients on this 0.0.0.0 listener (slowloris defense-in-depth). Generous
+    // values: media GETs are long-lived streams, so cap header/idle time, not the response body.
+    server.headersTimeout = 20000;
+    server.requestTimeout = 0;            // 0 = no cap on the (streaming) request lifetime
+    server.keepAliveTimeout = 30000;
     server.on('error', (e) => console.error('[lan] server err', e.message));
     server.listen(0, '0.0.0.0', () => { port = server.address().port; cb(); });
   }
@@ -235,6 +240,10 @@ module.exports = function createLanServer(opts) {
     const ent = dlnaProxies.get(token);
     if (!ent) { res.writeHead(404); res.end(); return; }
     let u; try { u = new URL(ent.url); } catch (e) { res.writeHead(404); res.end(); return; }
+    // Defense-in-depth: this proxy only ever fronts the webtorrent server on loopback. Refuse to
+    // forward anywhere else so the token-gated proxy can never become an SSRF primitive if a caller
+    // ever populates `serveDlna` from a network-derived URL. (Audit — DLNA proxy loopback allowlist.)
+    if (u.hostname !== '127.0.0.1' && u.hostname !== 'localhost' && u.hostname !== '::1') { res.writeHead(403); res.end(); return; }
     const upReq = (method, headers, onRes) => {
       const r = http.request({ host: u.hostname, port: u.port, path: u.pathname + u.search, method, headers }, onRes);
       r.on('error', () => { try { if (!res.headersSent) res.writeHead(502); res.end(); } catch (e) {} });
@@ -289,8 +298,12 @@ module.exports = function createLanServer(opts) {
   // Nested subdirs are allowed (multi-rendition output: stream_0/…, stream_1/…), but no `..`.
   function serveHlsFile(req, res, token, name) {
     name = decodeURIComponent(name);
-    if (token !== hlsToken || !hlsDir || name.split('/').includes('..')) { res.writeHead(404); res.end(); return; }
-    const f = path.join(hlsDir, name), stat = safeStat(f);
+    if (token !== hlsToken || !hlsDir) { res.writeHead(404); res.end(); return; }
+    // Resolve-and-verify rather than a `..`-substring check: canonicalize the joined path and require
+    // it to stay strictly under hlsDir, so no encoded/absolute trickery can escape the temp dir.
+    const f = path.resolve(hlsDir, name);
+    if (f !== path.resolve(hlsDir) && !f.startsWith(path.resolve(hlsDir) + path.sep)) { res.writeHead(404); res.end(); return; }
+    const stat = safeStat(f);
     if (!stat) { res.writeHead(404); res.end(); return; }
     const type = name.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl'
       : name.endsWith('.vtt') ? 'text/vtt' : 'video/mp4'; // fMP4 segments / WebVTT subs

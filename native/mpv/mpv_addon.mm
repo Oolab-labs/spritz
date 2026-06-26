@@ -324,22 +324,29 @@ static void jsonEscape(const char* s, std::string& out) {
     }
   }
 }
-static void nodeToJson(const mpv_node* n, std::string& out) {
+static void nodeToJson(const mpv_node* n, std::string& out, int depth = 0) {
+  if (depth > 32) { out += "null"; return; } // bound recursion on untrusted-depth nodes (stack safety)
   switch (n->format) {
     case MPV_FORMAT_STRING: out += '"'; jsonEscape(n->u.string, out); out += '"'; break;
     case MPV_FORMAT_FLAG:   out += (n->u.flag ? "true" : "false"); break;
     case MPV_FORMAT_INT64:  out += std::to_string(n->u.int64); break;
-    case MPV_FORMAT_DOUBLE: out += std::to_string(n->u.double_); break;
+    case MPV_FORMAT_DOUBLE: {
+      // %.17g (full round-trip precision, not std::to_string's 6 digits), then force a '.' decimal
+      // separator so a non-C process locale can't emit ',' and break the renderer's JSON.parse.
+      char buf[32]; snprintf(buf, sizeof(buf), "%.17g", n->u.double_);
+      for (char* p = buf; *p; ++p) if (*p == ',') *p = '.';
+      out += buf; break;
+    }
     case MPV_FORMAT_NODE_ARRAY:
       out += '[';
-      for (int i = 0; i < n->u.list->num; i++) { if (i) out += ','; nodeToJson(&n->u.list->values[i], out); }
+      for (int i = 0; i < n->u.list->num; i++) { if (i) out += ','; nodeToJson(&n->u.list->values[i], out, depth + 1); }
       out += ']'; break;
     case MPV_FORMAT_NODE_MAP:
       out += '{';
       for (int i = 0; i < n->u.list->num; i++) {
         if (i) out += ',';
         out += '"'; jsonEscape(n->u.list->keys[i], out); out += "\":";
-        nodeToJson(&n->u.list->values[i], out);
+        nodeToJson(&n->u.list->values[i], out, depth + 1);
       }
       out += '}'; break;
     default: out += "null"; break; // MPV_FORMAT_NONE / unknown
@@ -500,6 +507,7 @@ Napi::Value StartPlayer(const Napi::CallbackInfo& info) {
 Napi::Value LoadFile(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (!gMpv) { Napi::Error::New(env, "player not started").ThrowAsJavaScriptException(); return env.Null(); }
+  if (info.Length() < 1 || !info[0].IsString()) { Napi::TypeError::New(env, "loadFile expects a url string").ThrowAsJavaScriptException(); return env.Null(); }
   std::string url = info[0].As<Napi::String>().Utf8Value();
   const char* cmd[] = { "loadfile", url.c_str(), "replace", nullptr };
   int rc = mpv_command(gMpv, cmd);
@@ -597,6 +605,7 @@ Napi::Value MediaStats(const Napi::CallbackInfo& info) {
 Napi::Value SetProperty(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (!gMpv) return env.Undefined();
+  if (info.Length() < 2 || !info[0].IsString()) { Napi::TypeError::New(env, "setProperty expects (name, value)").ThrowAsJavaScriptException(); return env.Undefined(); }
   std::string name = info[0].As<Napi::String>().Utf8Value();
   if (info[1].IsBoolean()) { int f = info[1].As<Napi::Boolean>().Value() ? 1 : 0; mpv_set_property(gMpv, name.c_str(), MPV_FORMAT_FLAG, &f); }
   else if (info[1].IsNumber()) { double d = info[1].As<Napi::Number>().DoubleValue(); mpv_set_property(gMpv, name.c_str(), MPV_FORMAT_DOUBLE, &d); }

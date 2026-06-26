@@ -6,7 +6,7 @@
 //   renderer control input → IPC → main → addon (command/setProperty/loadfile)
 //   addon events (TSFN)      → main → IPC('player-event') → renderer
 
-const { app, BrowserWindow, ipcMain, dialog, powerSaveBlocker, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, powerSaveBlocker, Menu, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -31,9 +31,18 @@ function binPath(name) {
 const YTDLP = binPath('yt-dlp');
 const FFMPEG = binPath('ffmpeg');
 
+// Argument-injection guards. No shell is used, so the danger is the argument VECTOR itself:
+// a value beginning with '-' is parsed by yt-dlp/ffmpeg as an OPTION (yt-dlp --exec, ffmpeg
+// input flags — cf. Jellyfin GHSA-866x-wj5j-2vf4), not as a URL/path. Untrusted page URLs go
+// after a '--' end-of-options separator and must be http(s); ffmpeg -i inputs get a leading
+// '-' neutralized with './'. (Audit — yt-dlp/ffmpeg argument injection.)
+function isHttpUrl(s) { try { const p = new URL(String(s)).protocol; return p === 'http:' || p === 'https:'; } catch (_) { return false; } }
+function ffInput(s) { s = String(s); return (isHttpUrl(s) || !s.startsWith('-')) ? s : './' + s; }
+
 function resolveStream(pageUrl, cb) {
+  if (!isHttpUrl(pageUrl)) return cb(new Error('not a valid http(s) URL'), null);
   let out = '', err = '';
-  const ps = spawn(YTDLP, ['-f', 'best', '--no-playlist', '--get-title', '-g', pageUrl], { timeout: 35000 });
+  const ps = spawn(YTDLP, ['-f', 'best', '--no-playlist', '--get-title', '-g', '--', pageUrl], { timeout: 35000 });
   ps.stdout.on('data', (d) => { out += d; });
   ps.stderr.on('data', (d) => { err += d; });
   ps.on('error', (e) => cb(e, null)); // ENOENT = yt-dlp missing
@@ -49,8 +58,9 @@ function resolveStream(pageUrl, cb) {
 // Resolve a progressive H.264 MP4 for the AirPlay path — AVPlayer often can't play
 // yt-dlp's default HLS/DASH for sites, but a single combined MP4 (YouTube itag 22/18) works.
 function resolveAirplayUrl(pageUrl, cb) {
+  if (!isHttpUrl(pageUrl)) return cb(null);
   let out = '';
-  const ps = spawn(YTDLP, ['-f', '22/18/b[ext=mp4][acodec!=none]/b[ext=mp4]', '--no-playlist', '-g', pageUrl], { timeout: 35000 });
+  const ps = spawn(YTDLP, ['-f', '22/18/b[ext=mp4][acodec!=none]/b[ext=mp4]', '--no-playlist', '-g', '--', pageUrl], { timeout: 35000 });
   ps.stdout.on('data', (d) => { out += d; });
   ps.on('error', () => cb(null));
   ps.on('close', () => cb(out.trim().split('\n').map((s) => s.trim()).find((l) => /^https?:\/\//i.test(l)) || null));
@@ -184,6 +194,10 @@ if (!gotLock) {
   app.on('open-file', (e, p) => { e.preventDefault(); openSource(p); });   // macOS Finder/dock file
   app.on('open-url', (e, url) => { e.preventDefault(); openSource(url); }); // macOS magnet:/spritz:
   ipcMain.on('renderer:ready', () => { rendererReady = true; if (pendingOpen) { send('open-source', { src: pendingOpen }); pendingOpen = null; } });
+  // Clipboard read lives in main so the renderer can run sandboxed (the `clipboard` module isn't
+  // exposed to a sandboxed preload). Synchronous to preserve the renderer's sync auto-paste path.
+  ipcMain.on('clipboard:read', (e) => { try { e.returnValue = clipboard.readText(); } catch (_) { e.returnValue = ''; } });
+  ipcMain.handle('clipboard:read', () => { try { return clipboard.readText(); } catch (_) { return ''; } }); // async variant (avoids blocking the renderer on the focus hot path)
 
   app.on('second-instance', (_event, argv) => {
     if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
@@ -209,9 +223,21 @@ if (!gotLock) {
         preload: path.join(__dirname, '..', 'preload', 'preload.js'),
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false,
+        sandbox: true,
         backgroundThrottling: false
       }
+    });
+
+    // Navigation hardening (Electron security checklist). The renderer is a local
+    // file:// app; it must never navigate the top frame to a remote origin or open
+    // new windows. Without this, a DOM-injection foothold (untrusted page titles,
+    // OpenSubtitles filenames, M3U/PLS entries, LAN device names) could escape the
+    // local-only CSP. Parse with URL() — string prefix checks are bypassable.
+    mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    mainWindow.webContents.on('will-navigate', (e, url) => {
+      let proto = null;
+      try { proto = new URL(url).protocol; } catch (_) {}
+      if (proto !== 'file:') e.preventDefault();
     });
 
     mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
@@ -366,7 +392,7 @@ if (!gotLock) {
     const wav = base + '.wav';
     try {
       send('toast', { message: 'Extracting audio for subtitles…' });
-      await run(FFMPEG, ['-y', '-i', src, '-ar', '16000', '-ac', '1', '-f', 'wav', wav], 300000); // 5 min
+      await run(FFMPEG, ['-y', '-i', ffInput(src), '-ar', '16000', '-ac', '1', '-f', 'wav', wav], 300000); // 5 min
       send('toast', { message: 'Transcribing with Whisper…' });
       await run(bin, ['-m', model, '-f', wav, '-osrt', '-of', base], 1800000); // 30 min cap
       try { fs.unlinkSync(wav); } catch (e) {}
@@ -513,7 +539,7 @@ if (!gotLock) {
     if (!src || time == null) return resolve(null);
     const key = src + '|' + Math.round(time / 5) * 5;
     if (thumbCache.has(key)) return resolve(thumbCache.get(key));
-    const ff = spawn(FFMPEG, ['-ss', String(Math.max(0, time)), '-i', src, '-frames:v', '1',
+    const ff = spawn(FFMPEG, ['-ss', String(Math.max(0, time)), '-i', ffInput(src), '-frames:v', '1',
       '-vf', 'scale=160:-2', '-q:v', '5', '-f', 'mjpeg', 'pipe:1'], { timeout: 8000 });
     const chunks = [];
     ff.stdout.on('data', (d) => chunks.push(d));
@@ -945,8 +971,11 @@ if (!gotLock) {
   // to turn mpv into an arbitrary-code / file-exfil primitive. mpv's `run`/`subprocess` execute external
   // programs, and `input-ipc-server`/script properties load attacker-controlled code — none are used by
   // our renderer, so deny them. (Audit — player:command/setProperty hardening.)
-  const MPV_CMD_DENY = new Set(['run', 'subprocess', 'load-script', 'loadlist']);
-  const MPV_PROP_DENY = new Set(['input-ipc-server', 'scripts', 'load-scripts', 'script-opts', 'input-conf', 'config-dir', 'configdir', 'ytdl-raw-options']);
+  // Also deny mpv's file-write / file-read / capture primitives: a compromised renderer
+  // could otherwise use stream-record / dump-cache / screenshot-to-file to write arbitrary
+  // files, or external-files / sub-files to read them. (Audit — extend denylist.)
+  const MPV_CMD_DENY = new Set(['run', 'subprocess', 'load-script', 'loadlist', 'dump-cache', 'screenshot-to-file']);
+  const MPV_PROP_DENY = new Set(['input-ipc-server', 'scripts', 'load-scripts', 'script-opts', 'input-conf', 'config-dir', 'configdir', 'ytdl-raw-options', 'stream-record', 'external-files', 'sub-files']);
   ipcMain.on('player:setProperty', (_e, { name, value } = {}) => {
     try { if (name && !MPV_PROP_DENY.has(String(name).toLowerCase())) mpvAddon.setProperty(name, value); } catch (e) {}
   });

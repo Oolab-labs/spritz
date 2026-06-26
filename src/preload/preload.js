@@ -3,7 +3,9 @@
 // Preload bridge (contextIsolation:true). The renderer reaches the main-process
 // libmpv addon and window/dialog services only through window.soda.*
 
-const { contextBridge, ipcRenderer, webUtils, clipboard } = require('electron');
+// NB: only sandbox-safe electron modules here (contextBridge, ipcRenderer, webUtils) so the
+// renderer can run with sandbox:true. Clipboard reads go through a synchronous main IPC call.
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('soda', {
   player: {
@@ -142,6 +144,7 @@ contextBridge.exposeInMainWorld('soda', {
 
   pathForFile: (file) => webUtils.getPathForFile(file), // drag-drop → absolute path
   getVersions: () => ipcRenderer.invoke('app:getVersions'),
-  readClipboard: () => { try { return clipboard.readText(); } catch (e) { return ''; } }, // magnet auto-paste
+  readClipboard: () => { try { return ipcRenderer.sendSync('clipboard:read'); } catch (e) { return ''; } }, // magnet auto-paste (sync IPC; clipboard lives in main under sandbox)
+  readClipboardAsync: () => ipcRenderer.invoke('clipboard:read').catch(() => ''), // non-blocking variant for hot paths (window focus)
   vpnStatus: () => ipcRenderer.invoke('vpn:status') // {active, name} — kill-switch check
 });

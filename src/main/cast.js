@@ -147,16 +147,28 @@ module.exports = function createCast() {
   }
 
   function probeEureka(host, done) {
+    let fired = false;
+    let guard = null;
+    const next = () => { if (fired) return; fired = true; if (guard) { clearTimeout(guard); guard = null; } done(); }; // advance the pump exactly once
+    // The socket `timeout` is an INACTIVITY timer (reset on each byte); a host that trickles bytes under
+    // the 1 MiB cap would never fire it and would leak a pump slot forever. Cap total wall-clock instead.
     const req = http.get({ host, port: 8008, path: '/setup/eureka_info?options=detail', timeout: 2000 }, (res) => {
-      let body = '';
-      res.on('data', (d) => { body += d; });
+      let body = '', len = 0, over = false;
+      res.on('data', (d) => {
+        if (over) return;
+        len += d.length;
+        if (len > 1024 * 1024) { over = true; res.destroy(); next(); return; } // cap eureka JSON at 1 MiB (untrusted LAN host)
+        body += d;
+      });
       res.on('end', () => {
-        done();
+        next();
+        if (over) return;
         try { const j = JSON.parse(body); if (j && j.name) addDevice(host, String(j.name), capsFromEureka(j)); } catch (e) {}
       });
     });
-    req.on('error', () => done());
-    req.on('timeout', () => { req.destroy(); done(); });
+    req.on('error', () => next());
+    req.on('timeout', () => { req.destroy(); next(); });
+    guard = setTimeout(() => { try { req.destroy(); } catch (e) {} next(); }, 4000); // overall deadline (defeats slow-trickle)
   }
 
   function stopDiscovery() {
