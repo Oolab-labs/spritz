@@ -323,7 +323,28 @@ module.exports = function createDlna() {
       }
       soap(dev.avControl, AVT, 'Play', { InstanceID: 0, Speed: 1 }, (e2, body2) => {
         const f2 = e2 ? e2.message : soapFault(body2);
-        if (f2) { dlog('[dlna] Play REJECTED: ' + f2); ev.emit('error', { message: 'TV could not start playback (' + f2 + ')' }); return cb && cb(new Error(f2)); }
+        if (f2) {
+          // A Play that TIMED OUT has not necessarily failed. This LG regularly starts playing and
+          // answers late, or never. Reporting failure here makes the orchestrator resume local
+          // playback while the TV is already playing the same file, so it plays on BOTH screens at
+          // once. Ask the renderer what it is actually doing before deciding. A genuine SOAP fault
+          // (an errorCode, not a timeout) is still a real rejection and skips the grace check.
+          const timedOut = !!(e2 && /timeout/i.test(e2.message || ''));
+          const fail = (tstate) => {
+            dlog('[dlna] Play REJECTED: ' + f2 + (tstate ? ' (TV state=' + tstate + ')' : ''));
+            ev.emit('error', { message: 'TV could not start playback (' + f2 + ')' });
+            cb && cb(new Error(f2));
+          };
+          if (!timedOut) return fail(null);
+          dlog('[dlna] Play timed out — verifying what the TV is ACTUALLY doing before giving up');
+          return setTimeout(() => transportState((tstate) => {
+            if (tstate && tstate !== 'STOPPED' && tstate !== 'NO_MEDIA_PRESENT') {
+              dlog('[dlna] ...TV reports ' + tstate + ' — the cast DID start; treating as success');
+              return cb && cb();
+            }
+            fail(tstate);
+          }), 2000);
+        }
         dlog('[dlna] SetAVTransportURI + Play OK');
         cb && cb();
       });
