@@ -16,6 +16,7 @@
 const EventEmitter = require('events');
 const os = require('os');
 const http = require('http');
+const dgram = require('dgram');
 const multicastDns = require('multicast-dns');
 const dnsTxt = require('dns-txt')();
 const { Client, DefaultMediaReceiver } = require('castv2-client');
@@ -86,6 +87,30 @@ module.exports = function createCast() {
   // (Nest Hub / Hub Max have screens → keep them.)
   const isAudioOnly = (name, model) => /chromecast audio|google home(?! hub)|nest (mini|audio)|cast group|soundbar/i.test((model || '') + ' ' + (name || ''));
 
+  // LG's OWN discovery vector. An LG webOS TV answers an SSDP search for its second-screen
+  // service reliably, and answers it fast — whereas its eureka endpoint can take ~4.4s from cold
+  // and the /24 sweep may not reach the TV's address for seconds. Any responder to this ST is an
+  // LG TV, so probe that exact host's eureka endpoint immediately: a targeted fast lane in front
+  // of the brute-force sweep. Purely additive — the sweep still runs and still finds everything else.
+  const LG_ST = 'urn:lge-com:service:webos-second-screen:1';
+  function lgSsdpProbe() {
+    let sock = null;
+    try { sock = dgram.createSocket({ type: 'udp4', reuseAddr: true }); } catch (e) { return; }
+    const close = () => { try { sock.close(); } catch (e) {} };
+    sock.on('error', close);
+    sock.on('message', (msg, rinfo) => {
+      if (!rinfo || !rinfo.address) return;
+      probeEureka(rinfo.address, () => {}, true); // force: bypass the backoff, this is a live hit
+    });
+    const m = Buffer.from(['M-SEARCH * HTTP/1.1', 'HOST: 239.255.255.250:1900',
+      'MAN: "ssdp:discover"', 'MX: 2', 'ST: ' + LG_ST, '', ''].join('\r\n'));
+    sock.bind(() => {
+      try { sock.setBroadcast(true); } catch (e) {}
+      try { sock.send(m, 0, m.length, 1900, '239.255.255.250'); } catch (e) {}
+    });
+    setTimeout(close, 5000); // one short burst per discovery start; not a standing listener
+  }
+
   // --- discovery ---
   function startDiscovery() {
     if (discovering) { emitDevices(); return; }
@@ -96,6 +121,7 @@ module.exports = function createCast() {
       mdns.on('response', onMdns);
     } catch (e) { /* mDNS optional; eureka sweep still runs */ }
     sweep();
+    lgSsdpProbe(); // fast lane: ask LG TVs to identify themselves
     // A cold TV can drop the very first probe entirely (observed: request 1 fails, request 2
     // succeeds once the service has woken). Without an early retry the next chance was the 60s
     // interval, so a TV that was merely asleep looked absent for a full minute. Retry once,
@@ -151,7 +177,14 @@ module.exports = function createCast() {
     reapDevices(); // evict TVs that have gone away
   }
 
-  function probeEureka(host, done) {
+  // Don't hammer a TV we already know about: the LG's eureka server stops answering entirely
+  // after a few probes in quick succession and needs a rest before it responds again. Re-probing
+  // a known host is only a liveness refresh, so it can safely wait.
+  const lastProbe = new Map();
+  function probeEureka(host, done, force) {
+    const now = Date.now();
+    if (!force && devices.has(host) && now - (lastProbe.get(host) || 0) < 20000) return done();
+    lastProbe.set(host, now);
     // The 2s timeout this used to carry could never see an LG webOS TV. Measured on a NANO80T6A:
     // the FIRST eureka request after the service has been idle takes ~4.4s (and sometimes fails
     // outright), after which the service is warm and answers in ~27ms. A 2s budget therefore
