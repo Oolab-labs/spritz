@@ -214,6 +214,11 @@ module.exports = function createCast() {
   // `media` block; reading tracks straight from those momentarily empties the menus and can make
   // setTrack send an empty activeTrackIds. Cache the list; keep reading activeTrackIds live.
   let lastTracks = [];
+  let endedEmitted = false; // per-item, reset on every LOAD (a reused session must re-arm it)
+  // castv2-client's LOAD_FAILED path calls back with a bare Error and NO status object, so reading
+  // detailedErrorCode off the load callback yields null every time. The code does arrive, just
+  // separately: the receiver broadcasts an error MEDIA_STATUS frame. Capture it there.
+  let lastErrCode = null;
   function noteTracks(s) { if (s && s.media && Array.isArray(s.media.tracks) && s.media.tracks.length) lastTracks = s.media.tracks; }
   function teardownClient() {
     try { if (player) player.removeAllListeners(); } catch (e) {}
@@ -225,16 +230,88 @@ module.exports = function createCast() {
   // subs are sideloaded WebVTT text tracks (extracted by the LAN server) → selectable on the TV.
   // _isReconnect: internal — a silent live-drop retry (don't reset the retry budget).
   function load(host, media, cb, _isReconnect) {
-    teardownClient();
     const myGen = ++castGen;            // this attempt's identity; anything newer supersedes it
     if (!_isReconnect) reconnectTries = 0; // a fresh user cast gets a fresh retry budget (Audit H3)
     const hls = /vnd\.apple\.mpegurl|m3u8/i.test(media.contentType || '') || /\.m3u8(\?|#|$)/i.test(media.url || '');
     let settled = false;
+    let to = null;
     const done = (e, s) => { if (settled) return; settled = true; clearTimeout(to); cb && cb(e, s); };
+
+    // Build the LOAD payload. Split out so the fast path below can reuse it verbatim.
+    const mediaInfo = () => {
+      const info = {
+        contentId: media.url,
+        contentType: media.contentType || 'video/mp4',
+        // A live HLS EVENT playlist (omit_endlist, grows as ffmpeg encodes) is not a finite
+        // buffered stream — BUFFERED + a non-zero currentTime makes the receiver seek past
+        // available media and the load fails. LIVE starting at 0 is correct for our HLS.
+        streamType: hls ? 'LIVE' : 'BUFFERED',
+        metadata: { type: 0, metadataType: 0, title: media.title || '' }
+      };
+      // For HLS the master playlist already carries the subtitle renditions (the receiver
+      // exposes them as TEXT tracks itself) — sideloading would duplicate them. Only sideload
+      // for non-HLS (direct MP4) casts, where there's no playlist to carry subtitle tracks.
+      const subs = !hls && Array.isArray(media.subs) ? media.subs : [];
+      if (subs.length) {
+        info.tracks = subs.map((s, i) => ({
+          trackId: 1000 + i, type: 'TEXT', subtype: 'SUBTITLES',
+          trackContentId: s.url, trackContentType: 'text/vtt',
+          language: s.lang || 'und', name: s.name || s.lang || ('Subtitle ' + (i + 1))
+        }));
+        info.textTrackStyle = { backgroundColor: '#00000000', foregroundColor: '#FFFFFFFF', edgeType: 'OUTLINE', edgeColor: '#000000FF' };
+      }
+      return info;
+    };
+
+    // Issue the LOAD on a media player. onStale (fast path only) lets a reused-but-dead session
+    // fall back to a full handshake instead of surfacing the failure to the user.
+    const sendLoad = (p, onStale) => {
+      endedEmitted = false; // a new item on a reused session must be able to report FINISHED again
+      lastErrCode = null;   // this item's code only
+      p.load(mediaInfo(), { autoplay: true, currentTime: hls ? 0 : (media.currentTime || 0) }, (e2, status) => {
+        if (myGen !== castGen) return; // superseded during load → don't emit/settle for a dead session
+        if (e2 && onStale) return onStale(e2);
+        if (e2) {
+          // Surface the CAF detailedErrorCode so the orchestrator can branch: 104 MEDIA_SRC_NOT_SUPPORTED
+          // / 102 MEDIA_DECODE / 110 SOURCE_BUFFER_FAILURE → container/codec escalation; 103 MEDIA_NETWORK
+          // → LAN URL problem, not the codec. The error MEDIA_STATUS frame carrying the code can land
+          // just after this callback, so allow a short grace period rather than reporting a null code.
+          return setTimeout(() => {
+            if (myGen !== castGen) return;
+            const code = (status && status.detailedErrorCode) || lastErrCode || null;
+            if (code != null) e2.detailedErrorCode = code;
+            ev.emit('error', { message: e2.message, code });
+            done(e2, status);
+          }, 500);
+        }
+        if (status) { lastStatus = status; noteTracks(status); reconnectTries = 0; ev.emit('status', status); } // fresh session → reset retries
+        done(e2, status);
+      });
+    };
+
+    // FAST PATH — the receiver is already connected and running DefaultMediaReceiver for this host.
+    // recastMkv() comes through here on every seek / audio-language change / burn toggle / subDelay
+    // nudge; tearing the socket down and re-running connect+launch each time costs seconds of
+    // handshake against a session that is already exactly where we want it. Just LOAD the new item.
+    if (!_isReconnect && client && player && connectedHost === host) {
+      const p = player;
+      to = setTimeout(() => { if (myGen !== castGen) return; ev.emit('error', { message: 'Chromecast load timed out' }); done(new Error('load timeout')); }, 30000);
+      sendLoad(p, () => {
+        // Looked alive but the receiver rejected the LOAD — treat as stale and do the full
+        // handshake once. settled is still false, so the retry owns the callback.
+        clearTimeout(to);
+        if (myGen === castGen) fullConnect();
+      });
+      return;
+    }
+    fullConnect();
+
+    function fullConnect() {
+    teardownClient();
     const c = client = new Client();
     // Connect timeout: castv2's connect callback never fires for an unreachable TV — without
     // this the UI hangs in "connecting" forever and chromecasting state is never reset.
-    const to = setTimeout(() => { if (myGen !== castGen) return; ev.emit('error', { message: 'Chromecast connect timed out' }); teardownClient(); done(new Error('connect timeout')); }, 12000);
+    to = setTimeout(() => { if (myGen !== castGen) return; ev.emit('error', { message: 'Chromecast connect timed out' }); teardownClient(); done(new Error('connect timeout')); }, 12000);
     c.on('error', (e) => {
       if (myGen !== castGen) { clearTimeout(to); try { c.removeAllListeners(); c.close(); } catch (x) {} return; } // superseded client — ignore
       // If a LIVE session drops (Wi-Fi blip, TV screensaver killing the socket), silently
@@ -260,51 +337,22 @@ module.exports = function createCast() {
         if (myGen !== castGen) { clearTimeout(to); try { c.removeAllListeners(); c.close(); } catch (x) {} return; }
         if (err) { ev.emit('error', { message: err.message }); return done(err); }
         player = p;
-        let endedEmitted = false;
         p.on('status', (s) => {
-          if (myGen !== castGen) return;
+          // Guard on identity, NOT on the generation this closure was created with: a reused
+          // session (fast path) outlives its original load, so a captured myGen would go stale
+          // and silently drop every status frame. teardownClient() detaches superseded players.
+          if (p !== player) return;
+          if (s && s.detailedErrorCode != null) lastErrCode = s.detailedErrorCode;
           if (s) { lastStatus = s; noteTracks(s); }
           ev.emit('status', s);
           // Media played to the end: the receiver reports IDLE with idleReason FINISHED. Surface it once
           // so the app can clear the resume marker + leave the wedged last frame. (Audit M5)
           if (s && s.playerState === 'IDLE' && s.idleReason === 'FINISHED' && !endedEmitted) { endedEmitted = true; ev.emit('ended'); }
         });
-        const info = {
-          contentId: media.url,
-          contentType: media.contentType || 'video/mp4',
-          // A live HLS EVENT playlist (omit_endlist, grows as ffmpeg encodes) is not a finite
-          // buffered stream — BUFFERED + a non-zero currentTime makes the receiver seek past
-          // available media and the load fails. LIVE starting at 0 is correct for our HLS.
-          streamType: hls ? 'LIVE' : 'BUFFERED',
-          metadata: { type: 0, metadataType: 0, title: media.title || '' }
-        };
-        // For HLS the master playlist already carries the subtitle renditions (the receiver
-        // exposes them as TEXT tracks itself) — sideloading would duplicate them. Only sideload
-        // for non-HLS (direct MP4) casts, where there's no playlist to carry subtitle tracks.
-        const subs = !hls && Array.isArray(media.subs) ? media.subs : [];
-        if (subs.length) {
-          info.tracks = subs.map((s, i) => ({
-            trackId: 1000 + i, type: 'TEXT', subtype: 'SUBTITLES',
-            trackContentId: s.url, trackContentType: 'text/vtt',
-            language: s.lang || 'und', name: s.name || s.lang || ('Subtitle ' + (i + 1))
-          }));
-          info.textTrackStyle = { backgroundColor: '#00000000', foregroundColor: '#FFFFFFFF', edgeType: 'OUTLINE', edgeColor: '#000000FF' };
-        }
-        p.load(info, { autoplay: true, currentTime: hls ? 0 : (media.currentTime || 0) }, (e2, status) => {
-          if (myGen !== castGen) return; // superseded during load → don't emit/settle for a dead session
-          if (e2) {
-            // Surface the CAF detailedErrorCode so the orchestrator can branch: 104 MEDIA_SRC_NOT_SUPPORTED
-            // / 102 MEDIA_DECODE / 110 SOURCE_BUFFER_FAILURE → container/codec escalation; 103 MEDIA_NETWORK
-            // → LAN URL problem, not the codec. (A real Chromecast rejects raw MKV with 104.)
-            const code = (status && status.detailedErrorCode) || null;
-            if (code != null) e2.detailedErrorCode = code;
-            ev.emit('error', { message: e2.message, code });
-          }
-          if (status) { lastStatus = status; noteTracks(status); reconnectTries = 0; ev.emit('status', status); } // fresh session → reset retries
-          done(e2, status);
-        });
+        sendLoad(p);
       });
     });
+    }
   }
 
   // --- track selection (Chromecast EDIT_TRACKS_INFO) ---
