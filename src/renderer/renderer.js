@@ -68,7 +68,22 @@ let torrentQueue = [], torrentIdx = -1; // multi-file torrent (episodes) — pla
 let sponsorSegments = [], skipSponsors = true, sponsorToastT = null; // SponsorBlock (YouTube)
 
 const showSpinner = () => spinner.classList.remove('hidden');
-const hideSpinner = () => spinner.classList.add('hidden');
+// Cast/DLNA handoff watchdog. Picking a device shows the spinner and fires a one-way IPC; every
+// path that resolves it depends on the main process emitting an event back. A device that accepts
+// the TCP connection but never answers (an LG renderer wedged in TRANSITIONING/701 does exactly
+// this — even Stop times out) produces no event at all, so the spinner spins forever with no way
+// out. Arm a timer on the click; any hideSpinner() disarms it, since that means we stopped waiting.
+let castWatchdog = null;
+function clearCastWatchdog() { if (castWatchdog) { clearTimeout(castWatchdog); castWatchdog = null; } }
+function armCastWatchdog(what) {
+  clearCastWatchdog();
+  castWatchdog = setTimeout(() => {
+    castWatchdog = null;
+    spinner.classList.add('hidden');
+    toast(what + ' isn’t responding — it may be busy or asleep. Try again, or restart the TV.', 6000);
+  }, 45000); // > the 12s cast connect timeout + transcode startup, so it only fires on a real hang
+}
+const hideSpinner = () => { clearCastWatchdog(); spinner.classList.add('hidden'); };
 function showIcon(which) { // 'pause' | 'play' | 'replay'
   icPause.classList.toggle('hidden', which !== 'pause');
   icPlay.classList.toggle('hidden', which !== 'play');
@@ -1167,7 +1182,7 @@ function renderCastMenu() {
     const li = document.createElement('li'); li.className = 'cast-dev';
     li.textContent = d.name;
     li.addEventListener('click', () => {
-      closeMenus(); showSpinner();
+      closeMenus(); showSpinner(); armCastWatchdog(d.name);
       if (d.kind === 'dlna') { soda.dlna.load(d.ref); return; }
       // Auto-prefer DLNA for a 4K LOCAL file when the SAME TV also exposes DLNA: the native route
       // plays it at full 4K/HDR/Dolby-Vision with no Mac-side transcode, where Chromecast downscales.

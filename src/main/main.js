@@ -1104,8 +1104,19 @@ if (!gotLock) {
   }
   ipcMain.on('cast:play', () => { try { cast.play(); } catch (e) {} });
   ipcMain.on('cast:pause', () => { try { cast.pause(); } catch (e) {} });
+  // A single MKV-cast "seek" is a whole re-cast: fresh ffmpeg + a receiver LOAD. Dragging the
+  // scrubber emits a stream of them, so without coalescing every intermediate value spawns a
+  // transcode that's abandoned milliseconds later. Debounce to the final target; the native
+  // (non-MKV) seek is a cheap protocol message and stays immediate. recastMkv() re-checks
+  // castMkv/castEngine itself, so a timer that fires after casting stopped is a no-op.
+  let seekTimer = null, seekTarget = 0;
   ipcMain.on('cast:seek', (_e, { t } = {}) => {
-    if (castMkv && castEngine === 'chromecast') return recastMkv(t, castMkv.audioTrack); // re-cast at t, keep burn/audio
+    if (castMkv && castEngine === 'chromecast') {
+      seekTarget = t;
+      if (seekTimer) clearTimeout(seekTimer);
+      seekTimer = setTimeout(() => { seekTimer = null; recastMkv(seekTarget, castMkv && castMkv.audioTrack); }, 400);
+      return;
+    }
     try { cast.seek(t); } catch (e) {}
   });
   ipcMain.on('cast:setVolume', (_e, { f } = {}) => { try { cast.setVolume(f); } catch (e) {} });
