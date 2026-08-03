@@ -141,8 +141,28 @@ const MIME = {
 };
 const mimeFor = (p) => MIME[path.extname(p).toLowerCase()] || 'application/octet-stream';
 
+// ffprobe results for a given byte-identical input never change, but recastMkv() re-probes on EVERY
+// seek, audio-language change, burn toggle and subDelay nudge — each one a process spawn plus up to
+// 5s of container parsing before the cast can even start. Memoize on (input, size, mtime): a
+// still-downloading torrent file grows, which changes the key, so it re-probes exactly when it
+// should. Inputs we can't stat (http:// URLs) are simply not cached.
+const probeCache = new Map();
+function probeKey(tag, input) {
+  try { const st = fs.statSync(input); return tag + '\0' + input + '\0' + st.size + '\0' + st.mtimeMs; }
+  catch (e) { return null; }
+}
+function memoProbe(tag, input, run, cb) {
+  const key = probeKey(tag, input);
+  if (key && probeCache.has(key)) return cb(probeCache.get(key));
+  run((res) => {
+    if (key && res) { if (probeCache.size > 32) probeCache.clear(); probeCache.set(key, res); }
+    cb(res);
+  });
+}
+
 // ffprobe the primary video + audio codec of an input (file path or http URL).
-function probe(input, cb) {
+function probe(input, cb) { memoProbe('probe', input, (done) => probeRaw(input, done), cb); }
+function probeRaw(input, cb) {
   let out = '';
   const ps = spawn(FFPROBE, ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name',
     '-of', 'json', input], { timeout: 15000 });
@@ -156,6 +176,17 @@ function probe(input, cb) {
       cb({ vcodec: v && v.codec_name, acodec: a && a.codec_name });
     } catch (e) { cb(null); }
   });
+}
+
+// pipe a file to a response, tearing the read stream down if the client walks away. A cast receiver
+// aborts range requests constantly (every seek, every buffer re-fill), and `.pipe(res)` alone does
+// NOT close the source on an aborted response — each abandoned request leaks an open fd for the
+// lifetime of the process, and a long cast makes thousands of them.
+function pipeFile(res, rs) {
+  const kill = () => { try { rs.destroy(); } catch (e) {} };
+  rs.on('error', () => { kill(); try { res.end(); } catch (e) {} });
+  res.on('close', kill);
+  rs.pipe(res);
 }
 
 const REMUX_DIR = path.join(os.tmpdir(), 'spritz', 'remux');
@@ -176,7 +207,7 @@ module.exports = function createLanServer(opts) {
   let remuxProc = null, remuxOut = null; // current ffmpeg remux + its temp file
   let hlsProc = null, hlsDir = null, hlsToken = null; // current live HLS remux
   let subProcs = []; // background WebVTT sidecar-extraction ffmpegs (one per text sub track)
-  let mkvProc = null, mkvEntry = null; // current single-stream Matroska cast (Chromecast transport)
+  let mkvProc = null, mkvEntry = null, mkvRes = null; // current single-stream Matroska cast (Chromecast transport)
   const newToken = () => crypto.randomBytes(16).toString('hex'); // unguessable (LAN-exposed)
 
   function ensure(cb) {
@@ -307,11 +338,11 @@ module.exports = function createLanServer(opts) {
       if (start > end || start >= stat.size) { res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` }); res.end(); return; }
       res.writeHead(206, { 'Content-Type': type, 'Content-Range': `bytes ${start}-${end}/${stat.size}`, 'Accept-Ranges': 'bytes', 'Content-Length': end - start + 1, 'Cache-Control': 'no-cache' });
       if (req.method === 'HEAD') return res.end();
-      fs.createReadStream(f, { start, end }).on('error', () => res.end()).pipe(res);
+      pipeFile(res, fs.createReadStream(f, { start, end }));
     } else {
       res.writeHead(200, { 'Content-Type': type, 'Content-Length': stat.size, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache' });
       if (req.method === 'HEAD') return res.end();
-      fs.createReadStream(f).on('error', () => res.end()).pipe(res);
+      pipeFile(res, fs.createReadStream(f));
     }
   }
 
@@ -490,7 +521,8 @@ module.exports = function createLanServer(opts) {
   }
 
   // Probe audio + text-subtitle tracks (bounded read so a torrent's header is enough, no stall).
-  function probeTracks(input, cb) {
+  function probeTracks(input, cb) { memoProbe('tracks', input, (done) => probeTracksRaw(input, done), cb); }
+  function probeTracksRaw(input, cb) {
     let out = '';
     // 4M/5s: a standard MKV front-loads all track headers, so this still sees every audio/sub
     // stream + the video codec, but resolves in ~1–3s instead of stalling toward a 12s timeout
@@ -736,6 +768,9 @@ module.exports = function createLanServer(opts) {
   const MKV_CONTAINER = 'matroska', MKV_MIME = 'video/x-matroska'; // swap to mp4(frag)+video/mp4 if a receiver rejects MKV
   function cancelMkv() {
     if (mkvProc) { try { mkvProc.kill('SIGKILL'); } catch (e) {} mkvProc = null; }
+    // Cancelling the cast must also drop the streaming response — otherwise stopping a cast leaves
+    // the TV holding an open connection to a stream nothing is feeding any more.
+    if (mkvRes) { try { mkvRes.destroy(); } catch (e) {} mkvRes = null; }
     // Drop the on-demand WebVTT temp files this cast extracted (superseded /sub/ tokens already 404);
     // otherwise they accumulate under REMUX_DIR/subs across a long session of seeks/sub toggles.
     if (mkvEntry && mkvEntry.subCache) for (const f of Object.values(mkvEntry.subCache)) { try { fs.unlinkSync(f); } catch (e) {} }
@@ -857,17 +892,29 @@ module.exports = function createLanServer(opts) {
     if (!mkvEntry || mkvEntry.token !== token) { res.writeHead(404); res.end(); return; }
     const e = mkvEntry;
     if (mkvProc) { try { mkvProc.kill('SIGKILL'); } catch (x) {} mkvProc = null; } // a fresh GET supersedes (receiver reconnect)
+    // ...and so does its RESPONSE. Killing the old ffmpeg leaves onEnd() short-circuiting on the
+    // `ff !== mkvProc` guard, so the superseded response was never ended — every receiver reconnect
+    // stranded a half-open socket for the life of the process. Destroy it explicitly.
+    if (mkvRes && mkvRes !== res) { try { mkvRes.destroy(); } catch (x) {} }
+    mkvRes = res;
     res.writeHead(200, { 'Content-Type': MKV_MIME, 'Accept-Ranges': 'none', 'Cache-Control': 'no-cache', 'Connection': 'close' });
     if (req.method === 'HEAD') return res.end();
     let produced = false, triedSw = false;
-    const onEnd = (ff) => {
+    const onEnd = (ff, code) => {
       if (ff !== mkvProc) return;
       mkvProc = null;
       // The encoder died before emitting a single byte (e.g. a hardware videotoolbox transcode of an
       // exotic codec it can't handle) → retry ONCE with the software libx264 encoder, reusing the open
       // 200 (no body sent yet, so the receiver just keeps waiting on the same connection).
       if (!produced && !triedSw) { triedSw = true; return launch(true); }
-      try { res.end(); } catch (x) {}
+      // How this connection closes is the ONLY signal the receiver gets about whether the media
+      // finished. A clean res.end() is indistinguishable from a complete stream, so an ffmpeg that
+      // crashed or was killed mid-film made the TV report IDLE/FINISHED — playback "ending" early
+      // with the resume marker cleared. Only end cleanly on a genuine exit 0; otherwise destroy the
+      // socket so the receiver sees a truncated stream and can surface/retry it as an error.
+      if (code === 0) { try { res.end(); } catch (x) {} }
+      else { try { res.destroy(); } catch (x) {} }
+      if (mkvRes === res) mkvRes = null;
     };
     function launch(sw) {
       const ff = mkvProc = spawn(FFMPEG, mkvArgs(e.input, e.info, e.caps, e.audioTrack, e.startSec, e.burnSub, sw));
@@ -875,10 +922,13 @@ module.exports = function createLanServer(opts) {
       ff.stdout.on('error', () => {}); // EPIPE when the TV drops the socket — harmless
       ff.stdout.once('data', () => { produced = true; });
       ff.stdout.pipe(res, { end: false }); // keep res open across a hw→sw relaunch; pipe preserves backpressure
-      ff.on('error', () => onEnd(ff));
-      ff.on('close', () => onEnd(ff));
+      ff.on('error', () => onEnd(ff, -1)); // spawn failure — never a clean end
+      ff.on('close', (code) => onEnd(ff, code));
     }
-    req.on('close', () => { if (mkvProc) { try { mkvProc.kill('SIGKILL'); } catch (x) {} mkvProc = null; } });
+    req.on('close', () => {
+      if (mkvProc) { try { mkvProc.kill('SIGKILL'); } catch (x) {} mkvProc = null; }
+      if (mkvRes === res) mkvRes = null;
+    });
     launch(false);
   }
 

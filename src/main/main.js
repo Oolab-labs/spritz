@@ -977,7 +977,10 @@ if (!gotLock) {
       mpvAddon.command('change-list', 'glsl-shaders', 'clr', '');
       const files = A4K_MODES[mode];
       if (files) files.forEach((f) => mpvAddon.command('change-list', 'glsl-shaders', 'append', path.join(SHADER_DIR, f)));
-      send('player:notice', { message: files ? ('Anime4K · Mode ' + mode) : 'Upscaling off' });
+      // Informational, NOT fatal — must not go through player:notice, whose renderer handler
+      // stops playback 2.4s later (that channel is for unrecoverable load errors). Use a toast,
+      // same as setInterpolation above. This is why changing upscale mode killed playback.
+      send('toast', { message: files ? ('Anime4K · Mode ' + mode) : 'Upscaling off' });
     } catch (e) { console.error('[shaders]', e.message); }
   });
   ipcMain.handle('player:mediaStats', () => { try { return mpvAddon.mediaStats(); } catch (e) { return null; } });

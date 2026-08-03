@@ -12,6 +12,7 @@
 const EventEmitter = require('events');
 const dgram = require('dgram');
 const http = require('http');
+const os = require('os');
 const fs = require('fs');
 const { URL } = require('url');
 
@@ -64,6 +65,45 @@ function httpReq(opts, body, cb) {
 }
 const httpGet = (url, cb) => { try { const u = new URL(url); httpReq({ host: u.hostname, port: u.port || 80, path: u.pathname + u.search, method: 'GET' }, null, cb); } catch (e) { cb(e); } };
 
+// Physical-LAN private IPv4s only (skip loopback + VPN/tunnel interfaces) — same rule as cast.js,
+// so the unicast SSDP sweep below walks exactly the subnets the eureka sweep does.
+function lanSubnets() {
+  const out = [];
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    if (!/^(en|eth)/i.test(name)) continue; // physical NICs only
+    for (const a of ifaces[name] || []) {
+      if (a.internal) continue;
+      if (a.family !== 'IPv4' && a.family !== 4) continue;
+      if (!/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(a.address)) continue;
+      out.push(a.address);
+    }
+  }
+  return out;
+}
+// Manually-specified renderer hosts (comma-separated) for TVs on another subnet — mirrors
+// SPRITZ_CAST_HOSTS in cast.js.
+function manualHosts() {
+  return String(process.env.SPRITZ_DLNA_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+// Durable last-good renderer cache. The LG's SSDP responder is INTERMITTENT — it answers unicast
+// M-SEARCH right after cast activity and goes silent when idle, while its UPnP HTTP stack stays up
+// (description XML at :1366 answers in ~16ms regardless). So SSDP alone makes DLNA "come and go".
+// Remembering the LOCATION URLs lets startDiscovery() re-fetch them over plain HTTP and find the TV
+// with no SSDP reply at all. Advisory only: the full /24 sweep still runs unconditionally, so a
+// DHCP lease change can't strand discovery on a stale cache.
+const CACHE_FILE = (() => {
+  try { return require('path').join(require('electron').app.getPath('userData'), 'dlna-renderers.json'); }
+  catch (e) { return require('path').join(os.homedir(), '.spritz-dlna-renderers.json'); } // non-Electron (tests)
+})();
+function loadCache() {
+  try { const j = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')); return Array.isArray(j) ? j.filter((x) => x && x.location) : []; }
+  catch (e) { return []; }
+}
+function saveCache(list) { try { fs.writeFileSync(CACHE_FILE, JSON.stringify(list.slice(0, 8))); } catch (e) {} }
+function knownHosts() { return loadCache().map((c) => c.host).filter(Boolean); }
+
 module.exports = function createDlna() {
   const ev = new EventEmitter();
   const devices = new Map(); // location → device {host,name,avControl,rcControl}
@@ -97,7 +137,10 @@ module.exports = function createDlna() {
       const avControl = ctrl(AVT);
       if (!avControl) { dlog('[dlna] DROPPED "' + name + '" — has AVTransport in XML but no controlURL parsed · ' + location); return; }
       dlog('[dlna] FOUND renderer: "' + name + '" · avControl=' + avControl);
-      devices.set(location, { location, host: new URL(location).hostname, name, avControl, rcControl: ctrl(RCS) });
+      const host = new URL(location).hostname;
+      devices.set(location, { location, host, name, avControl, rcControl: ctrl(RCS) });
+      // Remember it: this exact LOCATION is re-fetchable over HTTP even when SSDP goes quiet.
+      saveCache([{ location, host, name }].concat(loadCache().filter((c) => c.location !== location)));
       emitDevices();
     });
   }
@@ -114,7 +157,64 @@ module.exports = function createDlna() {
   }
   // A single UDP M-SEARCH is easily lost, so fire a short burst — the TV appears in ~1–6s instead of
   // possibly waiting for the 60s periodic re-search (which is why DLNA seemed to come and go).
-  function burst() { [0, 800, 2000, 4000, 8000].forEach((d) => setTimeout(search, d)); }
+  function burst() {
+    [0, 800, 2000, 4000, 8000].forEach((d) => setTimeout(search, d));
+    [300, 5000].forEach((d) => setTimeout(unicastSweep, d)); // multicast-less networks (see below)
+  }
+
+  // Unicast M-SEARCH fallback. Plenty of home routers/APs silently drop 239.255.255.250 between
+  // wireless clients (IGMP snooping with no querier, "multicast optimization"/Airtime Fairness) —
+  // the TV is perfectly reachable by unicast but answers no multicast probe at all, so the renderer
+  // list stays empty forever and DLNA looks dead. SSDP is just HTTPU, so the SAME M-SEARCH sent
+  // straight at the TV's :1900 gets a normal reply. Sweep the local /24 exactly like cast.js's
+  // eureka fallback — that unicast sweep is the only reason Chromecast kept working on such a LAN.
+  // (Verified on an LG webOS NANO80T6A: zero multicast replies, instant unicast reply.)
+  const UNI_STS = [AVT, 'urn:schemas-upnp-org:device:MediaRenderer:1']; // skip ssdp:all — 254 hosts × all-services is a lot of noise
+  // A unicast M-SEARCH is NOT the multicast datagram sent to a different address: UDA 1.1 requires
+  // HOST to name the TARGET, and MX is defined as multicast-only (it exists so many responders can
+  // jitter their replies apart — a strict stack discards a unicast probe carrying it, and a lenient
+  // one may sit on the reply for up to MX seconds for no reason). Build the unicast form properly.
+  const uniMsg = (host, st) => Buffer.from([
+    'M-SEARCH * HTTP/1.1', 'HOST: ' + host + ':' + SSDP_PORT, 'MAN: "ssdp:discover"',
+    'ST: ' + st, 'USER-AGENT: darwin/' + os.release() + ' UPnP/1.1 Spritz', '', ''
+  ].join('\r\n'));
+  // …but the ONLY form ever observed to get a reply out of the LG is the multicast-shaped one
+  // (HOST: 239.255.255.250, MX: 2) — and that observation couldn't be re-confirmed afterwards
+  // because the TV's SSDP responder sleeps when idle, so neither form is proven against it.
+  // Until one is, the first sweep sends BOTH and lets the device answer whichever it prefers;
+  // later sweeps send only the spec-correct form to keep the traffic halved.
+  const legacyMsg = (st) => Buffer.from(['M-SEARCH * HTTP/1.1', 'HOST: ' + SSDP_ADDR + ':' + SSDP_PORT,
+    'MAN: "ssdp:discover"', 'MX: 2', 'ST: ' + st, '', ''].join('\r\n'));
+  let sweptOnce = false;
+  function unicastSweep() {
+    if (!sock) return;
+    const hosts = knownHosts().concat(manualHosts()); // last-good renderers answer first
+    for (const ip of lanSubnets()) {
+      const base = ip.replace(/\.\d+$/, '.');
+      for (let n = 1; n <= 254; n++) { const h = base + n; if (h !== ip && hosts.indexOf(h) < 0) hosts.push(h); }
+    }
+    if (!hosts.length) return;
+    const both = !sweptOnce; // first sweep probes with both datagram forms (see uniMsg/legacyMsg)
+    dlog('[dlna] unicast SSDP sweep over ' + hosts.length + ' host(s)' + (both ? ' (both forms)' : ''));
+    // Stagger the sends: ~500 datagrams back-to-back can overrun the socket send buffer and looks
+    // like a port scan to some APs. Spread them over ~1s in small chunks instead.
+    let i = 0;
+    const CHUNK = 16;
+    const pump = () => {
+      if (!sock || i >= hosts.length) return;
+      for (let c = 0; c < CHUNK && i < hosts.length; c++, i++) {
+        const h = hosts[i];
+        for (const st of UNI_STS) {
+          const msg = uniMsg(h, st);
+          try { sock.send(msg, 0, msg.length, SSDP_PORT, h); } catch (e) {}
+          if (both) { const lm = legacyMsg(st); try { sock.send(lm, 0, lm.length, SSDP_PORT, h); } catch (e) {} }
+        }
+      }
+      setTimeout(pump, 40);
+    };
+    pump();
+    sweptOnce = true;
+  }
 
   function startDiscovery() {
     if (sock) { emitDevices(); burst(); return; }
@@ -126,7 +226,10 @@ module.exports = function createDlna() {
       if (m) { const srv = /SERVER:\s*(.*)/i.exec(s); dlog('[dlna] SSDP resp from ' + (rinfo && rinfo.address) + ' LOCATION=' + m[1].trim() + (srv ? ' SERVER=' + srv[1].trim().slice(0, 60) : '')); fetchDevice(m[1].trim()); }
     });
     sock.bind(() => { try { sock.setBroadcast(true); } catch (e) {} dlog('[dlna] discovery started — SSDP socket bound, sending M-SEARCH burst'); burst(); });
-    timer = setInterval(search, 30000);
+    // Don't wait on SSDP at all for renderers we've already met — re-fetch their description
+    // directly. This is what makes the TV appear instantly when its SSDP responder is asleep.
+    for (const c of loadCache()) { dlog('[dlna] re-probing cached renderer ' + c.location); fetchDevice(c.location); }
+    timer = setInterval(() => { search(); unicastSweep(); }, 30000);
   }
   function stopDiscovery() { if (timer) { clearInterval(timer); timer = null; } try { if (sock) sock.close(); } catch (e) {} sock = null; }
 
