@@ -89,7 +89,12 @@ function dispatch(ev) {
     st.loaded = true; st.ended = false; advancing = false; // next item is up; re-enable auto-advance
     home.classList.add('hidden'); player.classList.remove('hidden');
     btnSubs.classList.remove('hidden');
-    torrentStatus.classList.add('hidden'); // stream is playing → drop the peers/speed pill for good
+    // Keep the peers/speed pill alive while a torrent is STILL DOWNLOADING — that's exactly when
+    // you want to know whether the swarm can sustain playback. armIdle() already fades it in and
+    // out with the control bar, so it only shows on hover and never sits over a clean picture.
+    // (It used to be hidden here "for good", which made that whole hover path dead code.)
+    if (torrentActive) torrentStatus.classList.remove('hidden', 'controls-hidden');
+    else torrentStatus.classList.add('hidden'); // plain local file → no pill
     if (st.subDelay !== 0) soda.player.setSubDelay(st.subDelay); // mpv resets delays per file
     if (st.audioDelay !== 0) soda.player.setProperty('audio-delay', st.audioDelay);
     $('#sub-delay-val').textContent = fmtDelay(st.subDelay); $('#audio-delay-val').textContent = fmtDelay(st.audioDelay);
@@ -244,6 +249,7 @@ function stop() {
   btnAudio.classList.add('hidden'); btnSubs.classList.add('hidden');
   qualityEl.classList.add('hidden'); closeMenus();
   soda.torrent.cancel();
+  torrentActive = false;
   torrentStatus.classList.add('hidden'); torrentModal.classList.add('hidden');
   btnPrev.classList.add('hidden'); btnNext.classList.add('hidden'); playerTitle.textContent = '';
   soda.window.setTitle('Spritz');
@@ -646,6 +652,10 @@ if (soda.menu && soda.menu.onAction) {
 }
 
 // ---- torrent / magnet streaming ----
+// True while a torrent stream is still downloading. Gates the peers/speed pill so it stays
+// available (on hover, via armIdle's controls-hidden) during playback of a torrent, but never
+// appears for a plain local file.
+let torrentActive = false;
 const torrentStatus = $('#torrent-status'), torrentModal = $('#torrent-modal'),
   torrentFileList = $('#torrent-file-list'), torrentCancel = $('#torrent-cancel');
 
@@ -878,7 +888,8 @@ function startTorrent(s) {
   st.ended = false; showIcon('pause');
   home.classList.add('hidden'); player.classList.remove('hidden');
   showSpinner(); soda.power.block();
-  torrentStatus.classList.remove('hidden'); torrentStatus.textContent = 'connecting…';
+  torrentActive = true;
+  torrentStatus.classList.remove('hidden', 'controls-hidden'); torrentStatus.textContent = 'connecting…';
   soda.torrent.add(s);
 }
 function routeSource(src, fromQueue, opts) {
@@ -961,18 +972,25 @@ function paintBuffered(ranges) {
   seekBuffered.innerHTML = (ranges || []).map(([a, b]) =>
     `<span class="seg" style="left:${(a * 100).toFixed(2)}%;width:${Math.max(0, (b - a) * 100).toFixed(2)}%"></span>`).join('');
 }
-soda.torrent.onProgress(({ peers, speed, buffered }) => {
+soda.torrent.onProgress(({ peers, speed, buffered, progress }) => {
   paintBuffered(buffered); // always update the scrubber overlay, even once the pill is hidden
-  if (st.loaded || engine === 'airplay') { torrentStatus.classList.add('hidden'); return; } // playing → no pill
+  // Hide only when there is genuinely nothing left to report: the download finished, or we handed
+  // playback to a TV (the cast remote owns the screen — body.casting also hides it in CSS).
+  if ((progress || 0) >= 1 || engine !== 'mpv') { torrentStatus.classList.add('hidden'); return; }
   torrentStatus.classList.remove('hidden');
   // Seeding-health "light": green ≥3.5 MB/s, orange 1.5–3.5, red <1.5 or no peers (4K HEVC needs ~1.83 MB/s).
   const mbps = (speed || 0) / (1024 * 1024);
   let cls = 'poor';
   if (peers > 0 && mbps >= 3.5) cls = 'excellent';
   else if (peers > 0 && mbps >= 1.5) cls = 'good';
-  // Minimal: the dot IS the status; one short line is the throughput. (The pill only shows pre-playback.)
+  // The dot is the at-a-glance verdict; the text gives the two numbers that explain it. Peer count
+  // matters because "slow" from 2 peers and "slow" from 40 peers are different problems.
   const dot = document.createElement('span'); dot.className = 'dot ' + cls;
-  torrentStatus.replaceChildren(dot, document.createTextNode(peers <= 0 ? 'connecting…' : prettyBytes(speed) + '/s'));
+  const txt = peers <= 0 ? 'connecting…'
+    : prettyBytes(speed) + '/s · ' + peers + (peers === 1 ? ' peer' : ' peers')
+      + (st.loaded && progress != null ? ' · ' + Math.floor(progress * 100) + '%' : '');
+  torrentStatus.replaceChildren(dot, document.createTextNode(txt));
+  torrentStatus.title = 'Torrent stream: ' + txt; // hover tooltip for the truncated/compact pill
 });
 soda.torrent.onReady(({ url }) => { soda.player.load(url); });
 soda.torrent.onError(({ message }) => {
@@ -1096,6 +1114,18 @@ castStop.addEventListener('click', () => {
 // ---- Google Cast (Chromecast / LG webOS) ----
 const castBtn = $('#cast'), menuCast = $('#menu-cast'), castList = menuCast.querySelector('.list');
 let castDevices = [], dlnaDevices = [], castDiscovering = false;
+// Discovery can fail for reasons the app cannot see — most painfully, macOS silently denying the
+// Local Network grant, which makes every LAN probe fail instantly with EHOSTUNREACH. The menu used
+// to say "Searching for TVs…" forever in that case, giving the user nothing to act on. After a
+// grace period with nothing found, say what to check instead.
+let castSearchTimedOut = false, castSearchTimer = null;
+function armCastSearchTimeout() {
+  clearTimeout(castSearchTimer);
+  castSearchTimedOut = false;
+  castSearchTimer = setTimeout(() => {
+    if (!allDevices().length) { castSearchTimedOut = true; renderCastMenu(); }
+  }, 20000);
+}
 let castHost = null;        // host of the active Chromecast session (for auto-next re-cast)
 let castAdvanceHost = null; // set when a cast finished and we're routing the next item to re-cast to this host
 // Eligibility: a TV-fetchable source + at least one discovered device (Chromecast OR DLNA).
@@ -1117,7 +1147,7 @@ function refreshCast() {
   // (the only way LG webOS is found) then runs concurrently with the slow HLS probe+remux, so
   // devices are already warm when castable flips, instead of starting a fresh sweep only after.
   const loaded = engine === 'mpv' && st.loaded;
-  if (loaded && !castDiscovering) { castDiscovering = true; soda.cast.discover(); soda.dlna.discover(); }
+  if (loaded && !castDiscovering) { castDiscovering = true; soda.cast.discover(); soda.dlna.discover(); armCastSearchTimeout(); }
   // ONE Cast/AirPlay button: show whenever the source is castable + playing. AirPlay is ALWAYS
   // offered (first menu row, backed by the native picker); Chromecast/DLNA rows are added as
   // discovery finds them — so the button no longer waits on a device being discovered first.
@@ -1150,7 +1180,15 @@ function renderCastMenu() {
     castList.appendChild(li);
   });
   if (!allDevices().length) {
-    const li = document.createElement('li'); li.className = 'cast-empty'; li.textContent = 'Searching for TVs…';
+    const li = document.createElement('li'); li.className = 'cast-empty';
+    if (castSearchTimedOut) {
+      li.classList.add('cast-empty-warn');
+      li.textContent = 'No TVs found';
+      const hint = document.createElement('div'); hint.className = 'cast-empty-hint';
+      hint.textContent = 'Check the TV is on, and that Spritz is enabled under System Settings → Privacy & Security → Local Network.';
+      li.appendChild(hint);
+      li.title = 'Spritz probes the local network directly. If macOS has denied Local Network access, every probe fails instantly and no device can ever be found.';
+    } else li.textContent = 'Searching for TVs…';
     castList.appendChild(li);
   }
   if (pickerShown) requestAnimationFrame(placePicker); // keep the picker over the AirPlay row after a rebuild
@@ -1364,4 +1402,4 @@ paint(volSlider, 100); updateVolIcon(); armIdle(); renderContinueWatching(); app
 // Pre-warm device discovery at launch (AirPlay route detection is already always-on natively) so
 // Chromecast/DLNA devices are already found by the time a file/torrent loads — the cast button
 // then appears the instant the source becomes castable instead of waiting on a cold /24 sweep.
-soda.cast.discover(); soda.dlna.discover(); castDiscovering = true;
+soda.cast.discover(); soda.dlna.discover(); castDiscovering = true; armCastSearchTimeout();
