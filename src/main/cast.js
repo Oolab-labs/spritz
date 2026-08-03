@@ -96,6 +96,11 @@ module.exports = function createCast() {
       mdns.on('response', onMdns);
     } catch (e) { /* mDNS optional; eureka sweep still runs */ }
     sweep();
+    // A cold TV can drop the very first probe entirely (observed: request 1 fails, request 2
+    // succeeds once the service has woken). Without an early retry the next chance was the 60s
+    // interval, so a TV that was merely asleep looked absent for a full minute. Retry once,
+    // shortly after the first sweep has had time to time out, but only while nothing is found.
+    setTimeout(() => { if (discovering && !devices.size) sweep(); }, 10000);
     timer = setInterval(sweep, 60000);
   }
 
@@ -147,7 +152,13 @@ module.exports = function createCast() {
   }
 
   function probeEureka(host, done) {
-    const req = http.get({ host, port: 8008, path: '/setup/eureka_info?options=detail', timeout: 2000 }, (res) => {
+    // The 2s timeout this used to carry could never see an LG webOS TV. Measured on a NANO80T6A:
+    // the FIRST eureka request after the service has been idle takes ~4.4s (and sometimes fails
+    // outright), after which the service is warm and answers in ~27ms. A 2s budget therefore
+    // times out on every cold probe — which is exactly why the device list sat on
+    // "Searching for TVs…" forever. Costs little on a sweep: unused addresses fail fast
+    // (no ARP -> EHOSTUNREACH, or an immediate RST); only genuinely silent hosts wait it out.
+    const req = http.get({ host, port: 8008, path: '/setup/eureka_info?options=detail', timeout: 8000 }, (res) => {
       let body = '';
       res.on('data', (d) => { body += d; });
       res.on('end', () => {
