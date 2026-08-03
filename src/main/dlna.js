@@ -58,11 +58,17 @@ function soapFault(xml) {
   return null;
 }
 
-function httpReq(opts, body, cb) {
+function httpReq(opts, body, cb, timeoutMs) {
   const req = http.request(opts, (res) => { let d = ''; res.on('data', (c) => { d += c; }); res.on('end', () => cb(null, res, d)); });
-  req.on('error', (e) => cb(e)); req.setTimeout(6000, () => req.destroy(new Error('timeout')));
+  req.on('error', (e) => cb(e)); req.setTimeout(timeoutMs || 6000, () => req.destroy(new Error('timeout')));
   if (body) req.write(body); req.end();
 }
+// Per-action SOAP budgets. A blanket 6s was wrong in both directions: Play/SetAVTransportURI make
+// the TV open and buffer the stream before answering (an LG can sit well past 6s on a cold start,
+// and a spurious timeout there leaves a session half-established), while a status poll that hasn't
+// answered in 2s is simply not going to. Polls stay tight so the UI can't stall behind them.
+const SOAP_TIMEOUT = { SetAVTransportURI: 20000, Play: 20000, Stop: 10000, Seek: 10000,
+  GetPositionInfo: 2500, GetTransportInfo: 2500, SetVolume: 4000 };
 const httpGet = (url, cb) => { try { const u = new URL(url); httpReq({ host: u.hostname, port: u.port || 80, path: u.pathname + u.search, method: 'GET' }, null, cb); } catch (e) { cb(e); } };
 
 // Physical-LAN private IPv4s only (skip loopback + VPN/tunnel interfaces) — same rule as cast.js,
@@ -239,8 +245,10 @@ module.exports = function createDlna() {
     const body = `<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:${action} xmlns:u="${service}">${argsXml}</u:${action}></s:Body></s:Envelope>`;
     let u; try { u = new URL(controlUrl); } catch (e) { return cb && cb(e); }
     httpReq({ host: u.hostname, port: u.port || 80, path: u.pathname + u.search, method: 'POST',
-      headers: { 'Content-Type': 'text/xml; charset="utf-8"', 'SOAPAction': '"' + service + '#' + action + '"', 'Content-Length': Buffer.byteLength(body) }
-    }, body, (err, res, d) => cb && cb(err, d));
+      // Connection: close — the LG's UPnP server handles keep-alive poorly and a reused socket is a
+      // common cause of it going unresponsive after a few control requests.
+      headers: { 'Content-Type': 'text/xml; charset="utf-8"', 'SOAPAction': '"' + service + '#' + action + '"', 'Content-Length': Buffer.byteLength(body), 'Connection': 'close' }
+    }, body, (err, res, d) => cb && cb(err, d), SOAP_TIMEOUT[action]);
   }
 
   // UPnP res@duration format: H+:MM:SS.mmm
@@ -292,11 +300,27 @@ module.exports = function createDlna() {
     const meta = didl(media.url, media.title, media.contentType, media.subtitleUrl, media.size, media.duration);
     dlog('[dlna] load "' + (media.title || '') + '" ct=' + media.contentType + ' url=' + String(media.url).slice(0, 90));
     dlog('[dlna] DIDL=' + meta);
+    // D2 recovery ladder. An LG renderer that was left mid-session sticks in TRANSITIONING and
+    // answers UPnP 701 "Transition not available" to everything — including the SetAVTransportURI
+    // we are about to send — until something resets it. A plain Stop first clears the vast majority
+    // of those, so always try it and ignore its result (a healthy renderer answers Stop happily,
+    // and a wedged one times out, which is exactly the case we are recovering from). Only then load.
+    soap(dev.avControl, AVT, 'Stop', { InstanceID: 0 }, () => setAndPlay());
+    function setAndPlay() {
     soap(dev.avControl, AVT, 'SetAVTransportURI', { InstanceID: 0, CurrentURI: media.url, CurrentURIMetaData: meta }, (err, body) => {
       // The LG returns a SOAP fault (HTTP 500 body) when it can't recognise/accept the item — we used to
       // ignore it and report "casting" anyway. Detect it: surface the real reason + fall back to local.
       const fault = err ? err.message : soapFault(body);
-      if (fault) { dlog('[dlna] SetAVTransportURI REJECTED: ' + fault); ev.emit('error', { message: 'TV rejected the file (' + fault + ')' }); return cb && cb(new Error(fault)); }
+      if (fault) {
+        dlog('[dlna] SetAVTransportURI REJECTED: ' + fault);
+        // 701 after the Stop above means the renderer is genuinely wedged, not that the file is bad.
+        // Say so, because "TV rejected the file" sends the user hunting the wrong problem entirely.
+        const wedged = /^701\b/.test(fault);
+        ev.emit('error', { message: wedged
+          ? 'The TV’s DLNA player is stuck and won’t accept new media. Stop playback on the TV, or restart it, then try again.'
+          : 'TV rejected the file (' + fault + ')' });
+        return cb && cb(new Error(fault));
+      }
       soap(dev.avControl, AVT, 'Play', { InstanceID: 0, Speed: 1 }, (e2, body2) => {
         const f2 = e2 ? e2.message : soapFault(body2);
         if (f2) { dlog('[dlna] Play REJECTED: ' + f2); ev.emit('error', { message: 'TV could not start playback (' + f2 + ')' }); return cb && cb(new Error(f2)); }
@@ -304,6 +328,7 @@ module.exports = function createDlna() {
         cb && cb();
       });
     });
+    }
   }
   const withAv = (action, args) => { if (current) soap(current.avControl, AVT, action, Object.assign({ InstanceID: 0 }, args), () => {}); };
   function play() { withAv('Play', { Speed: 1 }); }

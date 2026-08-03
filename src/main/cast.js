@@ -111,6 +111,43 @@ module.exports = function createCast() {
     setTimeout(close, 5000); // one short burst per discovery start; not a standing listener
   }
 
+  // Wake-on-LAN. An LG with "Mobile TV On → Turn on via Wi-Fi" enabled wakes on a magic packet,
+  // and a woken TV is the difference between casting and telling the user there are no devices.
+  // We remember the MAC from the ARP table for hosts we have actually talked to, so this only ever
+  // targets a TV this Mac has already seen — no blind broadcasting of arbitrary addresses.
+  // Best-effort throughout: no MAC, no ARP entry, or a TV without the setting simply does nothing.
+  function macFor(host, cb) {
+    try {
+      require('child_process').execFile('/usr/sbin/arp', ['-n', host], { timeout: 2000 }, (e, out) => {
+        const m = /([0-9a-f]{1,2}(?::[0-9a-f]{1,2}){5})/i.exec(String(out || ''));
+        cb(m ? m[1] : null);
+      });
+    } catch (e) { cb(null); }
+  }
+  function wake(host, cb) {
+    macFor(host, (mac) => {
+      if (!mac) return cb && cb(false);
+      const bytes = mac.split(':').map((h) => parseInt(h, 16));
+      if (bytes.length !== 6 || bytes.some((b) => isNaN(b))) return cb && cb(false);
+      const pkt = Buffer.alloc(102, 0xff); // 6 x 0xFF then the MAC repeated 16 times
+      for (let i = 0; i < 16; i++) for (let j = 0; j < 6; j++) pkt[6 + i * 6 + j] = bytes[j];
+      let sock = null;
+      try { sock = dgram.createSocket('udp4'); } catch (e) { return cb && cb(false); }
+      sock.on('error', () => { try { sock.close(); } catch (e) {} cb && cb(false); });
+      sock.bind(() => {
+        try { sock.setBroadcast(true); } catch (e) {}
+        // Ports 9 and 7 are both conventional for WoL; send to the host and the broadcast address
+        // because a sleeping TV may no longer answer ARP for its own unicast address.
+        const bcast = host.replace(/\.\d+$/, '.255');
+        let left = 4;
+        const fin = () => { if (--left <= 0) { try { sock.close(); } catch (e) {} cb && cb(true); } };
+        for (const dst of [host, bcast]) for (const port of [9, 7]) {
+          try { sock.send(pkt, 0, pkt.length, port, dst, fin); } catch (e) { fin(); }
+        }
+      });
+    });
+  }
+
   // --- discovery ---
   function startDiscovery() {
     if (discovering) { emitDevices(); return; }
@@ -235,6 +272,7 @@ module.exports = function createCast() {
     const hls = /vnd\.apple\.mpegurl|m3u8/i.test(media.contentType || '') || /\.m3u8(\?|#|$)/i.test(media.url || '');
     let settled = false;
     let to = null;
+    let _wokeOnce = false; // one wake-and-retry per load attempt
     const done = (e, s) => { if (settled) return; settled = true; clearTimeout(to); cb && cb(e, s); };
 
     // Build the LOAD payload. Split out so the fast path below can reuse it verbatim.
@@ -311,7 +349,18 @@ module.exports = function createCast() {
     const c = client = new Client();
     // Connect timeout: castv2's connect callback never fires for an unreachable TV — without
     // this the UI hangs in "connecting" forever and chromecasting state is never reset.
-    to = setTimeout(() => { if (myGen !== castGen) return; ev.emit('error', { message: 'Chromecast connect timed out' }); teardownClient(); done(new Error('connect timeout')); }, 12000);
+    to = setTimeout(() => {
+      if (myGen !== castGen) return;
+      // A TV discovered a minute ago can be asleep by the time the user picks it. Before giving up,
+      // send it a magic packet and try once more — if "Mobile TV On" is enabled this turns a dead
+      // cast into a working one, and if it isn't, we've lost one retry and report the same error.
+      if (!_wokeOnce) {
+        _wokeOnce = true;
+        teardownClient();
+        return wake(host, () => setTimeout(() => { if (myGen === castGen) fullConnect(); }, 4000));
+      }
+      ev.emit('error', { message: 'Chromecast connect timed out' }); teardownClient(); done(new Error('connect timeout'));
+    }, 12000);
     c.on('error', (e) => {
       if (myGen !== castGen) { clearTimeout(to); try { c.removeAllListeners(); c.close(); } catch (x) {} return; } // superseded client — ignore
       // If a LIVE session drops (Wi-Fi blip, TV screensaver killing the socket), silently
@@ -396,7 +445,7 @@ module.exports = function createCast() {
 
   return {
     on: (e, fn) => ev.on(e, fn),
-    startDiscovery, stopDiscovery, load, play, pause, seek, stop, setVolume, teardown,
+    startDiscovery, stopDiscovery, load, play, pause, seek, stop, setVolume, teardown, wake,
     tracks, setTrack, connectedHost: () => connectedHost,
     capsFor: (host) => { const d = devices.get(host); return d ? d.caps : null; }
   };
