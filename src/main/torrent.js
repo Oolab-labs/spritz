@@ -128,9 +128,21 @@ module.exports = function createTorrent(send) {
     try {
       const span = activeFile._endPiece - activeFile._startPiece + 1;
       if (span <= 1) return;
-      const at = activeFile._startPiece + Math.floor(playFrac * span);
+      // playFrac is a TIME fraction mapped onto BYTES, which is only approximate on VBR content,
+      // and clearing _critical below also drops webtorrent's own reactive mark for the read it is
+      // currently serving. Start a couple of pieces BEHIND the estimate so both stay covered even
+      // when the mapping is off — cheap insurance against prioritising just past the real read head.
+      const est = activeFile._startPiece + Math.floor(playFrac * span);
+      const at = Math.max(activeFile._startPiece, est - 2);
       const end = Math.min(activeFile._endPiece, at + READAHEAD_PIECES);
-      if (end >= at) active.critical(at, end);
+      if (end < at) return;
+      // CLEAR the previous window first. webtorrent's critical() only ever SETS _critical[i] = true
+      // (lib/torrent.js) and never unsets it, so re-marking a moving window every second makes the
+      // critical set grow without bound. Once most of the file is flagged, `_critical[piece] ||
+      // hotswap` is true for nearly every piece, the flag stops discriminating, and requests go out
+      // effectively unordered — which stutters worse than having no window at all.
+      if (Array.isArray(active._critical)) active._critical.length = 0;
+      active.critical(at, end);
     } catch (e) {}
   }
 
