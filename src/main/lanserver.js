@@ -392,11 +392,38 @@ module.exports = function createLanServer(opts) {
   // filling the disk (it's reclaimed on cancelHls/teardown when the cast ends).
   function startHlsWatch(dir) {
     if (hlsWatch) clearInterval(hlsWatch);
-    hlsWatch = setInterval(() => {
+    // This used to walk the directory SYNCHRONOUSLY, statSync-ing every file, every 30s, on the
+    // main process — while the HLS dir grows to roughly one segment per few seconds of movie. That
+    // is blocking I/O proportional to segment count, repeated for the whole cast, and it stalls
+    // everything else main is doing (IPC, cast control, torrent bookkeeping) each time it runs.
+    // Async now, so the walk never blocks the event loop, with a guard against overlapping runs on
+    // a slow disk. Same one-shot warning behaviour.
+    const fsp = fs.promises;
+    let scanning = false;
+    const scan = async () => {
+      if (scanning || hlsWarned) return;
+      scanning = true;
       let bytes = 0;
-      try { (function walk(d) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else { try { bytes += fs.statSync(f).size; } catch (x) {} } } })(dir); } catch (e) {}
-      if (!hlsWarned && bytes > 6 * 1024 * 1024 * 1024) { hlsWarned = true; onWarn('Casting is using a lot of temp disk space (' + Math.round(bytes / 1e9) + ' GB). It frees up when you stop casting.'); }
-    }, 30000);
+      try {
+        const walk = async (d) => {
+          let ents = [];
+          try { ents = await fsp.readdir(d, { withFileTypes: true }); } catch (e) { return; }
+          for (const e of ents) {
+            if (hlsWatch === null) return; // cast ended mid-walk — stop early
+            const f = path.join(d, e.name);
+            if (e.isDirectory()) await walk(f);
+            else { try { bytes += (await fsp.stat(f)).size; } catch (x) {} }
+          }
+        };
+        await walk(dir);
+      } catch (e) {}
+      scanning = false;
+      if (!hlsWarned && bytes > 6 * 1024 * 1024 * 1024) {
+        hlsWarned = true;
+        onWarn('Casting is using a lot of temp disk space (' + Math.round(bytes / 1e9) + ' GB). It frees up when you stop casting.');
+      }
+    };
+    hlsWatch = setInterval(scan, 30000);
   }
 
   // Extract each text subtitle track to a standalone WebVTT sidecar (no libass, no broken HLS
