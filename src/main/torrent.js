@@ -111,8 +111,32 @@ module.exports = function createTorrent(send) {
     } catch (e) { return 0; }
   }
 
+  // Where mpv is in the file, as a 0..1 fraction (main pushes this from the time-pos property).
+  // Used to keep the download's urgency travelling WITH the play head.
+  let playFrac = 0;
+  function setPlayhead(frac) { if (typeof frac === 'number' && frac >= 0 && frac <= 1) playFrac = frac; }
+
+  // Keep a CRITICAL window just ahead of the play head. webtorrent marks pieces critical only
+  // reactively, for the bytes the HTTP server is being asked for right now — often a single piece —
+  // and this module set a critical window ONCE over the file head at handoff and never moved it.
+  // Past the prebuffer, nothing was urgent any more: pieces arrived in plain sequential order at
+  // whatever rate the swarm felt like, so a marginal swarm underruns mpv's cache and playback
+  // stalls with the spinner. Re-target the window every progress tick instead.
+  const READAHEAD_PIECES = 24; // ~a few seconds to tens of seconds depending on piece length/bitrate
+  function refreshCritical() {
+    if (!active || !activeFile) return;
+    try {
+      const span = activeFile._endPiece - activeFile._startPiece + 1;
+      if (span <= 1) return;
+      const at = activeFile._startPiece + Math.floor(playFrac * span);
+      const end = Math.min(activeFile._endPiece, at + READAHEAD_PIECES);
+      if (end >= at) active.critical(at, end);
+    } catch (e) {}
+  }
+
   function emitProgress() {
     if (!active) return;
+    refreshCritical();
     send('torrent:progress', {
       peers: active.numPeers, senders: activeSenders(), speed: active.downloadSpeed,
       downloaded: active.downloaded, length: active.length, progress: active.progress,
@@ -131,6 +155,7 @@ module.exports = function createTorrent(send) {
       try { active.files.forEach((f) => f.deselect()); } catch (e) {}
       try { file.select(); } catch (e) {} // stream this file; webtorrent's sequential strategy downloads in order
       activeFile = file; // remember for the buffered-ranges viz
+      playFrac = 0;      // new file/seek target — the old play position means nothing now
       // Mark the head CRITICAL so piece 0 is fetched with top urgency (deselect-all otherwise leaves it
       // competing) and mpv's header read is instant once we hand off.
       const headPieces = Math.max(1, Math.ceil(PREBUFFER_BYTES / active.pieceLength));
@@ -144,7 +169,18 @@ module.exports = function createTorrent(send) {
       // Hand to mpv once the head is on disk (instant open), or after PREBUFFER_TIMEOUT regardless.
       const t0 = Date.now();
       let readied = false;
-      const ready = (why) => { if (readied) return; readied = true; tlog('READY after ' + (Date.now() - t0) + 'ms (' + why + ') peers=' + active.numPeers + ' speed=' + Math.round(active.downloadSpeed / 1024) + 'KB/s -> ' + url); send('torrent:ready', { url }); };
+      // Once the head is in hand, ask for the file TAIL too. An MKV's Cues (seek index) and an
+      // MP4's moov atom (when not front-loaded by faststart) live at the END of the file; without
+      // them mpv cannot build a seek index, so scrubbing either fails or forces a blind read from
+      // a swarm that is busy feeding playback. select() with priority rather than critical() so it
+      // rides behind the play head's window instead of competing with it.
+      const wantTail = () => {
+        try {
+          const tail = Math.max(file._startPiece, file._endPiece - 3);
+          active.select(tail, file._endPiece, 1);
+        } catch (e) {}
+      };
+      const ready = (why) => { if (readied) return; readied = true; wantTail(); tlog('READY after ' + (Date.now() - t0) + 'ms (' + why + ') peers=' + active.numPeers + ' speed=' + Math.round(active.downloadSpeed / 1024) + 'KB/s -> ' + url); send('torrent:ready', { url }); };
       const check = () => {
         if (readied || !active || activeFile !== file) return; // superseded (file switch / cancel)
         let have = 0; const total = headEnd - file._startPiece;
@@ -229,5 +265,5 @@ module.exports = function createTorrent(send) {
     try { fs.rmSync(DL_DIR, { recursive: true, force: true }); } catch (e) {}
   }
 
-  return { add, selectFile, cancel, teardown };
+  return { add, selectFile, cancel, teardown, setPlayhead };
 };

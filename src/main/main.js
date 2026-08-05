@@ -89,6 +89,7 @@ if (!gotLock) {
   // AirPlay orchestration state
   let castUrl = null;       // current AVFoundation-castable URL (https only — ATS), or null
   let mpvLastUrl = null;    // last URL mpv loaded (to resume local playback after casting)
+  let mpvDuration = 0; // last known media duration, for mapping time-pos -> file fraction
   let pickerAttached = false, lastAvTime = 0;
   let castSubs = [];        // sideloaded WebVTT text tracks for the current castUrl (HLS casts)
   let externalSubs = [];    // user-added external .srt/.ass files for the current source (carried into casts)
@@ -731,6 +732,14 @@ if (!gotLock) {
         if (process.env.SPRITZ_DEBUG && ev && (ev.type === 'file-loaded' || ev.type === 'end-file') && /^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\//i.test(mpvLastUrl || '')) {
           try { fs.appendFileSync('/tmp/spritz-torrent.log', '[' + new Date().toISOString().slice(11, 23) + '] mpv ' + ev.type + (ev.type === 'end-file' ? ' reason=' + ev.reason : '') + '\n'); } catch (e) {}
         }
+        // Feed the play position to the torrent engine so it can keep its CRITICAL piece window
+        // travelling with the play head instead of leaving everything after the prebuffer to plain
+        // sequential download. Cheap: a couple of numbers, no allocation, and torrent.js only acts
+        // on it once per second when it emits progress.
+        if (ev && ev.type === 'property-change' && ev.name === 'time-pos' && typeof ev.value === 'number' && mpvDuration > 0) {
+          try { torrent.setPlayhead(ev.value / mpvDuration); } catch (e) {}
+        }
+        if (ev && ev.type === 'property-change' && ev.name === 'duration' && typeof ev.value === 'number') mpvDuration = ev.value;
         send('player-event', ev);
       }); // BEFORE startPlayer
       const sp = mpvAddon.startPlayer();
