@@ -216,6 +216,8 @@ if (!gotLock) {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: false,
+        // Left false so the renderer starts un-throttled; setBackgroundThrottling() below narrows
+        // it to only while something is actually playing.
         backgroundThrottling: false
       }
     });
@@ -749,6 +751,17 @@ if (!gotLock) {
       }); // BEFORE startPlayer
       const sp = mpvAddon.startPlayer();
       console.log('[player] started', JSON.stringify(sp));
+      // Sidecar auto-discovery. Releases routinely ship "Movie.mkv" beside "Movie.en.srt" (or a
+      // Subs/ folder, or a separate audio track), and none of it was being picked up: mpv only
+      // loads sidecars when told to. 'fuzzy' matches files whose name starts with the video's,
+      // which is the convention scene releases follow, without dragging in every file in the
+      // directory the way 'all' would.
+      try {
+        mpvAddon.setProperty('sub-auto', 'fuzzy');
+        mpvAddon.setProperty('audio-file-auto', 'fuzzy');
+        // Common subtitle subfolder names, relative to the media file.
+        mpvAddon.setProperty('sub-file-paths', 'Subs:subs:Subtitles:subtitles');
+      } catch (e) { console.error('[player] sidecar auto-load setup', e.message); }
       if (apAddon && apAddon.setEventListener) {
         apAddon.setEventListener((ev) => {            // listener BEFORE attachPicker (TSFN invariant)
           if (ev.type !== 'time') console.log('[airplay]', JSON.stringify(ev)); // diag
@@ -963,6 +976,15 @@ if (!gotLock) {
   const MPV_PROP_DENY = new Set(['input-ipc-server', 'scripts', 'load-scripts', 'script-opts', 'input-conf', 'config-dir', 'configdir', 'ytdl-raw-options']);
   ipcMain.on('player:setProperty', (_e, { name, value } = {}) => {
     try { if (name && !MPV_PROP_DENY.has(String(name).toLowerCase())) mpvAddon.setProperty(name, value); } catch (e) {}
+  });
+  // backgroundThrottling was disabled for the whole session, so a backgrounded Spritz sitting on
+  // the welcome screen kept its renderer running at full rate for no reason (timers, rAF, the
+  // idle-fill GL path) — pure battery cost. Throttling MUST stay off while playing, or a
+  // backgrounded window starves the UI that drives playback. So: off during playback, on otherwise.
+  ipcMain.on('player:playbackActive', (_e, { active } = {}) => {
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setBackgroundThrottling(!active);
+    } catch (e) {}
   });
   ipcMain.on('player:command', (_e, { args } = {}) => {
     try { if (Array.isArray(args) && args.length && !MPV_CMD_DENY.has(String(args[0]).toLowerCase())) mpvAddon.command(...args); } catch (e) {}

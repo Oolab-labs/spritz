@@ -103,6 +103,7 @@ function armBufferWatchdog() {
 function dispatch(ev) {
   if (ev.type === 'file-loaded') {
     st.loaded = true; st.ended = false; advancing = false; // next item is up; re-enable auto-advance
+    try { soda.player.playbackActive(!st.paused); } catch (e) {}
     home.classList.add('hidden'); player.classList.remove('hidden');
     btnSubs.classList.remove('hidden');
     // Keep the peers/speed pill alive while a torrent is STILL DOWNLOADING — that's exactly when
@@ -162,6 +163,9 @@ function dispatch(ev) {
     case 'pause':
       if (!st.ended && st.paused !== value) showIcon(value ? 'play' : 'pause');
       st.paused = !!value;
+      // Keep the renderer un-throttled only while something is actually playing (see
+      // player:playbackActive in main). Paused or stopped, a backgrounded window can throttle.
+      try { soda.player.playbackActive(!st.paused && st.loaded); } catch (e) {}
       if (st.paused) { controls.classList.remove('idle'); document.body.style.cursor = 'default'; }
       updateNowPlaying();
       break;
@@ -263,6 +267,7 @@ function stop() {
   castAdvanceHost = null;  // returning home cancels any pending auto-next re-cast
   // reset UI back to the welcome screen
   st.loaded = st.ended = st.seeking = st.dragging = false;
+  try { soda.player.playbackActive(false); } catch (e) {} // stopped → let a backgrounded renderer throttle
   st.duration = st.currentTime = st.vw = st.vh = 0;
   seek.value = 0; seek.max = 100; seek.disabled = true; paint(seek, 0);
   curEl.textContent = '0:00'; totEl.textContent = '0:00';
@@ -411,6 +416,10 @@ document.addEventListener('keydown', (e) => {
     case 221: if (!typing && st.loaded && engine === 'mpv') setSubDelay(st.subDelay + 0.1); break;   // ]
     case 219: if (!typing && st.loaded && engine === 'mpv') setSubDelay(st.subDelay - 0.1); break;   // [
     case 220: if (!typing && st.loaded && engine === 'mpv') setSubDelay(0); break;                   // \
+    // PgUp / PgDn → next / previous chapter. mpv resolves 'add chapter ±1' itself, so this needs no
+    // chapter list on our side; on media without chapters it is simply a no-op.
+    case 33: if (!typing && st.loaded && engine === 'mpv') soda.player.command('add', 'chapter', 1); break;   // PgUp → next chapter
+    case 34: if (!typing && st.loaded && engine === 'mpv') soda.player.command('add', 'chapter', -1); break;  // PgDn → previous chapter
     case 73: if (!typing) toggleStats(); break;                                                      // i → stats overlay
     case 48: case 49: case 50: case 51: // Ctrl+0/1/2/3 → Anime4K off / A / B / C (local engine only)
       if (e.ctrlKey && st.loaded && engine === 'mpv') setAnime4k(['', 'A', 'B', 'C'][e.keyCode - 48]);

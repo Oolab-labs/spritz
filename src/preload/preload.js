@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('soda', {
     onNotice: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('player:notice', h); return () => ipcRenderer.removeListener('player:notice', h); },
     setProperty: (name, value) => ipcRenderer.send('player:setProperty', { name, value }),
     command: (...args) => ipcRenderer.send('player:command', { args }),
+    playbackActive: (active) => ipcRenderer.send('player:playbackActive', { active }), // gates renderer background throttling
 
     play: () => ipcRenderer.send('player:setProperty', { name: 'pause', value: false }),
     pause: () => ipcRenderer.send('player:setProperty', { name: 'pause', value: true }),

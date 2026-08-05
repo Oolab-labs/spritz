@@ -17,9 +17,15 @@ const EventEmitter = require('events');
 const os = require('os');
 const http = require('http');
 const dgram = require('dgram');
-const multicastDns = require('multicast-dns');
-const dnsTxt = require('dns-txt')();
-const { Client, DefaultMediaReceiver } = require('castv2-client');
+// Loaded on demand, not at startup. These three are the only non-builtin dependencies in the main
+// process's start-up path, and none of them is needed unless the user actually casts: mDNS only
+// when discovery runs, castv2-client only when a cast is loaded. Deferring them keeps them out of
+// launch. (Deferring the MODULE from main.js wouldn't achieve this — main wires cast.on(...) at
+// startup, which constructs it regardless — so the laziness has to live here.)
+let multicastDns = null, dnsTxt = null, castv2 = null;
+const mdnsLib = () => (multicastDns || (multicastDns = require('multicast-dns')));
+const txtLib = () => (dnsTxt || (dnsTxt = require('dns-txt')()));
+const castLib = () => (castv2 || (castv2 = require('castv2-client')));
 
 // Physical-LAN private IPv4s only (skip loopback + VPN/tunnel interfaces).
 function lanSubnets() {
@@ -153,7 +159,7 @@ module.exports = function createCast() {
     if (discovering) { emitDevices(); return; }
     discovering = true;
     try {
-      mdns = multicastDns();
+      mdns = mdnsLib()();
       mdns.on('error', () => {});
       mdns.on('response', onMdns);
     } catch (e) { /* mDNS optional; eureka sweep still runs */ }
@@ -182,7 +188,7 @@ module.exports = function createCast() {
           let buf = r.data;
           if (Array.isArray(buf)) { try { buf = Buffer.concat(buf.filter(Buffer.isBuffer)); } catch (e) { buf = null; } }
           if (Buffer.isBuffer(buf)) {
-            try { const t = dnsTxt.decode(buf); if (t) { if (t.fn) name = t.fn; if (t.md) model = t.md; } } catch (e) {}
+            try { const t = txtLib().decode(buf); if (t) { if (t.fn) name = t.fn; if (t.md) model = t.md; } } catch (e) {}
           }
         }
       }
@@ -346,6 +352,7 @@ module.exports = function createCast() {
 
     function fullConnect() {
     teardownClient();
+    const { Client } = castLib();
     const c = client = new Client();
     // Connect timeout: castv2's connect callback never fires for an unreachable TV — without
     // this the UI hangs in "connecting" forever and chromecasting state is never reset.
@@ -382,7 +389,7 @@ module.exports = function createCast() {
     c.connect(host, () => {
       if (myGen !== castGen) { clearTimeout(to); try { c.removeAllListeners(); c.close(); } catch (x) {} return; } // a newer load/stop won — abandon
       connectedHost = host;
-      c.launch(DefaultMediaReceiver, (err, p) => {
+      c.launch(castLib().DefaultMediaReceiver, (err, p) => {
         if (myGen !== castGen) { clearTimeout(to); try { c.removeAllListeners(); c.close(); } catch (x) {} return; }
         if (err) { ev.emit('error', { message: err.message }); return done(err); }
         player = p;
