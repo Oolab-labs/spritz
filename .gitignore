@@ -72,3 +72,5 @@ hls/
 !vendor/shaders/
 !vendor/shaders/**
 !build/entitlements.mac.plist
+
+# The installed .app is a deploy target, not a source location (see deploy.sh).
