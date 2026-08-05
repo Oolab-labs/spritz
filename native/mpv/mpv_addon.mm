@@ -11,6 +11,7 @@
 // same thread with the GL context current), and ADVANCED_CONTROL is OFF. A dedicated
 // render thread + ThreadSafeFunction property events come after the gate proves out.
 
+#include <cstdlib>   // getenv (SPRITZ_GL_READBACK)
 #include <napi.h>
 #include <mpv/client.h>
 #include <mpv/render.h>
@@ -92,6 +93,11 @@ static mpv_handle*         gMpv = nullptr;
 static mpv_render_context* gRender = nullptr;
 static bool                gWantPlayer = false;
 static unsigned char       gLastPixel[4] = {0,0,0,0};
+// glReadPixels forces a synchronous GPU->CPU sync, stalling the whole pipeline. Doing it once per
+// displayed frame (which is what this used to do, on both the render and idle-fill paths) costs a
+// stall on EVERY frame — for a value only two debug getters expose and nothing in the app reads.
+// Keep the capability for debugging, off unless explicitly asked for.
+static bool gPixelReadback = (getenv("SPRITZ_GL_READBACK") != nullptr);
 static int                 gFrameCount = 0;
 static GLint               gLastFboBinding = -1;
 static int                 gLastRenderRc = 99;   // 99 = render not yet attempted
@@ -210,7 +216,7 @@ static int CreateRenderContextCurrent() {
       { (mpv_render_param_type)0, nullptr }
     };
     gLastRenderRc = mpv_render_context_render(gRender, rp);
-    glReadPixels(pxW/2, pxH/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, gLastPixel);
+    if (gPixelReadback) glReadPixels(pxW/2, pxH/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, gLastPixel);
     [ctx flushBuffer];
     mpv_render_context_report_swap(gRender);
   } else {
@@ -219,7 +225,7 @@ static int CreateRenderContextCurrent() {
     glViewport(0, 0, pxW, pxH);
     glClearColor(0.043f, 0.043f, 0.059f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    glReadPixels(pxW/2, pxH/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, gLastPixel);
+    if (gPixelReadback) glReadPixels(pxW/2, pxH/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, gLastPixel);
     [ctx flushBuffer];
   }
   gFrameCount++;
