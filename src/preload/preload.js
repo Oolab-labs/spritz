@@ -76,6 +76,7 @@ contextBridge.exposeInMainWorld('soda', {
     selectSubtitle: (i) => ipcRenderer.send('airplay:selectMedia', { kind: 'subs', index: i }), // -1 = off
     onEvent: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('airplay-event', h); return () => ipcRenderer.removeListener('airplay-event', h); }
   },
+  diag: () => ipcRenderer.invoke('diag:get'), // live subsystem snapshot for the debug overlay
   cast: { // Google Cast (Chromecast / LG webOS)
     discover: () => ipcRenderer.send('cast:discover'),
     setManualHosts: (csv) => ipcRenderer.send('cast:manualHosts', { csv }), // user-entered TV IPs, probed alongside discovery

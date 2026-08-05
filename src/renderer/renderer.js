@@ -486,12 +486,36 @@ function armIdle() {
 }
 document.addEventListener('mousemove', armIdle);
 
-function updateDebug() {
-  if (debug.classList.contains('hidden')) return;
-  debug.textContent =
-    `pos ${toPlayerTime(st.currentTime)} / ${toPlayerTime(st.duration)}\n` +
-    `${st.vw}x${st.vh}  hwdec=${st.hwdec}\n` +
-    `paused=${st.paused} ended=${st.ended} seeking=${st.seeking}`;
+// The debug overlay used to show playback state only, which told you nothing when the interesting
+// failures are all in the network subsystems. It now also reports what main is actually doing —
+// LAN server address, what discovery has found, torrent health, and the recent errors that the
+// catch-blocks swallow. This is the view that would have made a silent Local Network denial
+// obvious in seconds instead of hours.
+let diagTimer = null;
+const fmtAgo = (t) => { const s = Math.max(0, Math.round((Date.now() - t) / 1000)); return s < 60 ? s + 's' : Math.round(s / 60) + 'm'; };
+async function updateDebug() {
+  if (debug.classList.contains('hidden')) { if (diagTimer) { clearInterval(diagTimer); diagTimer = null; } return; }
+  if (!diagTimer) diagTimer = setInterval(updateDebug, 1000); // refresh only while visible
+  let d = null; try { d = await soda.diag(); } catch (e) {}
+  const lines = [
+    `pos ${toPlayerTime(st.currentTime)} / ${toPlayerTime(st.duration)}`,
+    `${st.vw}x${st.vh}  hwdec=${st.hwdec}`,
+    `paused=${st.paused} ended=${st.ended} seeking=${st.seeking}`
+  ];
+  if (d) {
+    lines.push('');
+    lines.push(`engine   ${d.engine || 'mpv'}`);
+    lines.push(`lan      ${d.lan && d.lan.address ? d.lan.address + (d.lan.port ? ':' + d.lan.port : '') : '(not serving)'}`);
+    lines.push(`cast     ${d.cast.count} device(s)${d.cast.names.length ? ' — ' + d.cast.names.join(', ') : ''}`);
+    lines.push(`dlna     ${d.dlna.count} renderer(s)${d.dlna.names.length ? ' — ' + d.dlna.names.join(', ') : ''}`);
+    if (d.torrent) lines.push(`torrent  ${d.torrent.peers} peers, ${prettyBytes(d.torrent.speed || 0)}/s, ${Math.floor((d.torrent.progress || 0) * 100)}%`);
+    if (d.errors && d.errors.length) {
+      lines.push('');
+      lines.push('recent errors:');
+      d.errors.forEach((e) => lines.push(`  ${fmtAgo(e.t)} ago [${e.where}] ${e.message}`));
+    }
+  }
+  debug.textContent = lines.join('\n');
 }
 
 // ---- tracks / menus / quality ----

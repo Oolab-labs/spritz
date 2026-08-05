@@ -1100,7 +1100,8 @@ module.exports = function createLanServer(opts) {
   // /dlna/ URLs are dead now, and the next source re-registers its own afterwards. (Audit M7)
   function cancelActive() { cancelHls(); cancelRemux(); cancelMkv(); files.clear(); dlnaProxies.clear(); }
 
-  return { serve, serveDlna, serveSubtitleForDlna, prepareCast, serveHls, serveMkv, teardown, cancelActive, lanAddress, avCompatible };
+  return { serve, serveDlna, serveSubtitleForDlna, prepareCast, serveHls, serveMkv, teardown, cancelActive, lanAddress, avCompatible,
+    serverPort: () => (server && server.listening ? port : null) }; // diagnostics: where receivers are pointed
 };
 
 function safeStat(f) { try { const s = fs.statSync(f); return s.isFile() ? s : null; } catch (e) { return null; } }

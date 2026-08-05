@@ -249,16 +249,54 @@ if (!gotLock) {
 
   // Torrent/magnet streaming (webtorrent in main). Produces a localhost URL the
   // renderer feeds to the normal player-load path.
-  const torrent = require('./torrent')(send);
+  // Tee torrent progress/errors into the diagnostics snapshot on the way to the renderer.
+  const torrentSend = (channel, payload) => {
+    try {
+      if (channel === 'torrent:progress' && payload) {
+        diagTorrent = { peers: payload.peers, speed: payload.speed, progress: payload.progress };
+      } else if (channel === 'torrent:error' && payload) recordErr('torrent', payload.message);
+    } catch (e) {}
+    send(channel, payload);
+  };
+  const torrent = require('./torrent')(torrentSend);
   const lan = require('./lanserver')({ onWarn: (m) => send('toast', { message: m }) }); // LAN file server for local-file AirPlay
   const cast = require('./cast')();     // Google Cast (Chromecast / LG webOS)
   const dlna = require('./dlna')();     // DLNA / UPnP "play to"
+
+  // ---- diagnostics ----
+  // Spritz does a lot the user cannot see: a /24 discovery sweep, a LAN HTTP server, tracker
+  // traffic, ffmpeg transcodes. When any of it fails the UI historically said nothing, so a
+  // discovery failure was indistinguishable from a sleeping TV, a filtered network, or macOS
+  // silently denying local-network access. Keep a small live snapshot plus the recent errors that
+  // the catch-blocks would otherwise swallow, and let the debug overlay show it.
+  const diagErrors = []; // ring buffer, newest last
+  function recordErr(where, message) {
+    if (!message) return;
+    diagErrors.push({ t: Date.now(), where, message: String(message).slice(0, 200) });
+    if (diagErrors.length > 25) diagErrors.shift();
+  }
+  let diagCast = [], diagDlna = [], diagTorrent = null;
+  function diagSnapshot() {
+    let lanAddr = null, lanPort = null;
+    try { lanAddr = lan.lanAddress(); } catch (e) {}
+    try { lanPort = lan.serverPort ? lan.serverPort() : null; } catch (e) {}
+    return {
+      engine: castEngine,
+      lan: { address: lanAddr, port: lanPort },
+      cast: { count: diagCast.length, names: diagCast.map((d) => d.name).slice(0, 6) },
+      dlna: { count: diagDlna.length, names: diagDlna.map((d) => d.name).slice(0, 6) },
+      torrent: diagTorrent,
+      source: mpvLastUrl ? String(mpvLastUrl).slice(0, 120) : null,
+      errors: diagErrors.slice(-8).reverse()
+    };
+  }
+  ipcMain.handle('diag:get', () => { try { return diagSnapshot(); } catch (e) { return null; } });
   const history = require('./history')(); // resume positions / recents
 
   // ---- DLNA / UPnP casting (parallel to Chromecast) ----
   let dlnaPoll = null;
-  dlna.on('devices', (devices) => send('dlna-event', { type: 'devices', devices }));
-  dlna.on('error', (e) => send('dlna-event', { type: 'error', message: e.message }));
+  dlna.on('devices', (devices) => { diagDlna = devices || []; send('dlna-event', { type: 'devices', devices }); });
+  dlna.on('error', (e) => { recordErr('dlna', e.message); send('dlna-event', { type: 'error', message: e.message }); });
   function stopDlnaPoll() { if (dlnaPoll) { clearInterval(dlnaPoll); dlnaPoll = null; } }
   // Poll GetPositionInfo + GetTransportInfo so the remote scrubber advances and a stop-on-TV
   // returns control to local playback (DLNA has no push events).
@@ -549,8 +587,8 @@ if (!gotLock) {
   // seek or audio-language change (the proven single-progressive-stream mechanism — the receiver decodes one
   // bulletproof stream; switching = a fresh stream at the same position). null for direct-MP4 casts.
   let castMkv = null; // { input, caps, audioTracks:[{idx,name,lang}], dur, audioTrack }
-  cast.on('devices', (devices) => send('cast-event', { type: 'devices', devices }));
-  cast.on('error', (e) => send('cast-event', { type: 'error', message: e.message }));
+  cast.on('devices', (devices) => { diagCast = devices || []; send('cast-event', { type: 'devices', devices }); });
+  cast.on('error', (e) => { recordErr('cast', e.message); send('cast-event', { type: 'error', message: e.message }); });
   cast.on('status', (s) => {
     if (!s) return;
     if (typeof s.currentTime === 'number') lastAvTime = s.currentTime; // reuse resume clock (absolute: MKV uses -copyts)
