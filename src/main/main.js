@@ -116,6 +116,32 @@ if (!gotLock) {
   // at the point of user intent (before the multi-second resolve) — that's what closes the races the
   // three independent, post-resolve booleans left open. (Audit M4.)
   let castEngine = 'mpv'; // 'mpv' | 'pending' | 'airplay' | 'chromecast' | 'dlna'
+  // Every engine change goes through setEngine(). The transitions used to be 16 bare assignments
+  // scattered across the file, and the bugs in this area were all state bugs wearing a networking
+  // costume: playback resuming locally while a TV was still playing, two engines briefly live at
+  // once, a superseded handoff writing state after a newer one had won.
+  //
+  // This DELIBERATELY does not enforce. An illegal transition is recorded and still performed, so
+  // instrumentation can never itself break playback — the point is to make the bug class visible
+  // (in the Ctrl+D overlay) before changing behaviour that currently works.
+  const ENGINE_OK = {
+    mpv:        ['mpv', 'pending', 'airplay', 'chromecast', 'dlna'], // local → start a handoff
+    pending:    ['mpv', 'pending', 'airplay', 'chromecast', 'dlna'], // resolving → settled or aborted
+    airplay:    ['mpv', 'airplay'],      // a cast may only end by returning to local…
+    chromecast: ['mpv', 'chromecast'],   // …never by jumping straight to another engine, which
+    dlna:       ['mpv', 'dlna']          // is what "playing on two things at once" looks like
+  };
+  const engineLog = []; // recent transitions, newest last — surfaced in diagnostics
+  function setEngine(next, reason) {
+    const prev = castEngine;
+    if (prev === next) return;
+    if (!(ENGINE_OK[prev] || []).includes(next)) {
+      recordErr('cast-state', 'illegal transition ' + prev + ' -> ' + next + (reason ? ' (' + reason + ')' : ''));
+    }
+    engineLog.push({ t: Date.now(), from: prev, to: next, reason: reason || '' });
+    if (engineLog.length > 12) engineLog.shift();
+    castEngine = next;
+  }
   const isCasting = () => castEngine === 'airplay' || castEngine === 'chromecast' || castEngine === 'dlna';
   // Tear down whatever is currently casting, then enter 'pending' for the new kind. Called at intent,
   // synchronously, so a concurrent AirPlay-engage / other cast sees "busy" and backs off.
@@ -124,7 +150,7 @@ if (!gotLock) {
     else if (castEngine === 'chromecast') { try { cast.stop(); } catch (e) {} }
     else if (castEngine === 'dlna') { try { dlna.stop(); } catch (e) {} stopDlnaPoll(); }
     castMkv = null;
-    castEngine = 'pending';
+    setEngine('pending');
   }
 
   function setCastable(url, subs) {
@@ -142,7 +168,7 @@ if (!gotLock) {
     send('airplay-event', { type: 'castable', castable: !!castUrl });
   }
   function resumeLocalFromAirplay(skipRearm) {
-    castEngine = 'mpv';
+    setEngine('mpv');
     if (mpvLastUrl) { try { mpvAddon.command('loadfile', mpvLastUrl, 'replace', '-1', loadOpts(lastAvTime, true)); } catch (e) {} }
     // Re-arm for the next cast on a clean route-drop — but NOT after a playback error, where
     // castUrl is the thing that just failed (re-arming would set up an identical instant failure).
@@ -153,7 +179,7 @@ if (!gotLock) {
   // playing (came straight from local), leave it. castUrl/AVPlayer are untouched (the failed cast used a
   // separate Chromecast/DLNA slot, never the AirPlay HLS slot), so AirPlay stays armed — surface the error.
   function castFailedLocal(wasCasting, evChannel, msg) {
-    castEngine = 'mpv';
+    setEngine('mpv');
     if (wasCasting && mpvLastUrl) { try { mpvAddon.command('loadfile', mpvLastUrl, 'replace', '-1', loadOpts(lastAvTime, true)); } catch (e) {} }
     if (evChannel && msg) send(evChannel, { type: 'error', message: msg });
   }
@@ -287,6 +313,7 @@ if (!gotLock) {
       dlna: { count: diagDlna.length, names: diagDlna.map((d) => d.name).slice(0, 6) },
       torrent: diagTorrent,
       source: mpvLastUrl ? String(mpvLastUrl).slice(0, 120) : null,
+      engineLog: engineLog.slice(-4).reverse(),
       errors: diagErrors.slice(-8).reverse()
     };
   }
@@ -319,7 +346,7 @@ if (!gotLock) {
     }, 1000);
   }
   function resumeLocalFromDlna() {
-    castEngine = 'mpv'; stopDlnaPoll();
+    setEngine('mpv'); stopDlnaPoll();
     try { dlna.stop(); } catch (e) {}
     if (mpvLastUrl) { try { mpvAddon.command('loadfile', mpvLastUrl, 'replace', '-1', loadOpts(lastAvTime, true)); } catch (e) {} }
     // NO rearmAirplay: DLNA serves the original file via its own slot and never touched the AirPlay
@@ -342,16 +369,16 @@ if (!gotLock) {
     const mediaDur = !wasCasting ? mpvDur() : 0;
     beginCast();     // synchronously claim the engine ('pending') + tear down any current cast (Audit M4)
     resolveDlna(mpvLastUrl, (durl) => {
-      if (gen !== loadGen) { castEngine = 'mpv'; return; } // source changed mid-resolve (player:load handles mpv)
+      if (gen !== loadGen) { setEngine('mpv'); return; } // source changed mid-resolve (player:load handles mpv)
       if (!durl) return castFailedLocal(wasCasting, 'dlna-event', 'This source can’t be cast to a DLNA TV (a still-downloading torrent isn’t a complete file DLNA can play — try AirPlay).');
       // Advertise any user-added external subtitle as a sidecar the TV loads (SRT; ASS/VTT converted).
       // Embedded subs need nothing — the LG reads them from the untouched original file itself.
       const go = (subUrl) => {
-        if (gen !== loadGen) { castEngine = 'mpv'; return; }
+        if (gen !== loadGen) { setEngine('mpv'); return; }
         try { mpvAddon.command('stop'); } catch (e) {}
-        castEngine = 'dlna';
+        setEngine('dlna');
         dlna.load(location, { url: durl, title: lastCastTitle, contentType: dlnaContentType(durl), subtitleUrl: subUrl, size: mediaSize, duration: mediaDur }, (err) => {
-          if (gen !== loadGen) { try { dlna.stop(); } catch (e) {} castEngine = 'mpv'; return; } // superseded during load
+          if (gen !== loadGen) { try { dlna.stop(); } catch (e) {} setEngine('mpv'); return; } // superseded during load
           if (err) { resumeLocalFromDlna(); send('dlna-event', { type: 'error', message: err.message }); }
           else { send('dlna-event', { type: 'started', location, withSub: !!subUrl }); startDlnaPoll(); }
         });
@@ -600,7 +627,7 @@ if (!gotLock) {
   // to clear resume + leave the wedged last frame. (Audit M5)
   cast.on('ended', () => {
     if (castEngine !== 'chromecast') return;
-    castEngine = 'mpv'; castMkv = null;
+    setEngine('mpv'); castMkv = null;
     try { cast.stop(); } catch (e) {}
     send('cast-event', { type: 'ended' });
   });
@@ -616,7 +643,7 @@ if (!gotLock) {
     recastMkv(at || lastAvTime || 0, castMkv.audioTrack); // fresh MKV stream from the live position
   });
   function resumeLocalFromChromecast() {
-    castEngine = 'mpv'; castMkv = null;
+    setEngine('mpv'); castMkv = null;
     try { cast.stop(); } catch (e) {}
     if (mpvLastUrl) { try { mpvAddon.command('loadfile', mpvLastUrl, 'replace', '-1', loadOpts(lastAvTime, true)); } catch (e) {} }
     // NO rearmAirplay: the Chromecast (serveMkv) transport uses its own slot and never touched the
@@ -816,7 +843,7 @@ if (!gotLock) {
               if (!castUrl) { console.error('[airplay] BLOCKED: no castable URL resolved yet (HLS pre-resolve not ready/failed) — staying local'); try { apAddon.stopAirplay(); } catch (e) {} return; }
               cancelDrop();                            // route (re)engaged → cancel any pending drop
               if (castEngine !== 'airplay') {          // route taken → hand off from mpv
-                castEngine = 'airplay';
+                setEngine('airplay');
                 const pos = mpvPos();
                 captureTracks();                        // remember language/subtitle for the return
                 try { mpvAddon.command('stop'); } catch (e) {}
@@ -934,7 +961,7 @@ if (!gotLock) {
     else if (castEngine === 'dlna') { try { dlna.stop(); } catch (e) {} stopDlnaPoll(); send('dlna-event', { type: 'stopped' }); }
     else if (castEngine === 'airplay') { try { if (apAddon) apAddon.stopAirplay(); } catch (e) {} } // external=false → renderer exitCasting
     cancelDrop(); // a pending AirPlay drop timer must not fire into the next source's state
-    castEngine = 'mpv'; castMkv = null; // also clears a 'pending' handoff; its in-flight resolve cb bails on the loadGen bump
+    setEngine('mpv'); castMkv = null; // also clears a 'pending' handoff; its in-flight resolve cb bails on the loadGen bump
     try { lan.cancelActive(); } catch (e) {} // kill any orphan HLS/remux ffmpeg reading the old source
   }
 
@@ -1137,7 +1164,7 @@ if (!gotLock) {
     const aTrack = savedAid ? Math.max(0, parseInt(savedAid, 10) - 1) : 0; // cast the language the user was watching
     const startSec = mpvPos() || lastAvTime || 0;
     resolveChromecast(mpvLastUrl, caps, aTrack, startSec, (av, meta) => {
-      if (gen !== loadGen) { castEngine = 'mpv'; return; } // source changed while resolving (player:load handles mpv)
+      if (gen !== loadGen) { setEngine('mpv'); return; } // source changed while resolving (player:load handles mpv)
       if (!av) return castFailedLocal(wasCasting, 'cast-event', 'This source can’t be cast to this TV.');
       castMkv = (meta && meta.isMkv) ? { host, input: meta.input, caps: meta.caps, audioTracks: meta.audioTracks, dur: meta.dur, audioTrack: meta.audioTrack, burnSub: null, subDelay: 0, menuSubs: meta.menuSubs || [] } : null;
       doCastLoad(host, av, (meta && meta.subs) || [], gen, { startSec, audioTracks: (meta && meta.audioTracks) || [], audioTrack: (meta && meta.audioTrack) || 0, menuSubs: (meta && meta.menuSubs) || [] });
@@ -1145,15 +1172,15 @@ if (!gotLock) {
   });
   function doCastLoad(host, url, subs, gen, info) {
     if (gen == null) gen = loadGen;
-    if (!url || gen !== loadGen) { castEngine = 'mpv'; if (!url) send('cast-event', { type: 'error', message: 'This source can’t be cast (needs an MP4/WebM the TV can play).' }); return; }
+    if (!url || gen !== loadGen) { setEngine('mpv'); if (!url) send('cast-event', { type: 'error', message: 'This source can’t be cast (needs an MP4/WebM the TV can play).' }); return; }
     // MKV transport bakes the start position into the stream (-ss/-copyts) → tell the receiver that
     // absolute position; a direct/HLS cast uses the live mpv position.
     const pos = info && typeof info.startSec === 'number' ? info.startSec : (mpvPos() || lastAvTime);
     try { mpvAddon.command('stop'); } catch (e) {} // hand off from local playback (AirPlay already dropped by beginCast)
-    castEngine = 'chromecast';
+    setEngine('chromecast');
     cast.load(host, { url, title: lastCastTitle, contentType: ctypeFor(url), currentTime: pos, subs: subs || [] }, (err) => {
       // The source changed (or a cast was cancelled) during the ~12s handshake → don't resurrect. (Audit M3)
-      if (gen !== loadGen) { try { cast.stop(); } catch (e) {} castEngine = 'mpv'; return; }
+      if (gen !== loadGen) { try { cast.stop(); } catch (e) {} setEngine('mpv'); return; }
       if (err) { if (err.detailedErrorCode) console.error('[cast] LOAD failed, detailedErrorCode=' + err.detailedErrorCode + ' (104=container/codec unsupported, e.g. a real Chromecast rejecting MKV)'); resumeLocalFromChromecast(); send('cast-event', { type: 'error', message: err.message }); }
       else send('cast-event', { type: 'started', host, audioTracks: (info && info.audioTracks) || [], audioActive: (info && info.audioTrack) || 0, isMkv: !!castMkv, subTracks: (info && info.menuSubs) || [], burnActive: null });
     });

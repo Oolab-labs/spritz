@@ -93,6 +93,31 @@ test('torrent critical window is cleared before re-marking', () => {
   assert.ok(flagged <= 26, 'critical set must stay bounded to the window, got ' + flagged);
 });
 
+// --- 4. Engine transition rules ---
+// The double-playback bug was a state bug: local playback resumed while a TV was still playing.
+// Pin the rule that a cast can only END by returning to local — never by jumping straight to
+// another engine, which is what "playing on two things at once" looks like in state terms.
+test('a cast engine may only transition back to local, never to another engine', () => {
+  const ENGINE_OK = {
+    mpv:        ['mpv', 'pending', 'airplay', 'chromecast', 'dlna'],
+    pending:    ['mpv', 'pending', 'airplay', 'chromecast', 'dlna'],
+    airplay:    ['mpv', 'airplay'],
+    chromecast: ['mpv', 'chromecast'],
+    dlna:       ['mpv', 'dlna']
+  };
+  const legal = (a, b) => ENGINE_OK[a].includes(b);
+  for (const from of ['airplay', 'chromecast', 'dlna']) {
+    for (const to of ['airplay', 'chromecast', 'dlna']) {
+      if (from === to) continue;
+      assert.ok(!legal(from, to), from + ' -> ' + to + ' must be illegal (two engines live at once)');
+    }
+    assert.ok(legal(from, 'mpv'), from + ' -> mpv must be legal (stopping a cast)');
+  }
+  for (const to of ['airplay', 'chromecast', 'dlna', 'pending']) {
+    assert.ok(legal('mpv', to), 'mpv -> ' + to + ' must be legal (starting a handoff)');
+  }
+});
+
 (async () => {
   let pass = 0, fail = 0;
   for (const t of tests) {

@@ -509,6 +509,11 @@ async function updateDebug() {
     lines.push(`cast     ${d.cast.count} device(s)${d.cast.names.length ? ' — ' + d.cast.names.join(', ') : ''}`);
     lines.push(`dlna     ${d.dlna.count} renderer(s)${d.dlna.names.length ? ' — ' + d.dlna.names.join(', ') : ''}`);
     if (d.torrent) lines.push(`torrent  ${d.torrent.peers} peers, ${prettyBytes(d.torrent.speed || 0)}/s, ${Math.floor((d.torrent.progress || 0) * 100)}%`);
+    if (d.engineLog && d.engineLog.length) {
+      lines.push('');
+      lines.push('engine changes:');
+      d.engineLog.forEach((e) => lines.push(`  ${fmtAgo(e.t)} ago ${e.from} -> ${e.to}${e.reason ? ' (' + e.reason + ')' : ''}`));
+    }
     if (d.errors && d.errors.length) {
       lines.push('');
       lines.push('recent errors:');
