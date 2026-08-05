@@ -231,6 +231,10 @@ body.casting .quality { display: none; }
 #resume-btn:hover { background: #2a93ff; }
 #resume-btn svg { width: 17px; height: 17px; fill: currentColor; }
 #resume-btn.hidden { opacity: 0; pointer-events: none; transform: translateX(-50%) translateY(8px); }
+.setting-input { width: 190px; padding: 6px 9px; border-radius: 7px; border: 1px solid rgba(255,255,255,.16);
+  background: rgba(255,255,255,.05); color: #e7e7ea; font: 12px ui-monospace, monospace; }
+.setting-input:focus { outline: none; border-color: var(--accent); }
+
 .cast-empty-warn { color: #f0b429; white-space: normal; line-height: 1.35; }
 .cast-empty-hint { margin-top: 3px; font-size: 11px; color: #9aa3b0; max-width: 260px; white-space: normal; }
 

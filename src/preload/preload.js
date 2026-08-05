@@ -78,6 +78,7 @@ contextBridge.exposeInMainWorld('soda', {
   },
   cast: { // Google Cast (Chromecast / LG webOS)
     discover: () => ipcRenderer.send('cast:discover'),
+    setManualHosts: (csv) => ipcRenderer.send('cast:manualHosts', { csv }), // user-entered TV IPs, probed alongside discovery
     load: (host) => ipcRenderer.send('cast:load', { host }),
     play: () => ipcRenderer.send('cast:play'),
     pause: () => ipcRenderer.send('cast:pause'),

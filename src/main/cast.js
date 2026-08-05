@@ -200,8 +200,17 @@ module.exports = function createCast() {
   // Manually-specified hosts (comma-separated) for TVs that never auto-discover —
   // the old app exposed this as 'manual-cast-hosts'. Useful when the TV is on another
   // subnet or a VPN hijacks multicast.
+  // User-entered TV addresses (Settings) merged with the SPRITZ_CAST_HOSTS env var. These are
+  // probed alongside normal discovery, never instead of it — discovery is best-effort by nature
+  // (multicast can be filtered, a TV's discovery service sleeps, macOS can deny local-network
+  // access silently), so a directly-addressable fallback is what makes casting recoverable.
+  let userHosts = [];
+  const parseHosts = (csv) => String(csv || '').split(',').map((x) => x.trim())
+    .filter((x) => /^\d{1,3}(\.\d{1,3}){3}$/.test(x)); // IPv4 literals only — these get probed directly
+  function setManualHosts(csv) { userHosts = parseHosts(csv); }
   function manualHosts() {
-    return String(process.env.SPRITZ_CAST_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const env = String(process.env.SPRITZ_CAST_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean);
+    return [...new Set(userHosts.concat(env))];
   }
 
   function sweep() {
@@ -452,7 +461,7 @@ module.exports = function createCast() {
 
   return {
     on: (e, fn) => ev.on(e, fn),
-    startDiscovery, stopDiscovery, load, play, pause, seek, stop, setVolume, teardown, wake,
+    startDiscovery, stopDiscovery, load, play, pause, seek, stop, setVolume, teardown, wake, setManualHosts,
     tracks, setTrack, connectedHost: () => connectedHost,
     capsFor: (host) => { const d = devices.get(host); return d ? d.caps : null; }
   };

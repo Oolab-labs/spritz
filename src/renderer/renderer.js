@@ -866,6 +866,16 @@ const settings = (() => {
   try { return Object.assign(def, JSON.parse(localStorage.getItem('spritz-settings') || '{}')); } catch (e) { return def; }
 })();
 function saveSettings() { try { localStorage.setItem('spritz-settings', JSON.stringify(settings)); } catch (e) {} }
+// Manual TV addresses. Discovery is best-effort by nature — multicast can be filtered, a TV's
+// discovery service can be asleep, and macOS can deny local-network access without saying so. This
+// is the escape hatch: probe these hosts directly, in addition to (never instead of) normal
+// discovery, so a TV that never announces itself is still reachable.
+function applyCastHosts() {
+  const el = $('#set-cast-hosts'); if (!el) return;
+  settings.castHosts = el.value || '';
+  saveSettings();
+  try { soda.cast.setManualHosts(settings.castHosts); } catch (e) {}
+}
 function setSubSize(px) {
   settings.subSize = parseInt(px, 10) || 46; $('#set-subsize').value = String(settings.subSize);
   soda.player.setProperty('sub-font-size', settings.subSize); saveSettings();
@@ -892,14 +902,17 @@ function applySettings() {
   setInterpolation(settings.interpolation); setAnime4k(settings.anime4k); setSkipSponsors(settings.skipSponsors);
   setSubSize(settings.subSize); setSubBg(settings.subBg);
   soda.player.setProperty('sub-codepage', 'auto'); // uchardet: auto-detect external-subtitle charset (no more mojibake)
+  try { soda.cast.setManualHosts(settings.castHosts || ''); } catch (e) {} // manual TV addresses active from launch
 }
 function openSettings() {
   $('#set-interp').checked = settings.interpolation; $('#set-anime4k').value = settings.anime4k; $('#set-sponsors').checked = settings.skipSponsors;
   $('#set-subsize').value = String(settings.subSize); $('#set-subbg').checked = settings.subBg; $('#set-requirevpn').checked = settings.requireVpn;
+  $('#set-cast-hosts').value = settings.castHosts || '';
   refreshVpnState();
   settingsModal.classList.remove('hidden');
 }
 function closeSettings() { settingsModal.classList.add('hidden'); }
+$('#set-cast-hosts').addEventListener('change', applyCastHosts);
 $('#set-interp').addEventListener('change', (e) => setInterpolation(e.target.checked));
 $('#set-anime4k').addEventListener('change', (e) => setAnime4k(e.target.value));
 $('#set-sponsors').addEventListener('change', (e) => setSkipSponsors(e.target.checked));

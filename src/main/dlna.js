@@ -87,10 +87,16 @@ function lanSubnets() {
   }
   return out;
 }
-// Manually-specified renderer hosts (comma-separated) for TVs on another subnet — mirrors
-// SPRITZ_CAST_HOSTS in cast.js.
+// User-entered addresses (Settings) merged with the SPRITZ_DLNA_HOSTS env var — probed by the
+// unicast sweep alongside normal SSDP, for renderers that never answer a broadcast.
+let userHosts = [];
+function setManualHosts(csv) {
+  userHosts = String(csv || '').split(',').map((x) => x.trim())
+    .filter((x) => /^\d{1,3}(\.\d{1,3}){3}$/.test(x));
+}
 function manualHosts() {
-  return String(process.env.SPRITZ_DLNA_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const env = String(process.env.SPRITZ_DLNA_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  return [...new Set(userHosts.concat(env))];
 }
 
 // Durable last-good renderer cache. The LG's SSDP responder is INTERMITTENT — it answers unicast
@@ -382,5 +388,5 @@ module.exports = function createDlna() {
 
   function teardown() { try { if (current) stop(); } catch (e) {} stopDiscovery(); current = null; } // stop the TV, not just discovery
 
-  return { on: (e, fn) => ev.on(e, fn), startDiscovery, stopDiscovery, load, play, pause, stop, seek, setVolume, position, transportState, teardown };
+  return { on: (e, fn) => ev.on(e, fn), startDiscovery, stopDiscovery, load, play, pause, stop, seek, setVolume, position, transportState, teardown, setManualHosts };
 };

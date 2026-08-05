@@ -1075,6 +1075,12 @@ if (!gotLock) {
 
   // ---- Google Cast (Chromecast / LG webOS) ----
   ipcMain.on('cast:discover', () => { try { cast.startDiscovery(); } catch (e) {} });
+  // User-entered TV addresses, probed in addition to normal discovery. Also handed to the DLNA
+  // side, since a TV that hides from one discovery protocol usually hides from both.
+  ipcMain.on('cast:manualHosts', (_e, { csv } = {}) => {
+    try { cast.setManualHosts(csv); } catch (e) {}
+    try { dlna.setManualHosts(csv); } catch (e) {}
+  });
   ipcMain.on('cast:load', (_e, { host } = {}) => {
     if (!host) { send('cast-event', { type: 'error', message: 'No TV selected.' }); return; }
     const caps = cast.capsFor(host);
