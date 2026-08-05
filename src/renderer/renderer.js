@@ -456,9 +456,16 @@ window.addEventListener('drop', (e) => {
 // ---- controls auto-hide ----
 let idleTimer = null;
 function armIdle() {
-  controls.classList.remove('idle'); document.body.style.cursor = 'default';
-  torrentStatus.classList.remove('controls-hidden'); // fade the peers/speed pill back in with the controls
-  refreshAir();
+  // Bound to mousemove, so this runs at pointer rate (60-120Hz while the mouse is moving) — which
+  // is precisely when UI lag is felt. Only the timer needs re-arming that often; the class/cursor
+  // writes and refreshAir() are only meaningful when actually LEAVING the idle state. contains()
+  // is a cheap read and doesn't force layout. (Other call sites clear 'idle' directly, so the DOM
+  // is the source of truth here rather than a flag that could desync from them.)
+  if (controls.classList.contains('idle')) {
+    controls.classList.remove('idle'); document.body.style.cursor = 'default';
+    torrentStatus.classList.remove('controls-hidden'); // fade the peers/speed pill back in with the controls
+    refreshAir();
+  }
   clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
     if (!st.paused && st.loaded && engine === 'mpv') { // never auto-hide the cast remote
