@@ -6,6 +6,11 @@
 //   renderer control input → IPC → main → addon (command/setProperty/loadfile)
 //   addon events (TSFN)      → main → IPC('player-event') → renderer
 
+// Cache compiled JS on disk so subsequent launches skip re-parsing/compiling the main process's
+// modules (this file is ~1200 lines and pulls in webtorrent, castv2 and friends). Node >=22 only,
+// and purely an optimisation — wrapped because a failure here must never stop the app booting.
+try { require('module').enableCompileCache?.(); } catch (e) {}
+
 const { app, BrowserWindow, ipcMain, dialog, powerSaveBlocker, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');

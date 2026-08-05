@@ -552,6 +552,12 @@ async function applyLangPref(audio, subs) {
   }
   if (pref.subLang === 'off') { if (subs.some((t) => t.selected)) soda.player.setProperty('sid', 'no'); }
   else if (pref.subLang) { const m = subs.find((t) => (t.lang || '').toLowerCase() === pref.subLang); if (m && !m.selected) soda.player.setProperty('sid', String(m.id)); }
+  // Restore the remembered tuning. Guarded per field so an older pref record (language only)
+  // doesn't clobber the current session with zeros/defaults it never stored.
+  if (typeof pref.subDelay === 'number' && pref.subDelay !== st.subDelay) setSubDelay(pref.subDelay);
+  if (typeof pref.audioDelay === 'number' && pref.audioDelay !== st.audioDelay) setAudioDelay(pref.audioDelay);
+  if (typeof pref.speed === 'number' && pref.speed > 0 && pref.speed !== playbackSpeed) { setSpeed(pref.speed); renderPlaybackMenu(); }
+  if (typeof pref.zoom === 'number' && pref.zoom !== videoZoom) setZoom(pref.zoom);
 }
 // mpv emits aid/sid as "1"/"2"/"no" — move the active marker accordingly.
 function setActiveTrack(list, idStr) {
@@ -614,8 +620,12 @@ $('#sub-generate').addEventListener('click', async () => {
 });
 const clampDelay = (v) => Math.round(Math.max(-30, Math.min(30, v)) * 10) / 10;
 const fmtDelay = (v) => (v > 0 ? '+' : '') + v.toFixed(1) + 's';
-function setSubDelay(v) { st.subDelay = clampDelay(v); soda.player.setSubDelay(st.subDelay); $('#sub-delay-val').textContent = fmtDelay(st.subDelay); }
-function setAudioDelay(v) { st.audioDelay = clampDelay(v); soda.player.setProperty('audio-delay', st.audioDelay); $('#audio-delay-val').textContent = fmtDelay(st.audioDelay); }
+// Tuning that should survive re-opening the same title, alongside the language prefs. mpv resets
+// delays per file, and re-dialling a 300ms subtitle offset (or the speed/zoom you always use for a
+// given source) on every visit is exactly the kind of thing a player should remember for you.
+function savePlaybackPref(partial) { const key = showKeyOf(); if (key) soda.prefs.save(key, partial); }
+function setSubDelay(v) { st.subDelay = clampDelay(v); soda.player.setSubDelay(st.subDelay); $('#sub-delay-val').textContent = fmtDelay(st.subDelay); savePlaybackPref({ subDelay: st.subDelay }); }
+function setAudioDelay(v) { st.audioDelay = clampDelay(v); soda.player.setProperty('audio-delay', st.audioDelay); $('#audio-delay-val').textContent = fmtDelay(st.audioDelay); savePlaybackPref({ audioDelay: st.audioDelay }); }
 document.querySelectorAll('.delay-btn[data-delay]').forEach((b) => b.addEventListener('click', (e) => {
   e.stopPropagation();
   const step = parseFloat(b.dataset.step);
@@ -694,9 +704,9 @@ let playbackSpeed = 1, videoZoom = 0;
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const ASPECTS = [['Default', '-1'], ['16:9', '16:9'], ['4:3', '4:3'], ['21:9', '64:27'], ['2.35:1', '2.35'], ['Stretch', '0']];
 let currentAspect = '-1';
-function setSpeed(v) { playbackSpeed = v; soda.player.setProperty('speed', v); }
+function setSpeed(v) { playbackSpeed = v; soda.player.setProperty('speed', v); savePlaybackPref({ speed: v }); }
 function setAspect(v) { currentAspect = v; soda.player.setProperty('video-aspect-override', v); }
-function setZoom(z) { videoZoom = Math.max(-0.5, Math.min(1, Math.round(z * 10) / 10)); soda.player.setProperty('video-zoom', videoZoom); const el = $('#zoom-val'); if (el) el.textContent = Math.round(videoZoom * 100) + '%'; }
+function setZoom(z) { videoZoom = Math.max(-0.5, Math.min(1, Math.round(z * 10) / 10)); soda.player.setProperty('video-zoom', videoZoom); const el = $('#zoom-val'); if (el) el.textContent = Math.round(videoZoom * 100) + '%'; savePlaybackPref({ zoom: videoZoom }); }
 function renderPlaybackMenu() {
   const sl = $('#speed-list'); sl.innerHTML = '';
   SPEEDS.forEach((v) => {
