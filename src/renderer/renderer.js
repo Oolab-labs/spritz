@@ -92,6 +92,7 @@ function showIcon(which) { // 'pause' | 'play' | 'replay'
 
 // ---- buffering watchdog: if time-pos stalls while playing, show the spinner ----
 let bufTimer = null;
+let lastSeekPaint = 0; // throttles the scrubber/clock repaint away from mpv's frame-rate time-pos
 function armBufferWatchdog() {
   hideSpinner();
   clearTimeout(bufTimer);
@@ -132,8 +133,14 @@ function dispatch(ev) {
       break;
     case 'time-pos':
       if (typeof value === 'number' && !st.seeking) {
-        st.currentTime = value;
-        if (!st.dragging) {
+        st.currentTime = value; // exact, every event — history/resume/cast handoff read this
+        // mpv observes time-pos UNTHROTTLED, so this arrives at frame rate. Writing the slider,
+        // its --p custom property and the time label on every frame means 24-60 style/layout/paint
+        // cycles per second stacked on top of video compositing, which is felt as UI lag. The
+        // display only needs to look smooth: repaint at ~10Hz and let st.currentTime stay exact.
+        const nowMs = performance.now();
+        if (!st.dragging && (nowMs - lastSeekPaint >= 100)) {
+          lastSeekPaint = nowMs;
           seek.value = value;
           paint(seek, st.duration ? value / st.duration * 100 : 0);
           curEl.textContent = toPlayerTime(value);
