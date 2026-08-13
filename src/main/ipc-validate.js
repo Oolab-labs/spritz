@@ -80,4 +80,31 @@ function containedPath(root, rel) {
   return full.startsWith(base + path.sep) ? full : null;
 }
 
-module.exports = { localMediaPath, readTextCapped, containedPath };
+// An http(s) URL, or null. Returned normalised so callers pass on the parsed value.
+//
+// This exists because the string goes into yt-dlp's argv. yt-dlp has --exec (runs a command),
+// --config-location (loads a config that can itself carry --exec) and -o (writes anywhere), so a
+// value beginning with '-' is not a bad URL, it is an instruction. The renderer does check for
+// http(s) before asking, but that is the wrong side of the trust boundary — main must not depend
+// on the renderer having been careful.
+function httpUrl(u) {
+  if (typeof u !== 'string' || !u) return null;
+  if (u.length > 2048) return null;                      // no unbounded argv entries
+  if (/[\s\0]/.test(u)) return null;                     // a URL has no whitespace or NULs
+  let p;
+  try { p = new URL(u); } catch (e) { return null; }
+  if (p.protocol !== 'http:' && p.protocol !== 'https:') return null;
+  if (!p.hostname) return null;
+  return p.href;
+}
+
+// A dotted-quad IPv4 literal, or null. Used where a host reaches a command line (arp) or a
+// socket, so that a value like '-x' cannot arrive as a flag.
+function ipv4(h) {
+  if (typeof h !== 'string') return null;
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (!m) return null;
+  return m.slice(1).every((o) => Number(o) <= 255 && String(Number(o)) === o) ? h : null;
+}
+
+module.exports = { localMediaPath, readTextCapped, containedPath, httpUrl, ipv4 };

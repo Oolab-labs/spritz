@@ -17,6 +17,7 @@ const EventEmitter = require('events');
 const os = require('os');
 const http = require('http');
 const dgram = require('dgram');
+const { ipv4 } = require('./ipc-validate'); // host values that reach a command line or socket
 // Loaded on demand, not at startup. These three are the only non-builtin dependencies in the main
 // process's start-up path, and none of them is needed unless the user actually casts: mDNS only
 // when discovery runs, castv2-client only when a cast is loaded. Deferring them keeps them out of
@@ -123,6 +124,11 @@ module.exports = function createCast() {
   // targets a TV this Mac has already seen — no blind broadcasting of arbitrary addresses.
   // Best-effort throughout: no MAC, no ARP entry, or a TV without the setting simply does nothing.
   function macFor(host, cb) {
+    // `host` reaches a command line. Manual TV addresses come from Settings and discovery values
+    // come off the network, so pin it to a dotted quad — otherwise a value like '-x' arrives at
+    // arp as a flag rather than an address. execFile takes an array (no shell), so this is
+    // argument-shape hygiene rather than injection, but the shape should still be what we claim.
+    if (!ipv4(host)) return cb(null);
     try {
       require('child_process').execFile('/usr/sbin/arp', ['-n', host], { timeout: 2000 }, (e, out) => {
         const m = /([0-9a-f]{1,2}(?::[0-9a-f]{1,2}){5})/i.exec(String(out || ''));

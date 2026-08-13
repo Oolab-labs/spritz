@@ -17,7 +17,7 @@ const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
 const mpvGuard = require('./mpv-guard'); // allow lists for renderer-driven mpv properties/commands
-const { localMediaPath, readTextCapped } = require('./ipc-validate'); // renderer-supplied paths
+const { localMediaPath, readTextCapped, httpUrl } = require('./ipc-validate'); // renderer-supplied values
 const { isAllowedNavigation } = require('./nav-guard'); // window navigation policy
 
 // Safety net: the main process continuously parses UNTRUSTED LAN input (mDNS/SSDP/DLNA/cast
@@ -39,9 +39,16 @@ function binPath(name) {
 const YTDLP = binPath('yt-dlp');
 const FFMPEG = binPath('ffmpeg');
 
+// yt-dlp's argv is not a safe place for an unvalidated string: --exec runs a command,
+// --config-location loads a config that can carry one, -o writes anywhere. A value starting with
+// '-' is an instruction, not a bad URL. The renderer checks for http(s) before asking, but that is
+// the wrong side of the trust boundary. Validate here, and pass '--' so nothing after it can be
+// read as an option even if this check is ever loosened.
 function resolveStream(pageUrl, cb) {
+  const url = httpUrl(pageUrl);
+  if (!url) return cb(new Error('Not a playable web address'), null);
   let out = '', err = '';
-  const ps = spawn(YTDLP, ['-f', 'best', '--no-playlist', '--get-title', '-g', pageUrl], { timeout: 35000 });
+  const ps = spawn(YTDLP, ['-f', 'best', '--no-playlist', '--get-title', '-g', '--', url], { timeout: 35000 });
   ps.stdout.on('data', (d) => { out += d; });
   ps.stderr.on('data', (d) => { err += d; });
   ps.on('error', (e) => cb(e, null)); // ENOENT = yt-dlp missing
@@ -57,8 +64,10 @@ function resolveStream(pageUrl, cb) {
 // Resolve a progressive H.264 MP4 for the AirPlay path — AVPlayer often can't play
 // yt-dlp's default HLS/DASH for sites, but a single combined MP4 (YouTube itag 22/18) works.
 function resolveAirplayUrl(pageUrl, cb) {
+  const url = httpUrl(pageUrl); // same reasoning as resolveStream
+  if (!url) return cb(null);
   let out = '';
-  const ps = spawn(YTDLP, ['-f', '22/18/b[ext=mp4][acodec!=none]/b[ext=mp4]', '--no-playlist', '-g', pageUrl], { timeout: 35000 });
+  const ps = spawn(YTDLP, ['-f', '22/18/b[ext=mp4][acodec!=none]/b[ext=mp4]', '--no-playlist', '-g', '--', url], { timeout: 35000 });
   ps.stdout.on('data', (d) => { out += d; });
   ps.on('error', () => cb(null));
   ps.on('close', () => cb(out.trim().split('\n').map((s) => s.trim()).find((l) => /^https?:\/\//i.test(l)) || null));
