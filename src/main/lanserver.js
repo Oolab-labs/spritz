@@ -22,6 +22,9 @@ const path = require('path');
 const crypto = require('crypto');
 const { containedPath } = require('./ipc-validate'); // resolve-and-verify for LAN-exposed paths
 const { spawn } = require('child_process');
+// The copy-vs-transcode decision. It used to live here, inline, twice (serveHls and mkvArgs); it is
+// now one pure, unit-tested function and these sites only turn its answer into ffmpeg arguments.
+const { planPlayback } = require('./playback-planner');
 
 function findBin(name) {
   const bundled = process.resourcesPath ? [path.join(process.resourcesPath, 'bin', name)] : []; // packaged → portable
@@ -66,10 +69,8 @@ function avCompatible(p) { return AV_OK.test(String(p || '')); }
 // (the DLNA route serves the original WebM/MKV and the TV decodes them natively — preferred).
 const VIDEO_OK = new Set(['h264', 'hevc']);
 const AUDIO_OK = new Set(['aac', 'mp3', 'alac']);
-// Audio codecs a capability-confirmed receiver can take as a lossless passthrough (surround intact).
-// AC3/EAC3 are passthrough-supported by AirPlay/AVPlayer and the Google Cast receiver and decoded
-// natively by webOS — copying them preserves 5.1/7.1 that a forced AAC stereo downmix would destroy.
-const AUDIO_PASSTHROUGH = new Set(['aac', 'mp3', 'alac', 'ac3', 'eac3']);
+// (The passthrough set — AC3/EAC3 on top of these, copied so a forced AAC stereo downmix can't
+// destroy 5.1/7.1 — now lives in device-profile.js as AUDIO_PASSTHROUGH, with that reasoning.)
 
 // One-time probe of what the BUNDLED ffmpeg can actually do — gates burn-in / tonemap code paths so
 // they light up automatically if the binary is ever rebuilt with libass / zscale, and stay disabled
@@ -116,17 +117,12 @@ function sniffCharenc(filePath) {
 //   • hdr10   — displays HDR10 (else HDR is tonemapped to SDR)
 // The DEFAULT (no caps) mirrors the historical conservative behaviour: copy ≤1080p H.264/HEVC incl.
 // HDR10, downscale 4K to 1080p, AAC audio — safe for any AVPlayer/Cast receiver.
-const CAPS_CONSERVATIVE = { hevc: true, hevc4k: false, h264_4k: false, hdr10: true, dovi: false, audioCopy: AUDIO_OK, maxHeight: 1080 };
-const CAPS_FULL = { hevc: true, hevc4k: true, h264_4k: true, hdr10: true, dovi: false, audioCopy: AUDIO_PASSTHROUGH, maxHeight: 2160 };
-function normCaps(caps) {
-  if (!caps) return CAPS_CONSERVATIVE;
-  return {
-    hevc: caps.hevc !== false, hevc4k: !!caps.hevc4k, h264_4k: !!caps.h264_4k,
-    hdr10: caps.hdr10 !== false, dovi: !!caps.dovi,
-    audioCopy: caps.audioCopy instanceof Set ? caps.audioCopy : new Set(caps.audioCopy || AUDIO_OK),
-    maxHeight: caps.maxHeight || 1080
-  };
-}
+//
+// The normalising itself (normCaps/CAPS_CONSERVATIVE/CAPS_FULL) now lives in device-profile.js as
+// normalise()/defaultProfile(), called for us by planPlayback(). It accepts exactly the same loose
+// shapes callers here have always passed, INCLUDING a Set for audioCopy, and defaults the same way:
+// unknown field → the conservative value, because guessing a receiver is more capable than it is
+// produces a black screen. So cast.js and every other caller can keep handing over whatever it has.
 
 const MIME = {
   '.mp4': 'video/mp4', '.m4v': 'video/x-m4v', '.mov': 'video/quicktime',
@@ -607,7 +603,8 @@ module.exports = function createLanServer(opts) {
   // as selectable renditions) when probing succeeds, else a simple single-audio playlist.
   //
   // opts = { caps, extraSubs }:
-  //   • caps — receiver capability profile (normCaps). A capability-confirmed TV (LG NANO80T6A /
+  //   • caps — receiver capability profile (any loose shape; device-profile.normalise() via
+  //     planPlayback() fills the gaps conservatively). A capability-confirmed TV (LG NANO80T6A /
   //     webOS-24 / Cast-built-in) COPIES 4K HEVC + HDR10 and passes AC3/EAC3 through losslessly;
   //     an unknown receiver downscales to 1080p + AAC. (Capability-negotiated; see cast.js.)
   //   • extraSubs — [{path,lang,name}] external .srt/.ass files to convert + attach as renditions.
@@ -615,7 +612,7 @@ module.exports = function createLanServer(opts) {
   function serveHls(input, cb, opts) {
     const lan = lanAddress();
     if (!lan || !input) return cb(null);
-    const caps = normCaps(opts && opts.caps);
+    const capsRaw = (opts && opts.caps) || null;
     const extraSubs = (opts && Array.isArray(opts.extraSubs)) ? opts.extraSubs : [];
     ensure(() => {
       cancelHls(); cancelRemux();
@@ -642,22 +639,23 @@ module.exports = function createLanServer(opts) {
         const multi = !!(info && info.audio.length > 1);
 
         // ---- video copy-vs-transcode decision (capability-negotiated) ----
-        const tooTall = !!(info && info.height > 1088);
+        // Decided by playback-planner.js. The rules it applies are the ones that used to be written
+        // out here — can this receiver decode HEVC / 4K, is the source HDR and can the receiver show
+        // HDR10, is VP9/AV1/Xvid/VC-1/WMV muxable into fMP4 (never: use DLNA for native passthrough).
+        //
+        // TWO plans, because this site has two questions. `plan` is what happens on the PRIMARY
+        // attempt. `encPlan` is the same decision with the copy taken off the table, which is what
+        // the videotoolbox/software encoder branches need: the sw fallback re-encodes a source the
+        // primary was copying, so its HDR/scale answers must be the ENCODE's, not the copy's.
+        const plan = planPlayback(info || {}, capsRaw, { canTonemap: CAN_TONEMAP });
+        const encPlan = planPlayback(info || {}, capsRaw, { canTonemap: CAN_TONEMAP, forceTranscode: true });
+        // Container detail, not a decision: HEVC copied into fMP4 must carry the hvc1 tag.
         const isHevc = !!(info && info.vcodec === 'hevc');
-        const isH264 = !!(info && info.vcodec === 'h264');
-        // Can we COPY the video losslessly to THIS receiver? VP9/AV1/Xvid/VC-1/WMV are never
-        // muxable into fMP4 → always transcode on this path (use DLNA for native passthrough).
-        let canCopyVideo = false;
-        if (info && info.vcodec) {
-          if (isHevc) canCopyVideo = caps.hevc && (tooTall ? caps.hevc4k : true);
-          else if (isH264) canCopyVideo = tooTall ? caps.h264_4k : true;
-        }
-        // HDR can only be copied to a receiver that does HDR10; otherwise it must be transcoded
-        // (tonemapped) to SDR or it shows up washed-out/too-dark.
-        if (info && info.hdr && !caps.hdr10) canCopyVideo = false;
         // info==null (inconclusive probe, e.g. a just-started torrent): assume copy; the software
-        // fallback below rescues us if the real codec turns out to be uncopyable (VP9/AV1).
-        const transcode = !!(info && info.vcodec) && !canCopyVideo;
+        // fallback below rescues us if the real codec turns out to be uncopyable (VP9/AV1). That is
+        // exactly plan.speculative, and it is why the speculative plan is not allowed to ask for a
+        // transcode here — the shipped code started an unprobed source in copy mode unconditionally.
+        const transcode = !plan.speculative && plan.video === 'transcode';
 
         const inOpts = /^https?:\/\//i.test(input)
           ? ['-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5', '-rw_timeout', '30000000']
@@ -669,11 +667,11 @@ module.exports = function createLanServer(opts) {
         // else encode to AAC PRESERVING the channel layout (no forced -ac 2 stereo downmix). bitrate
         // scales with channel count so 5.1/7.1 isn't starved.
         function audioArgs() {
-          if (!info || !info.audio.length) return ['-c:a', 'aac'];
+          if (!plan.audioTracks.length) return ['-c:a', 'aac'];
           const out = [];
-          info.audio.forEach((a, i) => {
-            if (caps.audioCopy.has(a.codec)) out.push(`-c:a:${i}`, 'copy');
-            else out.push(`-c:a:${i}`, 'aac', `-b:a:${i}`, a.channels > 2 ? '384k' : '160k');
+          plan.audioTracks.forEach((a, i) => {
+            if (a.action === 'copy') out.push(`-c:a:${i}`, 'copy');
+            else out.push(`-c:a:${i}`, 'aac', `-b:a:${i}`, a.bitrate);
           });
           return out;
         }
@@ -685,11 +683,14 @@ module.exports = function createLanServer(opts) {
           // HDR10 output is HEVC, so keep it ONLY if the receiver displays HDR10 AND decodes HEVC.
           // A receiver that does HDR10 but is H.264-only (a plain Cast dongle: hdr10=true, hevc=false)
           // must get H.264 — otherwise it gets an undecodable HEVC stream with no fallback. (Audit H5.)
-          const hdr = !!(info && info.hdr && caps.hdr10 && caps.hevc);
+          // That rule is now encPlan.hdr; the ENCODE plan, because this is an encoder constraint —
+          // an H.264 HDR source COPIED to that same dongle passes through untouched and is fine.
+          const hdr = encPlan.hdr === 'preserve';
           // Downscale only ABOVE the receiver's max height, and scale TO that height — a 4K-capable
           // receiver (maxHeight 2160) keeps 4K instead of being forced to 1080p. (Audit M9.)
-          const cap = caps.maxHeight || 1080;
-          const needScale = !!(info && info.height && info.height > cap);
+          // encPlan.targetHeight is that height when scaling and the source height when not.
+          const cap = encPlan.targetHeight || 0;
+          const needScale = !!(info && info.height && cap && cap < info.height);
           const scaleExpr = 'scale=-2:' + cap;
           const scale = needScale ? ['-vf', scaleExpr] : [];
           if (mode === 'copy') return ['-c:v', 'copy', ...(isHevc ? ['-tag:v', 'hvc1'] : [])];
@@ -701,7 +702,7 @@ module.exports = function createLanServer(opts) {
           // SDR output (incl. HDR→SDR when the receiver can't take HDR10 OR can't decode HEVC). Proper
           // tonemap needs zscale; without it (shipped build) fall back to a plain scale — slightly
           // washed-out but watchable and, crucially, DECODABLE H.264.
-          const needTonemap = !!(info && info.hdr && !(caps.hdr10 && caps.hevc));
+          const needTonemap = encPlan.tonemap;
           const vf = needTonemap && CAN_TONEMAP
             ? ['-vf', (needScale ? scaleExpr + ',' : '') + 'zscale=t=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=tv,format=yuv420p']
             : scale;
@@ -818,20 +819,20 @@ module.exports = function createLanServer(opts) {
   // Build the single-stream ffmpeg args. info from probeTracks; reuses the capability-negotiated
   // copy-vs-transcode decision (so a 4K-capable LG copies, an old dongle transcodes to 1080p H.264).
   function mkvArgs(input, info, capsRaw, audioTrack, startSec, burnSub, swEncode) {
-    const caps = normCaps(capsRaw);
-    const tooTall = !!(info && info.height > 1088);
-    const isHevc = !!(info && info.vcodec === 'hevc');
-    const isH264 = !!(info && info.vcodec === 'h264');
-    let canCopyV = false;
-    if (info && info.vcodec) {
-      if (isHevc) canCopyV = caps.hevc && (tooTall ? caps.hevc4k : true);
-      else if (isH264) canCopyV = tooTall ? caps.h264_4k : true;
-    }
-    if (info && info.hdr && !caps.hdr10) canCopyV = false;
-    const cap = caps.maxHeight || 1080;
-    const needScale = !!(info && info.height && info.height > cap);
-    const a = info && info.audio && info.audio[audioTrack];
-    const aArgs = (a && caps.audioCopy.has(a.codec)) ? ['-c:a', 'copy'] : ['-c:a', 'aac', '-b:a', (a && a.channels > 2) ? '384k' : '160k'];
+    // Same decision, same function as serveHls — that is the point of the extraction. `encPlan` (the
+    // plan with the copy taken off the table) answers for the burn-in and transcode branches below,
+    // which always re-encode.
+    const plan = planPlayback(info || {}, capsRaw, { canTonemap: CAN_TONEMAP });
+    const encPlan = planPlayback(info || {}, capsRaw, { canTonemap: CAN_TONEMAP, forceTranscode: true });
+    const isHevc = !!(info && info.vcodec === 'hevc'); // hvc1 tag on the copy path, not a decision
+    // Unlike serveHls, this path has NO software-encoder retry of its own, so an unprobed source is
+    // NOT started optimistically in copy mode here: an uncopyable VP9/AV1 would hard-fail with
+    // nothing to catch it. Shipped behaviour, preserved verbatim — plan.speculative is that case.
+    const canCopyV = !plan.speculative && plan.video === 'copy';
+    const cap = encPlan.targetHeight || 0;
+    const needScale = !!(info && info.height && cap && cap < info.height);
+    const at = plan.audioTracks[audioTrack];
+    const aArgs = (at && at.action === 'copy') ? ['-c:a', 'copy'] : ['-c:a', 'aac', '-b:a', (at && at.bitrate) || '160k'];
     // Video ENCODER for the transcode/burn-in paths: hardware videotoolbox normally, software libx264 as
     // the fallback when a videotoolbox encode of an exotic source (VP9/AV1/VC-1) fails to emit any output.
     const vEnc = swEncode

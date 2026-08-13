@@ -103,6 +103,47 @@ test('an unprobed source starts optimistically rather than refusing', () => {
   assert.ok(p.reasons.some((r) => /not probed/i.test(r)));
 });
 
+// --- the plan must describe a command ffmpeg could actually run ---
+//
+// `-c:v copy` makes ffmpeg return before any filter or pixel-format flag is built, so on the copy
+// path there is no scaling and no tonemapping and the HDR metadata rides along in the bitstream.
+// A plan that says copy AND tonemap, or copy AND downscale, describes nothing.
+
+test('an H.264 HDR file copied to an H.264-only HDR10 receiver keeps its HDR', () => {
+  // The counterpart to the H5 case above: there the source was HEVC and had to be re-encoded, and
+  // the encode cannot emit HDR10 without HEVC. Here nothing is re-encoded — the receiver says it
+  // displays HDR10, and the bitstream reaches it untouched. Reporting 'tonemap' for a stream being
+  // copied bit-for-bit would be a plan that contradicts itself.
+  const dongle = normalise({ hevc: false, hdr10: true, maxHeight: 1080 });
+  const p = planPlayback({ ...H264_1080, hdr: true }, dongle);
+  assert.strictEqual(p.video, 'copy');
+  assert.strictEqual(p.hdr, 'preserve');
+  assert.strictEqual(p.tonemap, false);
+});
+
+test('a copied 1088-tall encode is not reported as downscaled', () => {
+  // The two thresholds disagree on purpose: copy-eligibility is >1088, scaling is >maxHeight
+  // (1080). 1088 is therefore copyable and above the scale cap — and being copied, it goes out at
+  // 1088. Claiming 1080 would be describing a scale filter the pipeline never adds.
+  const p = planPlayback({ ...H264_1080, height: 1088 }, UNKNOWN);
+  assert.strictEqual(p.video, 'copy');
+  assert.strictEqual(p.targetHeight, 1088);
+});
+
+test('an unprobed source still plans the audio it can see', () => {
+  // vcodec:null is the video-stream-not-yet-seen case, not the nothing-is-known case: the audio
+  // list comes from the same probe record and ffmpeg will act on it. A stub reply here claimed
+  // lossless passthrough of a TrueHD track that was about to become 384k AAC, and left audioTracks
+  // undefined for callers to iterate.
+  const p = planPlayback({ vcodec: null, height: 1080, hdr: false, audio: [{ codec: 'truehd', channels: 8 }], subs: [] }, LG_4K);
+  assert.ok(p.speculative);
+  assert.strictEqual(p.video, 'copy');
+  assert.strictEqual(p.audio, 'transcode', 'TrueHD is re-encoded whether or not the video codec is known');
+  assert.strictEqual(p.audioTracks[0].bitrate, '384k');
+  assert.strictEqual(p.lossless, false);
+  assert.strictEqual(p.targetHeight, 1080, 'the height is known even when the codec is not');
+});
+
 test('bitmap subtitles burn in, text subtitles sideload', () => {
   const p = planPlayback(WITH_PGS, LG_4K);
   assert.strictEqual(p.subtitles[0].action, 'burn', 'PGS cannot become WebVTT');

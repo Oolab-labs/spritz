@@ -40,33 +40,46 @@ function planPlayback(media, device, opts) {
   const o = opts || {};
   const canTonemap = o.canTonemap !== false;   // whether ffmpeg has zscale+tonemap
   const reasons = [];
+  const m = media || {};
 
-  // A null descriptor means the probe was inconclusive — a just-started torrent, typically. The
-  // historical behaviour is to assume copy and let the software-encoder fallback rescue it if the
-  // codec turns out to be uncopyable. Preserved deliberately: refusing to start is worse than
-  // starting and adapting.
-  if (!media || !media.vcodec) {
+  // A missing codec means the probe was inconclusive — a just-started torrent, typically. The
+  // historical behaviour is to assume copy for the VIDEO and let the software-encoder fallback
+  // rescue it if the codec turns out to be uncopyable. Preserved deliberately: refusing to start is
+  // worse than starting and adapting.
+  //
+  // What is NOT preserved is throwing away the rest of the probe record. `vcodec` being null is the
+  // audio-only / video-stream-not-yet-seen case: height, hdr and the audio track list are all
+  // populated and the shipped pipeline acts on them (audioArgs re-encodes a TrueHD track to AAC
+  // whether or not the video codec is known). An earlier version of this function returned a stub
+  // here, which claimed lossless passthrough of tracks ffmpeg was about to re-encode and left
+  // `audioTracks` undefined for callers to trip over.
+  const speculative = !m.vcodec;
+  if (speculative) {
     reasons.push('Source not probed yet — starting optimistically, will fall back if needed.');
-    return {
-      video: VIDEO_COPY, audio: AUDIO_COPY, targetHeight: null,
-      hdr: 'unknown', tonemap: false, container: 'fmp4', speculative: true,
-      profileSource: caps.source, reasons
-    };
   }
 
-  const height = media.height || 0;
+  const height = m.height || 0;
   const tooTall = height > TALL;
-  const isHevc = media.vcodec === 'hevc';
-  const isH264 = media.vcodec === 'h264';
-  const hdrSource = !!media.hdr;
+  const isHevc = m.vcodec === 'hevc';
+  const isH264 = m.vcodec === 'h264';
+  const hdrSource = !!m.hdr;
 
   // ---- video ----
-  let canCopyVideo = false;
+  let canCopyVideo = speculative;
   if (isHevc) canCopyVideo = caps.hevc && (tooTall ? caps.hevc4k : true);
   else if (isH264) canCopyVideo = tooTall ? caps.h264_4k : true;
 
-  if (!FMP4_VIDEO.has(media.vcodec)) {
-    reasons.push(media.vcodec.toUpperCase() + ' cannot be packaged for this receiver — re-encoding video.');
+
+  // The caller has already committed to an encode and is asking what that encode must look like:
+  // the software-encoder retry after a copy attempt failed, or a burn-in overlay, which is
+  // incompatible with `-c:v copy`. The copy/transcode question is then not ours to answer, but
+  // everything downstream of it — scale, tonemap, whether HDR survives — still is, and must answer
+  // for the ENCODE. Without this the sw fallback would inherit the copy path's answers (no scale,
+  // HDR "preserved") and emit a stream the receiver cannot decode.
+  if (o.forceTranscode) canCopyVideo = false;
+
+  if (m.vcodec && !FMP4_VIDEO.has(m.vcodec)) {
+    reasons.push(String(m.vcodec).toUpperCase() + ' cannot be packaged for this receiver — re-encoding video.');
   } else if (!canCopyVideo && isHevc && !caps.hevc) {
     reasons.push('Receiver does not decode HEVC — re-encoding to H.264.');
   } else if (!canCopyVideo && tooTall) {
@@ -77,16 +90,27 @@ function planPlayback(media, device, opts) {
   // arrives washed-out and too dark.
   if (hdrSource && !caps.hdr10) canCopyVideo = false;
 
+  const video = canCopyVideo ? VIDEO_COPY : VIDEO_TRANSCODE;
+
+  // Everything below is a property of the ENCODE, so it is conditioned on there being one. On the
+  // copy path ffmpeg is handed `-c:v copy` and returns before any filter or pixel-format flag is
+  // built: no scaling, no tonemapping, the HDR metadata rides along in the bitstream. Computing
+  // these fields independently of the copy/transcode outcome produced self-contradictory plans —
+  // `video:'copy'` alongside `tonemap:true`, which is not a producible ffmpeg command.
+  //
   // HDR10 output is HEVC, so keep HDR only if the receiver displays HDR10 AND decodes HEVC. A
   // receiver that reports HDR10 but is H.264-only (a plain Cast dongle) would otherwise get an
-  // undecodable HEVC stream with no fallback.
-  const keepHdr = hdrSource && caps.hdr10 && caps.hevc;
-  const needTonemap = hdrSource && !keepHdr;
+  // undecodable HEVC stream with no fallback. That is an ENCODER-side constraint: an H.264 HDR
+  // source being copied to that same dongle passes through untouched and displays correctly.
+  const keepHdr = video === VIDEO_TRANSCODE
+    ? hdrSource && caps.hdr10 && caps.hevc
+    : hdrSource;
+  const needTonemap = video === VIDEO_TRANSCODE && hdrSource && !keepHdr;
 
-  // Stated unconditionally. This used to be reported only when the video would OTHERWISE have been
-  // copied, so a file that was already being re-encoded for some other reason got tonemapped in
-  // silence — the plan did the right thing and could not say so, which defeats the point of
-  // carrying reasons at all.
+  // Stated whenever the encode tonemaps. This used to be reported only when the video would
+  // OTHERWISE have been copied, so a file that was already being re-encoded for some other reason
+  // got tonemapped in silence — the plan did the right thing and could not say so, which defeats
+  // the point of carrying reasons at all.
   if (needTonemap) {
     reasons.push(caps.hdr10
       ? 'Receiver cannot decode HDR video — converting to SDR.'
@@ -99,13 +123,16 @@ function planPlayback(media, device, opts) {
 
   // Downscale only ABOVE the receiver's limit, and scale TO that limit — a 4K-capable receiver
   // keeps 4K rather than being forced to 1080p.
+  // Only the encode can scale, so `targetHeight` is the source height whenever the video is copied
+  // — including the 1088 case, where the copy threshold (>1088) and the scale threshold (>1080)
+  // deliberately disagree and 1088 goes out on the wire as 1088.
   const cap = caps.maxHeight || 1080;
-  const targetHeight = height && height > cap ? cap : (height || null);
-  if (targetHeight && height > cap) {
+  const needScale = video === VIDEO_TRANSCODE && height > cap;
+  const targetHeight = needScale ? cap : (height || null);
+  if (needScale) {
     reasons.push('Downscaling ' + height + 'p to ' + cap + 'p for this receiver.');
   }
 
-  const video = canCopyVideo ? VIDEO_COPY : VIDEO_TRANSCODE;
   if (video === VIDEO_COPY) {
     reasons.push('Video is sent untouched' + (hdrSource && keepHdr ? ', HDR preserved.' : '.'));
   }
@@ -113,7 +140,7 @@ function planPlayback(media, device, opts) {
   // ---- audio ----
   // Per track: copy when the receiver takes that codec as passthrough, else AAC. Copying matters
   // for surround — a forced AAC stereo downmix destroys 5.1/7.1.
-  const tracks = Array.isArray(media.audio) ? media.audio : [];
+  const tracks = Array.isArray(m.audio) ? m.audio : [];
   const audioTracks = tracks.map((a) => {
     const copy = caps.audioCopy.includes(String(a.codec || '').toLowerCase());
     return { codec: a.codec, channels: a.channels || 2, action: copy ? AUDIO_COPY : AUDIO_TRANSCODE,
@@ -133,7 +160,7 @@ function planPlayback(media, device, opts) {
   // ---- subtitles ----
   // Text tracks become WebVTT and are sideloaded. Bitmap tracks (PGS/VOBSUB) cannot, so they are
   // either burned into the video or left to a DLNA receiver that renders them itself.
-  const subs = Array.isArray(media.subs) ? media.subs : [];
+  const subs = Array.isArray(m.subs) ? m.subs : [];
   const subtitles = subs.map((s) => ({
     ...s,
     action: s.bitmap ? (o.canBurnIn === false ? 'unavailable' : 'burn') : 'sideload-webvtt'
@@ -152,7 +179,7 @@ function planPlayback(media, device, opts) {
     tonemap: needTonemap,
     tonemapAccurate: needTonemap ? canTonemap : null,
     container: 'fmp4',
-    speculative: false,
+    speculative,
     profileSource: caps.source,
     // Whether anything at all is being re-encoded — the cheap "is this lossless" question callers
     // keep asking.
