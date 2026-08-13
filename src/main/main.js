@@ -18,6 +18,7 @@ const os = require('os');
 const { spawn } = require('child_process');
 const mpvGuard = require('./mpv-guard'); // allow lists for renderer-driven mpv properties/commands
 const { localMediaPath, readTextCapped } = require('./ipc-validate'); // renderer-supplied paths
+const { isAllowedNavigation } = require('./nav-guard'); // window navigation policy
 
 // Safety net: the main process continuously parses UNTRUSTED LAN input (mDNS/SSDP/DLNA/cast
 // packets). A single malformed packet that throws deep in a 3rd-party parser would otherwise put
@@ -250,7 +251,37 @@ if (!gotLock) {
       }
     });
 
-    mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+    const INDEX_HTML = path.join(__dirname, '..', 'renderer', 'index.html');
+
+    // Navigation policy. Installed BEFORE loadFile so it covers the first load too.
+    //
+    // window.soda is granted to whatever document occupies this window, not to the document we
+    // shipped — mpv control, torrent add, cast load and local file reads all come with it. Without
+    // these, anything that can talk the renderer into navigating inherits the lot. The app never
+    // navigates (no window.open, no _blank, no <a href>, no <webview>, one loadFile at startup),
+    // so refusing everything else costs nothing.
+    const wc = mainWindow.webContents;
+    wc.on('will-navigate', (e, url) => {
+      if (!isAllowedNavigation(url, INDEX_HTML)) {
+        e.preventDefault();
+        console.warn('[nav] blocked navigation to', String(url).slice(0, 120));
+      }
+    });
+    // Covers window.open and target=_blank. 'deny' rather than opening in the default browser:
+    // the URL would be renderer-controlled, and handing an attacker-chosen URL to the OS is the
+    // same problem wearing a different hat.
+    wc.setWindowOpenHandler(({ url }) => {
+      console.warn('[nav] blocked window.open to', String(url).slice(0, 120));
+      return { action: 'deny' };
+    });
+    // No <webview> is used; one appearing means the page is not ours.
+    wc.on('will-attach-webview', (e) => e.preventDefault());
+    // Spritz needs no web permissions — it plays video through a native mpv surface, not
+    // getUserMedia, and has no use for geolocation, notifications, MIDI or clipboard-read.
+    wc.session.setPermissionRequestHandler((_c, _p, cb) => cb(false));
+    wc.session.setPermissionCheckHandler(() => false);
+
+    mainWindow.loadFile(INDEX_HTML);
     mainWindow.once('ready-to-show', () => {
       mainWindow.show();
       attachPlayer();

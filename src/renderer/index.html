@@ -2,8 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <!-- script-src 'self' with no 'unsafe-inline'/'unsafe-eval' is the load-bearing part: subtitle
+       text, torrent filenames and stream page titles all reach the DOM, so injected markup must
+       not be able to execute. style-src keeps 'unsafe-inline' for the scrubber's inline --p custom
+       property. form-action and frame-ancestors are NOT covered by default-src, so they are listed
+       explicitly — without them a page could still submit somewhere or be framed. -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'" />
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; media-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" />
   <title>Spritz</title>
   <link rel="stylesheet" href="./player.css" />
 </head>
