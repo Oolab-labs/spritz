@@ -130,6 +130,18 @@ test('a copied 1088-tall encode is not reported as downscaled', () => {
   assert.strictEqual(p.targetHeight, 1088);
 });
 
+test('an 8K source is not copied to a 4K receiver', () => {
+  // DELIBERATE DIVERGENCE from the shipped lanserver.js, which is wrong here. Copy-eligibility is
+  // decided there by h264_4k/hevc4k plus the 1088 threshold, none of which can tell 2160 from 4320,
+  // so a receiver reporting maxHeight 2160 gets an 8K bitstream copied to it and fails to decode.
+  // The sw-retry ladder cannot rescue that: the copy "succeeded" as far as ffmpeg is concerned.
+  const p = planPlayback({ ...H264_4K, height: 4320 }, CAST_4K);
+  assert.strictEqual(p.video, 'transcode', '8K must not be copied to a 2160p receiver');
+  assert.strictEqual(p.targetHeight, 2160);
+  // and the 1088 padding tolerance survives it
+  assert.strictEqual(planPlayback({ ...H264_1080, height: 1088 }, UNKNOWN).video, 'copy');
+});
+
 test('an unprobed source still plans the audio it can see', () => {
   // vcodec:null is the video-stream-not-yet-seen case, not the nothing-is-known case: the audio
   // list comes from the same probe record and ffmpeg will act on it. A stub reply here claimed

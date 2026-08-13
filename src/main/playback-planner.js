@@ -69,6 +69,18 @@ function planPlayback(media, device, opts) {
   if (isHevc) canCopyVideo = caps.hevc && (tooTall ? caps.hevc4k : true);
   else if (isH264) canCopyVideo = tooTall ? caps.h264_4k : true;
 
+  // DELIBERATE DIVERGENCE FROM THE SHIPPED CODE (a bug fix, not an extraction).
+  // The shipped sites decide copy-eligibility from the booleans hevc4k/h264_4k plus the 1088
+  // threshold, none of which can tell 2160 from 4320. A receiver that reports maxHeight 2160 and
+  // h264_4k:true therefore gets an 8K bitstream copied straight to it and fails to decode — a black
+  // screen the HLS sw-retry ladder cannot rescue, because from ffmpeg's point of view the copy
+  // succeeded. So refuse the copy above the receiver's stated limit and let it be scaled.
+  // The limit is max(cap, TALL) rather than cap, because the 1088 tolerance is deliberate: a
+  // mod-16-padded 1080p encode must stay copy-eligible on a 1080p receiver.
+  const copyHeightLimit = Math.max(caps.maxHeight || 1080, TALL);
+  // Not applied to the unprobed case: there the optimism is the whole point, the sw fallback is the
+  // safety net, and the height on an unprobed record is not yet trustworthy either.
+  if (canCopyVideo && !speculative && height > copyHeightLimit) canCopyVideo = false;
 
   // The caller has already committed to an encode and is asking what that encode must look like:
   // the software-encoder retry after a copy attempt failed, or a burn-in overlay, which is
