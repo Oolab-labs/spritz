@@ -17,6 +17,7 @@ const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
 const mpvGuard = require('./mpv-guard'); // allow lists for renderer-driven mpv properties/commands
+const { localMediaPath, readTextCapped } = require('./ipc-validate'); // renderer-supplied paths
 
 // Safety net: the main process continuously parses UNTRUSTED LAN input (mDNS/SSDP/DLNA/cast
 // packets). A single malformed packet that throws deep in a 3rd-party parser would otherwise put
@@ -433,14 +434,15 @@ if (!gotLock) {
   }
   ipcMain.handle('subtitle:generate', async (_e, { src } = {}) => {
     const bin = whisperBin(), model = whisperModel();
-    if (!src) return { ok: false, error: 'No media loaded' };
+    const file = localMediaPath(src); // same reasoning as thumb:at — this feeds ffmpeg -i
+    if (!file) return { ok: false, error: 'No media loaded' };
     if (!bin) return { ok: false, error: 'Whisper not found — install with: brew install whisper-cpp' };
     if (!model) return { ok: false, error: 'No Whisper model — put ggml-base.en.bin in app models folder' };
     const base = path.join(app.getPath('temp'), 'spritz-whisper-' + Date.now());
     const wav = base + '.wav';
     try {
       send('toast', { message: 'Extracting audio for subtitles…' });
-      await run(FFMPEG, ['-y', '-i', src, '-ar', '16000', '-ac', '1', '-f', 'wav', wav], 300000); // 5 min
+      await run(FFMPEG, ['-y', '-i', file, '-ar', '16000', '-ac', '1', '-f', 'wav', wav], 300000); // 5 min
       send('toast', { message: 'Transcribing with Whisper…' });
       await run(bin, ['-m', model, '-f', wav, '-osrt', '-of', base], 1800000); // 30 min cap
       try { fs.unlinkSync(wav); } catch (e) {}
@@ -488,8 +490,9 @@ if (!gotLock) {
     })).filter((s) => s.link);
   }
   ipcMain.handle('subtitle:online', async (_e, { src, lang } = {}) => {
-    if (!src || !/^\//.test(src)) return { ok: false, error: 'Online subtitles need a local file' };
-    let h; try { h = osHash(src); } catch (e) { return { ok: false, error: 'Could not read file' }; }
+    const file = localMediaPath(src);
+    if (!file) return { ok: false, error: 'Online subtitles need a local file' };
+    let h; try { h = osHash(file); } catch (e) { return { ok: false, error: 'Could not read file' }; }
     if (!h) return { ok: false, error: 'File too small to match' };
     try {
       const login = await xmlrpc('LogIn', ['', '', 'en', 'VLSub 0.10.2'].map((s) => `<param><value><string>${s}</string></value></param>`).join(''));
@@ -497,8 +500,12 @@ if (!gotLock) {
       if (!token) return { ok: false, error: 'OpenSubtitles unavailable' };
       // Search by BOTH the content hash AND the cleaned filename, so a release whose hash isn't in the DB
       // (most torrent rips) still matches by name instead of returning nothing.
-      const want = (lang || 'eng');
-      const base = String(src).split('/').pop().replace(/\.[^.]+$/, '');
+      // `want` is interpolated raw into the XML-RPC body below, unlike `query` on the next line
+      // which is sanitised. A renderer-supplied language code containing markup would inject into
+      // the request sent to OpenSubtitles. In practice the renderer never passes one, so this is
+      // shutting a door nobody has walked through — but the channel accepts the argument.
+      const want = /^[a-z]{2,3}$/i.test(String(lang || '')) ? String(lang).toLowerCase() : 'eng';
+      const base = String(file).split('/').pop().replace(/\.[^.]+$/, '');
       const query = base.replace(/[._]+/g, ' ').replace(/[<>&'"]/g, ' ').trim();
       const mem = (n, v) => `<member><name>${n}</name><value><string>${v}</string></value></member>`;
       const struct = (m) => `<value><struct>${m}</struct></value>`;
@@ -584,10 +591,14 @@ if (!gotLock) {
   // and LRU-capped so hovering the scrubber doesn't spawn endless ffmpegs.
   const thumbCache = new Map();
   ipcMain.handle('thumb:at', (_e, { src, time } = {}) => new Promise((resolve) => {
-    if (!src || time == null) return resolve(null);
-    const key = src + '|' + Math.round(time / 5) * 5;
+    // `src` reaches ffmpeg's -i, which speaks http/tcp/concat/subfile as readily as files. Both
+    // call sites pass a local absolute path (the renderer only sets currentLocalPath for those),
+    // so pinning it to a real local file costs nothing and drops the protocol surface.
+    const file = localMediaPath(src);
+    if (!file || typeof time !== 'number' || !Number.isFinite(time)) return resolve(null);
+    const key = file + '|' + Math.round(time / 5) * 5;
     if (thumbCache.has(key)) return resolve(thumbCache.get(key));
-    const ff = spawn(FFMPEG, ['-ss', String(Math.max(0, time)), '-i', src, '-frames:v', '1',
+    const ff = spawn(FFMPEG, ['-ss', String(Math.max(0, time)), '-i', file, '-frames:v', '1',
       '-vf', 'scale=160:-2', '-q:v', '5', '-f', 'mjpeg', 'pipe:1'], { timeout: 8000 });
     const chunks = [];
     ff.stdout.on('data', (d) => chunks.push(d));
@@ -907,7 +918,11 @@ if (!gotLock) {
   // Parse a local .m3u/.m3u8(non-HLS)/.pls playlist → ordered list of entries {url,title}.
   ipcMain.handle('playlist:parse', (_e, { path: p } = {}) => {
     try {
-      const txt = fs.readFileSync(p, 'utf8');
+      // Capped: readFileSync on a renderer-named path will allocate whatever it is pointed at.
+      // 4MB is far beyond any real .m3u/.pls — IPTV lists with tens of thousands of entries sit
+      // well under it — and bounds the damage from being pointed at something enormous.
+      const txt = readTextCapped(p, 4 * 1024 * 1024);
+      if (txt === null) return null;
       const dir = path.dirname(p);
       const resolve = (e) => /^(https?|magnet|spritz):/i.test(e) ? e : (e.startsWith('/') ? e : path.join(dir, e));
       const out = [];

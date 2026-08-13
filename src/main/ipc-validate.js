@@ -1,0 +1,64 @@
+'use strict';
+
+// Validators for renderer-supplied values that reach the filesystem or a spawned process.
+//
+// Threat model, stated plainly so these stay proportionate. Spritz is a local player and the user
+// can already open any file they like through the file dialog, so "the renderer named an arbitrary
+// local path" is NOT privilege escalation and these are not path-traversal guards. What actually
+// matters is narrower:
+//
+//   1. `src` values reach `ffmpeg -i`, and ffmpeg speaks far more than files — http, tcp, concat,
+//      subfile and friends. A renderer compromised by malicious subtitle text or torrent metadata
+//      could use that to reach hosts on the user's network that it cannot reach itself. Pinning
+//      these inputs to real local files removes the protocol surface entirely.
+//   2. Unbounded reads. readFileSync on a renderer-named path will happily allocate a 10GB file
+//      into the main process and take the app down with it.
+//
+// All three callers (thumb:at, subtitle:generate, subtitle:online) pass `currentLocalPath`, which
+// the renderer only sets for paths beginning with '/'. So requiring a local regular file matches
+// what the app genuinely does — a guard stricter than real usage gets loosened until it stops
+// guarding, and one looser than real usage is not a guard.
+
+const fs = require('fs');
+const path = require('path');
+
+// An existing, regular, absolute local file — or null. Returns the path so callers can use the
+// validated value rather than the raw one.
+function localMediaPath(p) {
+  if (typeof p !== 'string' || !p) return null;
+  if (p.includes('\0')) return null;               // truncation tricks in the C layer below
+  if (!path.isAbsolute(p)) return null;            // no cwd-relative resolution
+  // A URL is not a path. Rejected explicitly rather than left to statSync, so the intent is clear:
+  // these channels are for local media, and anything with a scheme belongs to a different route.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(p)) return null;
+  try {
+    const st = fs.statSync(p);
+    return st.isFile() ? p : null;                 // not a directory, socket, fifo or device
+  } catch (e) {
+    return null;
+  }
+}
+
+// Read a text file the renderer named, refusing anything implausibly large for its purpose.
+// Returns null rather than throwing: every caller already degrades gracefully.
+function readTextCapped(p, maxBytes) {
+  const cap = typeof maxBytes === 'number' && maxBytes > 0 ? maxBytes : 2 * 1024 * 1024;
+  if (typeof p !== 'string' || !p || p.includes('\0')) return null;
+  let fd = null;
+  try {
+    const st = fs.statSync(p);
+    if (!st.isFile() || st.size > cap) return null;
+    // Size-then-read is a TOCTOU in principle; read through a held descriptor with an explicit
+    // length so a file that grows between the two cannot widen the read.
+    fd = fs.openSync(p, 'r');
+    const buf = Buffer.allocUnsafe(Math.min(st.size, cap));
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    return buf.slice(0, n).toString('utf8');
+  } catch (e) {
+    return null;
+  } finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch (e) {} }
+  }
+}
+
+module.exports = { localMediaPath, readTextCapped };
