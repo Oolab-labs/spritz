@@ -236,21 +236,44 @@ static SpritzGLView* gVideoView = nil;
 static NSView*     gContentView = nil;
 static CVDisplayLinkRef gDisplayLink = NULL;
 
+// Set by mpv when a new frame is ready; consumed by the display-link clock below.
+static std::atomic<bool> gFrameReady{false};
+// Mirrors mpv's `interpolation` property (see SetProperty). Interpolation synthesises in-between
+// frames, so it genuinely needs a redraw every display refresh; without it, redrawing faster than
+// the source frame rate just repaints identical pixels.
+static std::atomic<bool> gInterpolation{false};
+
 static void on_mpv_render_update(void* ctx) {
   // Arbitrary thread: signal only — never call mpv/GL here.
   gUpdateCbCount.fetch_add(1, std::memory_order_relaxed);
-  dispatch_async(dispatch_get_main_queue(), ^{
-    if (gVideoView) [gVideoView setNeedsDisplay:YES];
-  });
+  // Previously this dispatched a redraw straight to the main queue. It no longer does: the display
+  // link below is now the single scheduler, so frames are presented on a vsync-aligned clock
+  // instead of two independent sources both asking to draw.
+  gFrameReady.store(true, std::memory_order_release);
 }
 
 // CVDisplayLink — a vsync-aligned clock at the display's TRUE refresh (60/120Hz ProMotion),
-// replacing the fixed 60Hz NSTimer. Basic playback is already driven by on_mpv_render_update
-// (fires per decoded frame); this steady display-rate clock is what lets mpv's interpolation
-// render in-between frames at the right cadence, and is the foundation for HDR EDR work.
+// replacing the fixed 60Hz NSTimer. It is also the foundation for HDR EDR work.
+//
+// This used to request a redraw on EVERY tick. drawRect runs on the main thread — the same thread
+// as the JS event loop — and ends in [ctx flushBuffer], which blocks until the display is ready.
+// So the main thread was rendering and blocking up to 120 times a second, starving everything
+// else: measured 0.6-2.0s gaps in mpv property delivery during ordinary playback, which is what
+// made the UI feel laggy and what the buffering ring kept misreading as a stall.
+//
+// A 24fps film on a 120Hz display only has a new frame every fifth tick. Drawing on the other four
+// repaints identical pixels at full cost. Now a redraw is requested only when there is something
+// new to show, which is a ~5x cut in main-thread render work for typical content.
+//
+// This does NOT fix the underlying problem — rendering still happens on the main thread and still
+// blocks. Moving it to a dedicated render thread is the real fix and is tracked separately.
 static CVReturn displayLinkCb(CVDisplayLinkRef dl, const CVTimeStamp* now, const CVTimeStamp* out,
                               CVOptionFlags flags, CVOptionFlags* flagsOut, void* ctx) {
-  dispatch_async(dispatch_get_main_queue(), ^{ if (gVideoView) [gVideoView setNeedsDisplay:YES]; });
+  const bool want =
+      (gRender == NULL)                                          // idle fill: keep the clock
+      || gInterpolation.load(std::memory_order_relaxed)          // needs in-between frames
+      || gFrameReady.exchange(false, std::memory_order_acq_rel); // a real new frame
+  if (want) dispatch_async(dispatch_get_main_queue(), ^{ if (gVideoView) [gVideoView setNeedsDisplay:YES]; });
   return kCVReturnSuccess; // setNeedsDisplay coalesces, so we never flood the main queue
 }
 static NSTimer* gFallbackTimer = nil; // used only if the display link can't start
@@ -268,7 +291,13 @@ static void startDisplayLink() {
   }
   if (!ok) { // guarantee a redraw clock — fall back to the original steady 60Hz timer
     gFallbackTimer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 60.0) repeats:YES block:^(NSTimer* t) {
-      if (gVideoView) [gVideoView setNeedsDisplay:YES];
+      // Same gate as displayLinkCb — this is the only other redraw clock, and since
+      // on_mpv_render_update no longer schedules draws itself, it must consume gFrameReady too or
+      // video would freeze on the fallback path.
+      const bool want = (gRender == NULL)
+          || gInterpolation.load(std::memory_order_relaxed)
+          || gFrameReady.exchange(false, std::memory_order_acq_rel);
+      if (want && gVideoView) [gVideoView setNeedsDisplay:YES];
     }];
   }
 }
@@ -604,6 +633,12 @@ Napi::Value SetProperty(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (!gMpv) return env.Undefined();
   std::string name = info[0].As<Napi::String>().Utf8Value();
+  // Mirror `interpolation` locally: the display-link clock needs to know, on every tick and off
+  // the main thread, whether in-between frames are being synthesised. Reading it back from mpv
+  // there would mean an mpv call per refresh; a cached flag costs nothing.
+  if (name == "interpolation" && info[1].IsBoolean()) {
+    gInterpolation.store(info[1].As<Napi::Boolean>().Value(), std::memory_order_relaxed);
+  }
   if (info[1].IsBoolean()) { int f = info[1].As<Napi::Boolean>().Value() ? 1 : 0; mpv_set_property(gMpv, name.c_str(), MPV_FORMAT_FLAG, &f); }
   else if (info[1].IsNumber()) { double d = info[1].As<Napi::Number>().DoubleValue(); mpv_set_property(gMpv, name.c_str(), MPV_FORMAT_DOUBLE, &d); }
   else { std::string s = info[1].As<Napi::String>().Utf8Value(); mpv_set_property_string(gMpv, name.c_str(), s.c_str()); }

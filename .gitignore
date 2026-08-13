@@ -74,3 +74,5 @@ hls/
 !build/entitlements.mac.plist
 
 # The installed .app is a deploy target, not a source location (see deploy.sh).
+build/Release/
+build/Makefile
