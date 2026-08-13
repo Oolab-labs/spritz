@@ -32,12 +32,12 @@ const rules = {
   // Async correctness — the buffering-ring bug was exactly this class of mistake: state read
   // before an await, acted on after, by which time events had already changed it.
   'no-async-promise-executor': 'error',
-  // WARN, not error, and deliberately so. It currently flags five pre-existing spots (lanserver
-  // `bytes`/`scanning`, torrent `WT`/`active`, renderer `debug.textContent`). They are unreviewed,
-  // not known-good — but they predate this config, and turning them into errors on day one would
-  // mean landing a lint setup that fails immediately, which is how lint setups get switched off.
-  // Triage them, then promote this to error.
-  'require-atomic-updates': 'warn',
+  // ERROR. All five pre-existing hits were reviewed rather than bulk-silenced: four were benign
+  // (a check-and-set mutex, a function-local accumulator behind that same mutex, a module-cached
+  // import memo, and an intended last-write-wins) and each carries an inline disable naming the
+  // reason; the fifth was real and is fixed. Nothing is suppressed blindly, so a hit now means
+  // NEW code with this defect — which is the one that cost a day. Fail on it.
+  'require-atomic-updates': 'error',
   // OFF: every hit is `return resolve(x)` used as an early exit. The return value is discarded and
   // the idiom is used consistently throughout main.js. Real rule, no real defects here.
   'no-promise-executor-return': 'off',

@@ -85,6 +85,9 @@ module.exports = function createTorrent(send) {
   }
 
   async function getClient() {
+    // Lazy module memo. Concurrent callers may both import, but import() is module-cached, so
+    // both assign the identical namespace object — the second write is a no-op in effect.
+    // eslint-disable-next-line require-atomic-updates
     if (!WT) WT = (await import('webtorrent')).default; // ESM → dynamic import; .default export
     if (!client) {
       // Higher peer caps than the default (55) — a 4K/HDR release is ~25 Mbps, which needs many
@@ -247,6 +250,9 @@ module.exports = function createTorrent(send) {
       // noPeers per announce source (dht/tracker/lsd) when that source returns nobody — logs help tell a
       // dead magnet apart from a slow-tracker/healthy-DHT start without waiting the full 40-45s timers.
       t.on('noPeers', (announceType) => tlog('noPeers via ' + announceType));
+      // Last-add-wins is the intended behaviour: adding a second torrent replaces the first,
+      // which is what cancel()/teardown() rely on.
+      // eslint-disable-next-line require-atomic-updates
       active = t;
     } catch (e) {
       console.error('[torrent] add err', msg(e));

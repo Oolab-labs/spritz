@@ -412,11 +412,17 @@ module.exports = function createLanServer(opts) {
             if (hlsWatch === null) return; // cast ended mid-walk — stop early
             const f = path.join(d, e.name);
             if (e.isDirectory()) await walk(f);
+            // `bytes` is function-local and scan() is single-flight behind the `scanning` guard,
+            // so nothing else can interleave with this accumulation.
+            // eslint-disable-next-line require-atomic-updates
             else { try { bytes += (await fsp.stat(f)).size; } catch (x) {} }
           }
         };
         await walk(dir);
       } catch (e) {}
+      // Check-and-set mutex: `scanning` is read and set synchronously at the top of scan(),
+      // before any await, so scan() cannot be double-entered and this release cannot race.
+      // eslint-disable-next-line require-atomic-updates
       scanning = false;
       if (!hlsWarned && bytes > 6 * 1024 * 1024 * 1024) {
         hlsWarned = true;

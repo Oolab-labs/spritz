@@ -224,7 +224,11 @@ function dispatch(ev) {
     case 'aid': setActiveTrack(audioList, value); break; // track-list doesn't re-fire on selection
     case 'sid': setActiveTrack(subList, value); break;
   }
-  updateDebug();
+  // NOT updateDebug() here. This runs on every property-change, so with the overlay open it fired
+  // an async soda.diag() IPC round-trip per time-pos — ~60 a second, each one snapshotting the cast
+  // list, DLNA list and torrent stats in the main process. The overlay for diagnosing stutter was
+  // itself loading the main thread that playback renders on. It refreshes on its own 1s interval
+  // while visible, and Ctrl+D paints it immediately; per-event refresh bought nothing.
 }
 
 function onEnded(genuine) {
@@ -530,12 +534,17 @@ document.addEventListener('mousemove', armIdle);
 // LAN server address, what discovery has found, torrent health, and the recent errors that the
 // catch-blocks swallow. This is the view that would have made a silent Local Network denial
 // obvious in seconds instead of hours.
-let diagTimer = null;
+let diagTimer = null, diagBusy = false;
 const fmtAgo = (t) => { const s = Math.max(0, Math.round((Date.now() - t) / 1000)); return s < 60 ? s + 's' : Math.round(s / 60) + 'm'; };
 async function updateDebug() {
   if (debug.classList.contains('hidden')) { if (diagTimer) { clearInterval(diagTimer); diagTimer = null; } return; }
   if (!diagTimer) diagTimer = setInterval(updateDebug, 1000); // refresh only while visible
-  let d = null; try { d = await soda.diag(); } catch (e) {}
+  // One refresh in flight at a time. The 1s interval and the Ctrl+D keypress can both land here,
+  // and two overlapping awaits can resolve out of order — painting older data over newer.
+  if (diagBusy) return;
+  diagBusy = true;
+  // eslint-disable-next-line require-atomic-updates -- released by the single owner of the guard
+  let d = null; try { d = await soda.diag(); } catch (e) {} finally { diagBusy = false; }
   const lines = [
     `pos ${toPlayerTime(st.currentTime)} / ${toPlayerTime(st.duration)}`,
     `${st.vw}x${st.vh}  hwdec=${st.hwdec}`,
@@ -559,6 +568,8 @@ async function updateDebug() {
       d.errors.forEach((e) => lines.push(`  ${fmtAgo(e.t)} ago [${e.where}] ${e.message}`));
     }
   }
+  // Safe now that diagBusy makes this single-flight: only one refresh can reach this write.
+  // eslint-disable-next-line require-atomic-updates
   debug.textContent = lines.join('\n');
 }
 
