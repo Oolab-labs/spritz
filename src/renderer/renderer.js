@@ -93,17 +93,52 @@ function showIcon(which) { // 'pause' | 'play' | 'replay'
 // ---- buffering watchdog: if time-pos stalls while playing, show the spinner ----
 let bufTimer = null;
 let lastSeekPaint = 0; // throttles the scrubber/clock repaint away from mpv's frame-rate time-pos
+let posSeq = 0;        // bumped on every time-pos event — lets the async check below notice that
+                       // fresh events arrived while it was awaiting (see the race note there)
 function armBufferWatchdog() {
   hideSpinner();
   clearTimeout(bufTimer);
-  bufTimer = setTimeout(() => { if (!st.paused && !st.ended && st.loaded) showSpinner(); }, 800);
+  // Snapshot what this check is reasoning about. st.currentTime is mutated by incoming events, so
+  // reading it again after an await compares the present against itself and always looks stalled.
+  const posAtArm = st.currentTime, seqAtArm = posSeq;
+  bufTimer = setTimeout(async () => {
+    if (st.paused || st.ended || !st.loaded) return;
+    // "No time-pos for 800ms" is not the same as "playback stalled". Delivery of these events
+    // pauses periodically while mpv plays on perfectly, so ask the player where it really is.
+    if (engine === 'mpv') {
+      let stat = null;
+      try { stat = await soda.player.stat(); } catch (e) {}
+      // THE RACE: that await gives the event loop a turn, and the backlog of time-pos events that
+      // built up during the stall flushes first. They advance st.currentTime and hide the ring;
+      // then this resumes, sees mpv's position equal to the position it just caught up to, and
+      // concludes "stalled" — drawing a ring that the next event erases ~40ms later. That flicker
+      // WAS the reported bug. Comparing against the snapshot, and bailing out if any event
+      // arrived, makes the decision immune to what happened while awaiting.
+      if (posSeq !== seqAtArm) return;                            // caught up → never stalled
+      if (stat && typeof stat.timePos === 'number') {
+        if (stat.paused) return;                                  // paused behind our back
+        if (stat.timePos - posAtArm > 0.25) return;               // it moved: we were the slow one
+      }
+      if (st.paused || st.ended || !st.loaded) return;            // state may have moved meanwhile
+    }
+    if (posSeq !== seqAtArm) return;
+    showSpinner();
+  }, 800);
 }
 
 // ---- the single event dispatcher (addon → here) ----
 function dispatch(ev) {
   if (ev.type === 'file-loaded') {
     st.loaded = true; st.ended = false; advancing = false; // next item is up; re-enable auto-advance
-    try { soda.player.playbackActive(!st.paused); } catch (e) {}
+    // loadfile starts PLAYING, so playback is active by definition here. This used to pass
+    // !st.paused, but st.paused starts true and is only ever written by mpv's `pause`
+    // property-change — which fires solely on a CHANGE. On the normal autoplay path pause is
+    // already false, so no event ever arrived to correct it, and this announced "not playing" for
+    // the whole file, leaving the renderer eligible for background throttling while playing.
+    // (Found while chasing the spurious buffering ring. Measurement later pinned that symptom on
+    // the race in armBufferWatchdog, not on this — but announcing the wrong state is still wrong.)
+    st.paused = false;
+    try { soda.player.playbackActive(true); } catch (e) {}
     home.classList.add('hidden'); player.classList.remove('hidden');
     btnSubs.classList.remove('hidden');
     // Keep the peers/speed pill alive while a torrent is STILL DOWNLOADING — that's exactly when
@@ -133,6 +168,7 @@ function dispatch(ev) {
       }
       break;
     case 'time-pos':
+      posSeq++; // see armBufferWatchdog: proves an event landed, even if the value is unchanged
       if (typeof value === 'number' && !st.seeking) {
         st.currentTime = value; // exact, every event — history/resume/cast handoff read this
         // mpv observes time-pos UNTHROTTLED, so this arrives at frame rate. Writing the slider,
@@ -267,6 +303,9 @@ function stop() {
   castAdvanceHost = null;  // returning home cancels any pending auto-next re-cast
   // reset UI back to the welcome screen
   st.loaded = st.ended = st.seeking = st.dragging = false;
+  // Also reset paused. mpv emits `pause` only when it CHANGES, so a stale true here survives into
+  // the next file and makes file-loaded below announce "not playing" — see the note there.
+  st.paused = true;
   try { soda.player.playbackActive(false); } catch (e) {} // stopped → let a backgrounded renderer throttle
   st.duration = st.currentTime = st.vw = st.vh = 0;
   seek.value = 0; seek.max = 100; seek.disabled = true; paint(seek, 0);
