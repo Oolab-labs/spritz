@@ -67,8 +67,18 @@ function httpReq(opts, body, cb, timeoutMs) {
 // the TV open and buffer the stream before answering (an LG can sit well past 6s on a cold start,
 // and a spurious timeout there leaves a session half-established), while a status poll that hasn't
 // answered in 2s is simply not going to. Polls stay tight so the UI can't stall behind them.
+// SPRITZ_SOAP_TIMEOUT_SCALE shrinks every budget proportionally. The timeout behaviour itself is
+// what the regression tests exercise — a Play that times out while the renderer is in fact playing
+// must not be reported as failure — so they have to wait one out, and at full scale that single
+// test took 30s of a 30s suite. A suite that slow stops being run, which costs more than it saves.
+// Tests set 0.02 (Play: 20s -> 400ms); anything unset or unparseable leaves production untouched.
+const TSCALE = (() => {
+  const v = parseFloat(process.env.SPRITZ_SOAP_TIMEOUT_SCALE || '');
+  return Number.isFinite(v) && v > 0 && v <= 1 ? v : 1;
+})();
 const SOAP_TIMEOUT = { SetAVTransportURI: 20000, Play: 20000, Stop: 10000, Seek: 10000,
   GetPositionInfo: 2500, GetTransportInfo: 2500, SetVolume: 4000 };
+for (const k of Object.keys(SOAP_TIMEOUT)) SOAP_TIMEOUT[k] = Math.max(50, Math.round(SOAP_TIMEOUT[k] * TSCALE));
 const httpGet = (url, cb) => { try { const u = new URL(url); httpReq({ host: u.hostname, port: u.port || 80, path: u.pathname + u.search, method: 'GET' }, null, cb); } catch (e) { cb(e); } };
 
 // Physical-LAN private IPv4s only (skip loopback + VPN/tunnel interfaces) — same rule as cast.js,
@@ -120,6 +130,7 @@ module.exports = function createDlna() {
   const ev = new EventEmitter();
   const devices = new Map(); // location → device {host,name,avControl,rcControl}
   let sock = null, timer = null, current = null;
+  let burstTimers = []; // pending M-SEARCH probes, cancelled by stopDiscovery()
 
   function emitDevices() {
     const list = [...devices.values()].map((d) => ({ id: 'dlna-' + d.location, type: 'dlna', name: d.name, location: d.location }));
@@ -169,9 +180,13 @@ module.exports = function createDlna() {
   }
   // A single UDP M-SEARCH is easily lost, so fire a short burst — the TV appears in ~1–6s instead of
   // possibly waiting for the 60s periodic re-search (which is why DLNA seemed to come and go).
+  // Burst timers are tracked so stopDiscovery() can cancel them. They used to be fire-and-forget:
+  // after teardown the remaining probes still fired, up to 8s later, against a socket that had just
+  // been closed and set to null — pointless work for a discovery the caller explicitly stopped, and
+  // enough to hold the event loop open (which is why the test suite idled for 8s after finishing).
   function burst() {
-    [0, 800, 2000, 4000, 8000].forEach((d) => setTimeout(search, d));
-    [300, 5000].forEach((d) => setTimeout(unicastSweep, d)); // multicast-less networks (see below)
+    [0, 800, 2000, 4000, 8000].forEach((d) => burstTimers.push(setTimeout(search, d)));
+    [300, 5000].forEach((d) => burstTimers.push(setTimeout(unicastSweep, d))); // multicast-less networks (see below)
   }
 
   // Unicast M-SEARCH fallback. Plenty of home routers/APs silently drop 239.255.255.250 between
@@ -243,7 +258,11 @@ module.exports = function createDlna() {
     for (const c of loadCache()) { dlog('[dlna] re-probing cached renderer ' + c.location); fetchDevice(c.location); }
     timer = setInterval(() => { search(); unicastSweep(); }, 30000);
   }
-  function stopDiscovery() { if (timer) { clearInterval(timer); timer = null; } try { if (sock) sock.close(); } catch (e) {} sock = null; }
+  function stopDiscovery() {
+    if (timer) { clearInterval(timer); timer = null; }
+    burstTimers.forEach(clearTimeout); burstTimers = [];
+    try { if (sock) sock.close(); } catch (e) {} sock = null;
+  }
 
   // --- SOAP control ---
   function soap(controlUrl, service, action, args, cb) {
@@ -349,7 +368,7 @@ module.exports = function createDlna() {
               return cb && cb();
             }
             fail(tstate);
-          }), 2000);
+          }), Math.max(50, Math.round(2000 * TSCALE))); // scaled with the SOAP budgets, see TSCALE
         }
         dlog('[dlna] SetAVTransportURI + Play OK');
         cb && cb();

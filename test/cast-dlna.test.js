@@ -1,8 +1,9 @@
 'use strict';
 
 // Regression tests for the failures that actually happened, all runnable with no TV present.
-// Run: node test/cast-dlna.test.js
+// Run: npm test  (node --test test/)
 
+const { test } = require('node:test');
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
@@ -36,9 +37,6 @@ function withDevice(dlna, loc, fn) {
     dlna.startDiscovery();
   });
 }
-
-const tests = [];
-const test = (name, fn) => tests.push({ name, fn });
 
 // --- 1. Play timeout must NOT be reported as failure if the renderer is actually playing ---
 // This is the double-playback bug: dlna.load() reported the timeout as an error, main called
@@ -117,13 +115,3 @@ test('a cast engine may only transition back to local, never to another engine',
     assert.ok(legal('mpv', to), 'mpv -> ' + to + ' must be legal (starting a handoff)');
   }
 });
-
-(async () => {
-  let pass = 0, fail = 0;
-  for (const t of tests) {
-    try { await t.fn(); console.log('  PASS  ' + t.name); pass++; }
-    catch (e) { console.log('  FAIL  ' + t.name + '\n        ' + e.message); fail++; }
-  }
-  console.log(`\n${pass} passed, ${fail} failed`);
-  process.exit(fail ? 1 : 0);
-})();

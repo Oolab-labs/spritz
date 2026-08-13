@@ -1,0 +1,42 @@
+name: CI
+
+# Runs on macOS because that is the only platform Spritz targets, and because the tests exercise
+# real sockets: the DLNA fakes bind loopback HTTP servers and the discovery paths walk the machine's
+# network interfaces. A Linux runner would pass for the wrong reasons.
+#
+# Deliberately does NOT build the native addons or package the app. Those need libmpv, ffmpeg and a
+# matching Electron ABI, and getting that reproducible in CI is its own piece of work. This gate is
+# "the JavaScript is sane and the regressions we already fixed stay fixed" — which is more than
+# existed before, and fast enough to actually stay green.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # --ignore-scripts: postinstall runs electron-builder install-app-deps, which downloads an
+      # Electron binary and rebuilds native modules. Neither is needed to lint or to run these
+      # tests, and both are slow and flaky on a hosted runner.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Lint
+        run: npm run lint
+
+      # SPRITZ_SOAP_TIMEOUT_SCALE is set by the test script itself (see package.json): the DLNA
+      # timeout regressions have to wait a timeout out, and at production scale that alone took 30s.
+      - name: Test
+        run: npm test
