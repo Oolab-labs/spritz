@@ -1,21 +1,56 @@
 # Spritz
 
-**Spritz** is a modern, arm64-native macOS media player. It plays virtually any
-file via [libmpv](https://github.com/mpv-player/mpv), streams torrents, and casts
-to AirPlay, Chromecast/Google Cast, and DLNA devices on your local network. Spritz
-is a personal, general-purpose media player — it ships **no** content, no catalog,
-and no index of any kind.
+**A private, native macOS media player that gets your media onto almost any screen,
+at the best quality that screen can actually take.**
+
+Give Spritz a video and pick a screen. It works out the difficult part — what the file
+is, what your TV can decode, and the shortest route between the two — then plays it
+locally via [libmpv](https://github.com/mpv-player/mpv) or casts it over AirPlay,
+Chromecast/Google Cast, or DLNA.
+
+```text
+your video  →  Spritz reads the file  →  Spritz reads your TV  →  the best route it can use
+                (codec, HDR, audio,        (what it decodes,        send as-is · convert only
+                 subtitles)                 how big, what audio)     what has to change
+```
+
+Everything runs on your own machine and your own network. No account, nothing uploaded,
+no telemetry. Spritz ships **no** content, catalog, or index of any kind — every file,
+link and stream comes from you.
 
 > Status: `2.0.0-alpha` — macOS 11+ on Apple Silicon (arm64).
 
-## Features
+## What it does
 
-- **Plays anything** via libmpv (HEVC/AV1/VP9, HDR, multi-track audio & subtitles).
-- **Torrent streaming** — open a magnet or `.torrent` and play while it downloads (webtorrent).
-- **Casting** — AirPlay 2, Chromecast/Google Cast, and DLNA/UPnP renderers, with
-  audio-track and subtitle selection, and native 4K/HDR passthrough over DLNA.
-- **Subtitles** — embedded tracks, external files, OpenSubtitles lookup, and (optional) Whisper generation.
-- **Continue Watching**, playlists/queues, keyboard shortcuts, playback speed, Anime4K upscaling.
+- **Plays practically any file** via libmpv — HEVC, AV1, VP9, HDR, multi-track audio
+  and subtitles, without hunting for codecs.
+- **Sends it to your TV** over AirPlay 2, Chromecast/Google Cast or DLNA/UPnP, and
+  negotiates per device: a capable TV gets the original 4K HEVC/HDR10 untouched; a
+  1080p receiver gets a proper conversion instead of a failure.
+- **Converts only what has to change.** If your TV can decode the video but not the
+  audio, only the audio is converted — surround stays surround rather than being
+  flattened to stereo.
+- **Handles subtitles** — embedded, external files, styled ASS, burn-in for image-based
+  subtitles that receivers can't render, OpenSubtitles lookup, optional Whisper
+  generation.
+- **Remembers where you were** — Continue Watching, playlists and queues, per-title
+  audio/subtitle language preferences, keyboard shortcuts, Anime4K upscaling.
+
+### Where your media can come from
+
+Spritz never supplies media; it opens what you point it at.
+
+- **Local files and folders** — drag in, or open with Spritz from Finder
+- **Your own network shares and external drives**
+- **Direct media URLs** you have the right to access
+- **Stream-site pages** resolved via `yt-dlp`
+- **Playlists** — `.m3u`, `.m3u8`, `.pls`, IPTV lists you subscribe to
+- **Torrents and magnet links you supply** — for lawfully distributed material such as
+  Linux and BSD images, Creative Commons and public-domain films, Internet Archive
+  releases, game and software distributions, and independent work released this way
+
+There is no search, no index, no directory and no built-in source of any of these.
+See [Acceptable use](#acceptable-use).
 
 ## Compatibility
 
@@ -52,6 +87,74 @@ xattr -dr com.apple.quarantine /Applications/Spritz.app
 
 **Build it yourself:** see [Build & run from source](#build--run-from-source) below.
 
+## Using Spritz
+
+### Play something locally
+
+Drag a file onto the window, or right-click it in Finder → **Open With → Spritz**.
+Spritz registers for common video extensions, so you can also make it the default
+handler. Playback starts immediately; there is no library to import and nothing is
+catalogued or uploaded.
+
+Useful keys: `Space` play/pause · `←`/`→` seek · `↑`/`↓` volume · `F` fullscreen ·
+`PgUp`/`PgDn` chapters · `,`/`.` frame step · `Ctrl+D` diagnostics overlay.
+
+### Send it to a TV
+
+1. Put your Mac and the TV on the **same network**. Spritz casts over your LAN — it
+   never routes media through the internet.
+2. Press the **cast button** and wait a moment for discovery.
+3. Pick a device. Spritz decides the route itself and shows what it chose.
+
+If nothing appears: macOS may not have granted Local Network access. Check **System
+Settings → Privacy & Security → Local Network** and make sure Spritz is enabled — if
+it already looks enabled, toggle it off and on. TVs that never advertise themselves can
+be added by IP under **Settings → Manual TV addresses**.
+
+Three routes, picked per device:
+
+- **DLNA** — the original file, untouched. Best for 4K HEVC/HDR10 on a TV that can
+  decode it: nothing is re-encoded, so nothing is lost.
+- **Chromecast / Google Cast** — negotiated per device. A capable TV gets native 4K
+  HEVC + HDR10; a 1080p dongle gets a conversion.
+- **AirPlay 2** — 1080p H.264/SDR. HDR sources are tone-mapped down.
+
+### Open a URL, playlist, or torrent you have the rights to
+
+**Open URL** accepts a direct media link, a stream-site page (resolved with `yt-dlp`),
+a playlist file, or a magnet/`.torrent` you supply. Torrent playback streams while
+downloading, prioritising the part you are watching.
+
+Spritz provides no way to find any of these. It opens what you give it, which for
+torrents means things distributed that way on purpose — Linux and BSD images, Internet
+Archive material, Creative Commons and public-domain films, independent releases.
+
+### Subtitles
+
+Embedded and external subtitles are picked up automatically, including sidecar files
+next to the video (`Movie.en.srt`, a `Subs/` folder). Image-based subtitles that a
+receiver can't render are burned into the picture instead. OpenSubtitles lookup and
+Whisper generation are available for files that have none.
+
+## Acceptable use
+
+Spritz is a player and a compatibility layer. It has no catalog, no index, no search,
+no recommendations and no built-in sources, and it will not acquire that. Everything it
+opens is something you pointed it at.
+
+**Spritz is for** your own files and recordings, media you have bought or licensed,
+material that is public domain or Creative Commons, content distributed freely by its
+rights holder, and anything else you have the right to play — on whichever screen in
+your home you prefer.
+
+**Spritz is not for** obtaining or distributing copyrighted material you have no right
+to, and it includes nothing to help you do that. It also does not circumvent DRM or
+copy protection, and no such capability will be added.
+
+You are responsible for what you open with it and for complying with the law where you
+live. That responsibility is not transferred by this notice — see
+[Disclaimer](#disclaimer).
+
 ## Status & known limitations
 
 **Spritz is alpha — in active development.** It works day to day, but expect rough edges; the areas below are known and being improved.
@@ -59,12 +162,12 @@ xattr -dr com.apple.quarantine /Applications/Spritz.app
 **4K / HDR casting**
 - **DLNA is the reliable 4K path** — the original file is streamed untouched and the TV decodes it natively (4K HEVC / HDR10 / HDR10+).
 - **Chromecast** does native 4K HEVC + HDR10 on capable TVs.
-- **AirPlay is 1080p H.264 / SDR only** — 4K/HDR is transcoded down and HDR looks washed out (the bundled ffmpeg has no HDR→SDR tone-mapping). Use DLNA for 4K HDR.
+- **AirPlay is 1080p H.264 / SDR only** — 4K/HDR is converted down. HDR is now properly tone-mapped rather than simply flattened (the bundled ffmpeg is built with `zscale`/`tonemap`), but DLNA remains the better route for 4K HDR because it re-encodes nothing at all.
 - **Dolby Vision is not passed through**, and some 4K DV files are still rejected by strict DLNA TVs ("file cannot be recognized") — being worked on.
 
 **Audio-track switching** — reliable for local playback, but **not yet reliable while casting**: switching language/track mid-cast can fail or need a re-cast, and not every container switches cleanly.
 
-**Subtitles** — embedded text subtitles and external SRT generally work, but **bitmap subtitles (PGS/VOBSUB) and styled ASS don't reliably render over casting** (the bundled ffmpeg has no libass), and the subtitle toggle can drop on some cast sessions. OpenSubtitles lookup is best-effort.
+**Subtitles** — embedded text subtitles and external SRT work well. Image-based subtitles (PGS/VOBSUB) and styled ASS can now be burned into the picture when a receiver can't render them (the bundled ffmpeg is built with `libass`), though this path is newer and less exercised than the rest. The subtitle toggle can still drop on some cast sessions, and OpenSubtitles lookup is best-effort.
 
 **Torrent streaming** — usually starts fine but can occasionally need a retry; 4K-over-torrent at marginal bandwidth will rebuffer.
 
@@ -78,27 +181,98 @@ Bug reports and PRs welcome.
 
 ## Build & run from source
 
-This repository is **source-only**. The prebuilt GPL media binaries (the `libmpv`
-dylib, `ffmpeg`/`ffprobe`) and the compiled native `*.node` addons are **not**
-committed (see [License](#license) below); you provide/build them locally.
+This repository is **source-only**. The GPL media binaries (`libmpv`, `ffmpeg`,
+`ffprobe`) and the compiled native `*.node` addons are **not** committed (see
+[License](#license)); you build or install them locally.
+
+Prerequisites: macOS 11+ on Apple Silicon, [Homebrew](https://brew.sh),
+[Node.js](https://nodejs.org) 18+, and the Xcode command-line tools
+(`xcode-select --install`) for the Objective-C++ addons.
 
 ```sh
-# 1. Media libraries (libmpv + ffmpeg) via Homebrew
-brew install mpv ffmpeg
+# 1. Get the source
+git clone https://github.com/Oolab-labs/spritz.git
+cd spritz
 
-# 2. JS dependencies
+# 2. Media libraries and build tools
+brew install mpv ffmpeg nasm pkg-config
+
+# 3. JS dependencies
 npm install
 
-# 3. Build the native addons (libmpv / AirPlay / Now Playing) against your toolchain
+# 4. Build the three native addons (libmpv render, AirPlay, Now Playing).
+#    Compiles against the Electron version in package.json — not your system Node —
+#    because the addons load inside Electron and the ABIs differ.
 npm run rebuild
 
-# 4. Run
+# 5. Run it
 npm start
 ```
 
-To produce a distributable `.app`/`.dmg`: `npm run dist` (electron-builder). If you
-redistribute a build that bundles the GPL `ffmpeg`/`libmpv` binaries, you must also
-carry the corresponding-source offer described under [License](#license).
+Check your work with `npm test` (unit tests, no TV or media files required) and
+`npx eslint .`.
+
+### The bundled ffmpeg is not Homebrew's
+
+Two features depend on filters the Homebrew `ffmpeg` formula does not ship:
+
+| Feature | Needs | In Homebrew's build? |
+|---|---|---|
+| HDR→SDR tone mapping | `zscale` (libzimg) + `tonemap` | No |
+| Subtitle burn-in | `subtitles` (libass) | No |
+
+Spritz probes `ffmpeg -filters` at startup and switches these on only if present, so a
+Homebrew ffmpeg gives you a **working player with those two features silently absent** —
+HDR casts look flat, and image-based subtitles are skipped rather than burned in. That
+is a degraded build, not a broken one, and it is easy to mistake for a bug.
+
+To get them, build ffmpeg with both libraries and make it self-contained:
+
+```sh
+brew install libass zimg x264 x265 dav1d libvpx opus lame svt-av1
+
+curl -LO https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz && tar xf ffmpeg-8.1.1.tar.xz
+cd ffmpeg-8.1.1
+./configure --extra-cflags="-I/opt/homebrew/include" --extra-ldflags="-L/opt/homebrew/lib" \
+  --enable-gpl --enable-version3 --enable-pthreads \
+  --enable-libass --enable-libzimg --enable-libfreetype --enable-libfribidi \
+  --enable-libx264 --enable-libx265 --enable-libsvtav1 --enable-libdav1d --enable-libvpx \
+  --enable-libopus --enable-libmp3lame \
+  --enable-videotoolbox --enable-audiotoolbox --enable-neon \
+  --enable-openssl --disable-ffplay --disable-doc --disable-libxcb --disable-xlib
+make -j$(sysctl -n hw.ncpu)
+cd ..
+
+# Copy the binaries plus every Homebrew dylib they need, rewriting the load paths so
+# the result runs on a machine without Homebrew. Fails loudly if anything is missed.
+./build/bundle-dylibs.sh /tmp/ffstage ffmpeg-8.1.1/ffmpeg ffmpeg-8.1.1/ffprobe
+```
+
+`--disable-libxcb` matters: configure otherwise detects X11 and drags in seven
+libraries a macOS media player has no use for.
+
+Put the result where the app looks for it — `Contents/Resources/bin/` in a packaged
+build, or ahead of Homebrew on `PATH` when running from source. `npm test` includes
+`test/ffmpeg-capabilities.test.js`, which asserts the filters are present and that no
+`/opt/homebrew` path survived relocation; run it to confirm the build is good.
+
+### Deploying into an installed .app
+
+`./deploy.sh` rsyncs `src/`, `vendor/` and the native *sources* into
+`/Applications/Spritz.app` and re-signs it, for fast iteration without a full repackage.
+Compiled addons and `node_modules` stay in the bundle — they are ABI-bound to the
+Electron inside it. **Never edit inside the `.app`**: an unsigned modification breaks the
+signature, and macOS then silently revokes the Local Network grant, which looks exactly
+like cast discovery being broken.
+
+Re-signing can also drop that grant on its own. If casting goes quiet after a deploy,
+toggle **System Settings → Privacy & Security → Local Network** off and on before
+suspecting the code.
+
+To produce a distributable `.app`/`.dmg`: `npm run dist` (electron-builder — install it
+first with `npm i -D electron-builder`). If you redistribute a build bundling the GPL
+`ffmpeg`/`libmpv` binaries, you must also carry the corresponding-source offer described
+under [License](#license).
 
 ### Releasing a signed build (maintainers)
 
