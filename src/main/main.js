@@ -16,6 +16,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
+const mpvGuard = require('./mpv-guard'); // allow lists for renderer-driven mpv properties/commands
 
 // Safety net: the main process continuously parses UNTRUSTED LAN input (mDNS/SSDP/DLNA/cast
 // packets). A single malformed packet that throws deep in a 3rd-party parser would otherwise put
@@ -1034,13 +1035,12 @@ if (!gotLock) {
     } catch (e) { console.error('[player:load]', e.message); }
   });
   // Defense-in-depth: the renderer drives mpv via these, but a COMPROMISED renderer must not be able
-  // to turn mpv into an arbitrary-code / file-exfil primitive. mpv's `run`/`subprocess` execute external
-  // programs, and `input-ipc-server`/script properties load attacker-controlled code — none are used by
-  // our renderer, so deny them. (Audit — player:command/setProperty hardening.)
-  const MPV_CMD_DENY = new Set(['run', 'subprocess', 'load-script', 'loadlist']);
-  const MPV_PROP_DENY = new Set(['input-ipc-server', 'scripts', 'load-scripts', 'script-opts', 'input-conf', 'config-dir', 'configdir', 'ytdl-raw-options']);
+  // to turn mpv into an arbitrary-code / file-exfil primitive. These were deny lists; they are now
+  // allow lists in src/main/mpv-guard.js, which explains why and is unit-tested. The deny lists had
+  // real gaps — `log-file` and `dump-cache` write attacker-chosen paths, `load-config-file` reads
+  // one — and enumerating the dangerous half of a several-hundred-name API never converges.
   ipcMain.on('player:setProperty', (_e, { name, value } = {}) => {
-    try { if (name && !MPV_PROP_DENY.has(String(name).toLowerCase())) mpvAddon.setProperty(name, value); } catch (e) {}
+    try { if (mpvGuard.allowProperty(name)) mpvAddon.setProperty(name, value); } catch (e) {}
   });
   // backgroundThrottling was disabled for the whole session, so a backgrounded Spritz sitting on
   // the welcome screen kept its renderer running at full rate for no reason (timers, rAF, the
@@ -1052,7 +1052,7 @@ if (!gotLock) {
     } catch (e) {}
   });
   ipcMain.on('player:command', (_e, { args } = {}) => {
-    try { if (Array.isArray(args) && args.length && !MPV_CMD_DENY.has(String(args[0]).toLowerCase())) mpvAddon.command(...args); } catch (e) {}
+    try { if (mpvGuard.allowCommand(args)) mpvAddon.command(...args); } catch (e) {}
   });
   ipcMain.handle('player:stat', () => { try { return mpvAddon.playerStat(); } catch (e) { return null; } });
 
@@ -1076,7 +1076,11 @@ if (!gotLock) {
   ipcMain.on('player:setShaders', (_e, { mode } = {}) => {
     try {
       mpvAddon.command('change-list', 'glsl-shaders', 'clr', '');
-      const files = A4K_MODES[mode];
+      // Own-property lookup only: `mode` comes from the renderer, and a plain index would resolve
+      // '__proto__' / 'constructor' to inherited values. Not exploitable here (only the hardcoded
+      // filenames in A4K_MODES ever become paths) but it should not be a lookup that can leave
+      // the object at all.
+      const files = Object.prototype.hasOwnProperty.call(A4K_MODES, mode) ? A4K_MODES[mode] : null;
       if (files) files.forEach((f) => mpvAddon.command('change-list', 'glsl-shaders', 'append', path.join(SHADER_DIR, f)));
       // Informational, NOT fatal — must not go through player:notice, whose renderer handler
       // stops playback 2.4s later (that channel is for unrecoverable load errors). Use a toast,
