@@ -9,7 +9,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { localMediaPath, readTextCapped } = require('../src/main/ipc-validate');
+const { localMediaPath, readTextCapped, containedPath } = require('../src/main/ipc-validate');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'spritz-validate-'));
 const realFile = path.join(tmp, 'Movie.mkv');
@@ -67,4 +67,38 @@ test('readTextCapped fails closed on bad input', () => {
 test('cleanup', () => {
   fs.rmSync(tmp, { recursive: true, force: true });
   assert.ok(!fs.existsSync(tmp));
+});
+
+// --- containedPath: used by the LAN HTTP server, which is bound to 0.0.0.0 ---
+
+test('containedPath resolves a normal file inside the root', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'spritz-hls-'));
+  try {
+    assert.strictEqual(containedPath(root, 'seg1.m4s'), path.join(root, 'seg1.m4s'));
+    assert.strictEqual(containedPath(root, 'subs/en.vtt'), path.join(root, 'subs', 'en.vtt'));
+    // Traversal that stays inside is fine — only where it LANDS matters.
+    assert.strictEqual(containedPath(root, 'a/../seg1.m4s'), path.join(root, 'seg1.m4s'));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('containedPath refuses anything landing outside the root', () => {
+  const root = '/tmp/spritz-hls';
+  for (const rel of ['../etc/passwd', '../../etc/passwd', 'a/../../etc/passwd',
+    '/etc/passwd', 'subs/../../../../../../etc/passwd']) {
+    assert.strictEqual(containedPath(root, rel), null, rel + ' must be refused');
+  }
+});
+
+test('containedPath is not fooled by a sibling with the root as a prefix', () => {
+  // A bare startsWith(root) check would accept this: '/tmp/spritz-hls-evil' does start with
+  // '/tmp/spritz-hls'. The separator in the comparison is what rules it out.
+  assert.strictEqual(containedPath('/tmp/spritz-hls', '../spritz-hls-evil/x'), null);
+});
+
+test('containedPath fails closed on the root itself and bad input', () => {
+  assert.strictEqual(containedPath('/tmp/spritz-hls', '.'), null, 'the directory is not a file in it');
+  for (const [r, x] of [[null, 'a'], ['/tmp', null], ['', 'a'], ['/tmp', ''], [42, 'a'],
+    ['/tmp', 'a\0b']]) {
+    assert.strictEqual(containedPath(r, x), null);
+  }
 });

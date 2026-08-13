@@ -61,4 +61,23 @@ function readTextCapped(p, maxBytes) {
   }
 }
 
-module.exports = { localMediaPath, readTextCapped };
+// Resolve `rel` inside `root`, or null if it lands anywhere else.
+//
+// Used by the LAN HTTP server, which is bound to 0.0.0.0 so televisions can reach it. That route
+// previously rejected traversal with a blacklist — splitting on '/' and looking for a '..' segment.
+// That happens to hold today, but blacklists answer "does this look dangerous" when the question
+// is "does this resolve inside the directory I meant". Only the second one stays true as callers
+// change, and it is not a harder check to write.
+//
+// The trailing-separator comparison matters: a plain startsWith(root) would accept '/tmp/hls-evil'
+// as being inside '/tmp/hls'.
+function containedPath(root, rel) {
+  if (typeof root !== 'string' || !root || typeof rel !== 'string' || !rel) return null;
+  if (rel.includes('\0') || root.includes('\0')) return null;
+  const base = path.resolve(root);
+  const full = path.resolve(base, rel);
+  if (full === base) return null;                      // the directory itself is not a file in it
+  return full.startsWith(base + path.sep) ? full : null;
+}
+
+module.exports = { localMediaPath, readTextCapped, containedPath };

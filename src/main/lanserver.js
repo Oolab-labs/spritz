@@ -20,6 +20,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { containedPath } = require('./ipc-validate'); // resolve-and-verify for LAN-exposed paths
 const { spawn } = require('child_process');
 
 function findBin(name) {
@@ -319,9 +320,14 @@ module.exports = function createLanServer(opts) {
   // Serve a file from the live-HLS temp dir (master/media .m3u8, fMP4 segments, .vtt subs).
   // Nested subdirs are allowed (multi-rendition output: stream_0/…, stream_1/…), but no `..`.
   function serveHlsFile(req, res, token, name) {
-    name = decodeURIComponent(name);
-    if (token !== hlsToken || !hlsDir || name.split('/').includes('..')) { res.writeHead(404); res.end(); return; }
-    const f = path.join(hlsDir, name), stat = safeStat(f);
+    try { name = decodeURIComponent(name); } catch (e) { res.writeHead(404); res.end(); return; }
+    // This server is bound to 0.0.0.0 so televisions can reach it, and `name` is whatever the
+    // receiver asked for. Containment is proved by resolving, rather than by scanning for '..' —
+    // the old check happened to hold, but it answers "does this look dangerous" when the question
+    // is "does this land inside hlsDir". Access still requires the 128-bit token above.
+    const f = token === hlsToken && hlsDir ? containedPath(hlsDir, name) : null;
+    if (!f) { res.writeHead(404); res.end(); return; }
+    const stat = safeStat(f);
     if (!stat) { res.writeHead(404); res.end(); return; }
     const type = name.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl'
       : name.endsWith('.vtt') ? 'text/vtt' : 'video/mp4'; // fMP4 segments / WebVTT subs
