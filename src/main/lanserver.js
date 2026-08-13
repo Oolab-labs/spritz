@@ -563,7 +563,7 @@ module.exports = function createLanServer(opts) {
     // stream + the video codec, but resolves in ~1–3s instead of stalling toward a 12s timeout
     // (which delayed the cast button). Inconclusive probe → vcodec null → serveHls proceeds anyway.
     const ps = spawn(FFPROBE, ['-v', 'error', '-probesize', '4M', '-analyzeduration', '4M',
-      '-show_entries', 'stream=index,codec_type,codec_name,width,height,r_frame_rate,color_transfer,channels,channel_layout:stream_tags=language,title:format=duration', '-of', 'json', input],
+      '-show_entries', 'stream=index,codec_type,codec_name,codec_tag_string,width,height,r_frame_rate,color_transfer,channels,channel_layout:stream_side_data=side_data_type:stream_tags=language,title:format=duration', '-of', 'json', input],
       { timeout: 5000 });
     ps.stdout.on('data', (d) => { out += d; });
     ps.on('error', () => cb(null));
@@ -572,7 +572,7 @@ module.exports = function createLanServer(opts) {
         const parsed = JSON.parse(out);
         const streams = parsed.streams || [];
         const dur = parseFloat(parsed.format && parsed.format.duration) || 0;
-        const audio = [], subs = []; let aN = 0, sN = 0, vcodec = null, width = 0, height = 0, hdr = false, fps = 0;
+        const audio = [], subs = []; let aN = 0, sN = 0, vcodec = null, width = 0, height = 0, hdr = false, fps = 0, dovi = false;
         const langCount = {}; // disambiguate duplicate languages in the menu (eng, eng → "English 2")
         for (const s of streams) {
           const tg = s.tags || {}, lang = tg.language || 'und';
@@ -581,6 +581,20 @@ module.exports = function createLanServer(opts) {
             const fr = /^(\d+)\/(\d+)$/.exec(s.r_frame_rate || ''); // "24000/1001" → 23.976
             fps = fr && +fr[2] ? (+fr[1] / +fr[2]) : (parseFloat(s.r_frame_rate) || 0);
             hdr = /smpte2084|arib-std-b67/i.test(s.color_transfer || ''); // HDR10/HLG (DoVi base layer reports PQ too)
+            // Dolby Vision. Detected two ways because releases differ: the sample-entry codec tag
+            // (dvh1/dvhe mark a DV track in MP4) and a DOVI configuration record in the stream's
+            // side data (what an MKV carries). Either is enough.
+            //
+            // This matters because DV is the one thing the DLNA route cannot simply hand over. That
+            // route's whole value is sending the file untouched, but webOS's DLNA player is far
+            // stricter than its app-side decoder — a set that plays DV from a streaming app will
+            // still answer "this file cannot be recognized" over UPnP. Until now nothing detected
+            // DV at all: `dovi` existed only as a receiver capability flag, hardcoded false, and was
+            // never read from the media, so the file was offered to the TV and the TV refused it.
+            const ctag = String(s.codec_tag_string || '').toLowerCase();
+            const sdl = Array.isArray(s.side_data_list) ? s.side_data_list : [];
+            dovi = ctag === 'dvh1' || ctag === 'dvhe'
+              || sdl.some((x) => /dovi|dolby[ _]?vision/i.test(String((x && x.side_data_type) || '')));
           } else if (s.codec_type === 'audio') {
             langCount[lang] = (langCount[lang] || 0) + 1;
             const name = tg.title || (lang === 'und' ? 'Audio ' + (aN + 1) : lang.toUpperCase()) + (langCount[lang] > 1 ? ' ' + langCount[lang] : '');
@@ -592,7 +606,7 @@ module.exports = function createLanServer(opts) {
             sN++; // count ALL subtitle streams so idx maps to 0:s:<idx> correctly
           }
         }
-        cb({ audio, subs, vcodec, dur, width, height, hdr, fps });
+        cb({ audio, subs, vcodec, dur, width, height, hdr, dovi, fps });
       } catch (e) { cb(null); }
     });
   }

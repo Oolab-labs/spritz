@@ -217,3 +217,54 @@ test('normalise fills gaps conservatively and accepts the old loose shapes', () 
   assert.strictEqual(normalise(null).source, 'default');
   assert.strictEqual(normalise({ maxHeight: -5 }).maxHeight, 1080, 'nonsense means conservative');
 });
+
+// --- Dolby Vision ---
+//
+// The reported failure: a 2160p DV/HDR10+ HEVC torrent cast over DLNA, and the LG answered
+// "this file cannot be recognized". DLNA's whole value is sending the file untouched, but webOS's
+// DLNA player is stricter than its app-side decoder — the same set plays DV from a streaming app.
+// Nothing detected DV at all before this: `dovi` existed only as a receiver flag, hardcoded false,
+// and was never read from the media.
+
+const DV_4K = { vcodec: 'hevc', height: 2160, hdr: true, dovi: true,
+  audio: [{ codec: 'eac3', channels: 6 }], subs: [] };
+
+test('a Dolby Vision file is not sent untouched to a receiver that has not claimed DV', () => {
+  // LG_4K is inferred from its name, and device-profile never infers dovi — so this is the real
+  // configuration behind the reported failure, not a contrived one.
+  const p = planPlayback(DV_4K, LG_4K);
+  assert.strictEqual(p.video, 'transcode', 'copying DV is what the TV refuses');
+  assert.ok(p.reasons.some((r) => /Dolby Vision/i.test(r)), 'must say why: ' + p.reasons.join(' | '));
+});
+
+test('a receiver that genuinely supports DV still gets the file untouched', () => {
+  // The guard must be a capability question, not a blanket ban — otherwise every DV file gets
+  // needlessly re-encoded on hardware that would have played it.
+  const dvTv = normalise({ hevc: true, hevc4k: true, hdr10: true, dovi: true, maxHeight: 2160,
+    audioCopy: ['aac', 'ac3', 'eac3'], source: 'user-override' });
+  const p = planPlayback(DV_4K, dvTv);
+  assert.strictEqual(p.video, 'copy');
+  assert.strictEqual(p.hdr, 'preserve');
+});
+
+test('converting a DV file keeps HDR10 rather than flattening to SDR', () => {
+  // These releases carry an HDR10 base layer. Dropping the DV layer is unavoidable; dropping HDR
+  // as well would be a second, unnecessary loss on a TV that displays HDR10 perfectly well.
+  const p = planPlayback(DV_4K, LG_4K);
+  assert.strictEqual(p.hdr, 'preserve', 'HDR10 base layer survives the re-encode');
+  assert.strictEqual(p.tonemap, false, 'no reason to tonemap for an HDR10-capable receiver');
+});
+
+test('a DV file on a receiver with no HDR at all is still tonemapped', () => {
+  const sdrOnly = normalise({ hevc: true, hdr10: false, maxHeight: 1080 });
+  const p = planPlayback(DV_4K, sdrOnly);
+  assert.strictEqual(p.video, 'transcode');
+  assert.strictEqual(p.hdr, 'tonemap');
+});
+
+test('plain HDR10 without DV is unaffected by the DV rule', () => {
+  // Guard against over-reach: the fix must not make ordinary 4K HDR casting worse.
+  const p = planPlayback(HEVC_4K_HDR, LG_4K);
+  assert.strictEqual(p.video, 'copy');
+  assert.ok(!p.reasons.some((r) => /Dolby Vision/i.test(r)));
+});

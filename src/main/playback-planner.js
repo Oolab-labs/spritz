@@ -102,6 +102,24 @@ function planPlayback(media, device, opts) {
   // arrives washed-out and too dark.
   if (hdrSource && !caps.hdr10) canCopyVideo = false;
 
+  // Dolby Vision. Unlike HDR10 this is not merely a metadata question: the DV layer has to be
+  // understood by whatever decodes the stream, and a receiver that cannot will refuse the file
+  // outright rather than fall back to the base layer. On webOS that refusal is the "this file
+  // cannot be recognized" message — from a set whose apps play DV perfectly well, because its
+  // DLNA player is much stricter than its app-side decoder.
+  //
+  // `dovi` is never inferred for a device (see device-profile.js): claiming DV support wrongly
+  // turns a watchable transcode into a hard failure, so it must be asserted, not guessed.
+  // Re-encoding drops the DV layer and leaves the HDR10 base, which is what these files carry
+  // anyway — hence tonemapping is NOT forced here, only copying is refused.
+  const doviSource = !!m.dovi;
+  if (doviSource && !caps.dovi) {
+    if (canCopyVideo) {
+      reasons.push('Receiver cannot handle Dolby Vision — converting (HDR10 is preserved where possible).');
+    }
+    canCopyVideo = false;
+  }
+
   const video = canCopyVideo ? VIDEO_COPY : VIDEO_TRANSCODE;
 
   // Everything below is a property of the ENCODE, so it is conditioned on there being one. On the
