@@ -14,7 +14,11 @@ const { fakeRenderer } = require('./fake-devices');
 // persistent renderer cache instead: startDiscovery() re-fetches cached LOCATIONs over plain HTTP,
 // which registers the fake AND exercises that cache path at the same time. (Outside Electron the
 // cache lives in the home dir — see CACHE_FILE in dlna.js.)
-const CACHE = path.join(os.homedir(), '.spritz-dlna-renderers.json');
+// Per-file cache path, set BEFORE dlna.js is required so it picks this up at module load.
+// node --test runs files in parallel and dlna's default cache path is a single shared file, so
+// without this one suite's seed/restore silently breaks another's discovery.
+const CACHE = path.join(os.tmpdir(), 'spritz-test-cache-cast-dlna.json');
+process.env.SPRITZ_DLNA_CACHE = CACHE;
 let savedCache = null;
 function seedCache(loc) {
   try { savedCache = fs.readFileSync(CACHE, 'utf8'); } catch (e) { savedCache = null; }

@@ -50,13 +50,27 @@ function fakeEureka({ port = 8008, name = 'Fake webOS TV', delayMs = 0, failFirs
 
 // ---- fake DLNA MediaRenderer (description XML + AVTransport SOAP) ----
 // behaviour: 'ok' | 'playTimeout' (accepts and plays, never answers Play) | 'wedged' (701 to all)
-function fakeRenderer({ port = 0, behaviour = 'ok', name = 'Fake DLNA Renderer' } = {}) {
+//
+// The hostile options model a responder that is NOT a television. SSDP is unauthenticated — any
+// host on the LAN can answer an M-SEARCH — so the description XML is attacker-controlled input:
+//   urlBase   override <URLBase>, which every controlURL is resolved against. Pointed off-LAN it
+//             would redirect our SOAP (carrying the media URL) to an arbitrary host.
+//   giant     never stop writing the description body, to exhaust memory in the fetcher.
+function fakeRenderer({ port = 0, behaviour = 'ok', name = 'Fake DLNA Renderer',
+  urlBase = null, giant = false } = {}) {
   let state = 'STOPPED';
   const calls = [];
   const srv = http.createServer((req, res) => {
     const url = req.url || '';
     if (req.method === 'GET') { // description XML
-      const base = 'http://' + lanAddr() + ':' + srv.address().port;
+      if (giant) { // endless body — never ends, never valid
+        res.writeHead(200, { 'Content-Type': 'text/xml' });
+        const chunk = '<padding>' + 'A'.repeat(64 * 1024) + '</padding>';
+        const pump = () => { if (!res.writableEnded && res.write('<root>' + chunk)) setImmediate(pump); };
+        res.write('<?xml version="1.0"?>'); pump();
+        return;
+      }
+      const base = urlBase || ('http://' + lanAddr() + ':' + srv.address().port);
       res.writeHead(200, { 'Content-Type': 'text/xml' });
       return res.end(`<?xml version="1.0"?><root><URLBase>${base}</URLBase><device>`
         + `<friendlyName>${name}</friendlyName><serviceList><service>`

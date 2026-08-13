@@ -58,8 +58,23 @@ function soapFault(xml) {
   return null;
 }
 
+// Every response here is a device description or a SOAP reply — kilobytes of XML from an
+// unauthenticated source on the LAN, discovered by shouting into a multicast group. A device that
+// answers a description fetch with an endless body would otherwise be accumulated into a string
+// until the main process dies, and nothing about SSDP proves the responder is a television.
+// 1MB is orders of magnitude above any real device description; the largest seen is a few KB.
+const MAX_BODY = 1024 * 1024;
 function httpReq(opts, body, cb, timeoutMs) {
-  const req = http.request(opts, (res) => { let d = ''; res.on('data', (c) => { d += c; }); res.on('end', () => cb(null, res, d)); });
+  const req = http.request(opts, (res) => {
+    let d = '', n = 0, over = false;
+    res.on('data', (c) => {
+      if (over) return;
+      n += c.length;
+      if (n > MAX_BODY) { over = true; req.destroy(new Error('response too large')); return; }
+      d += c;
+    });
+    res.on('end', () => { if (!over) cb(null, res, d); });
+  });
   req.on('error', (e) => cb(e)); req.setTimeout(timeoutMs || 6000, () => req.destroy(new Error('timeout')));
   if (body) req.write(body); req.end();
 }
@@ -116,6 +131,10 @@ function manualHosts() {
 // with no SSDP reply at all. Advisory only: the full /24 sweep still runs unconditionally, so a
 // DHCP lease change can't strand discovery on a stale cache.
 const CACHE_FILE = (() => {
+  // Overridable so concurrent test files do not share one cache. node --test runs files in
+  // parallel, and a single shared path meant one suite's seed/restore clobbered another's — which
+  // showed up as a real-looking discovery failure in an unrelated, previously passing test.
+  if (process.env.SPRITZ_DLNA_CACHE) return process.env.SPRITZ_DLNA_CACHE;
   try { return require('path').join(require('electron').app.getPath('userData'), 'dlna-renderers.json'); }
   catch (e) { return require('path').join(os.homedir(), '.spritz-dlna-renderers.json'); } // non-Electron (tests)
 })();
@@ -145,15 +164,30 @@ module.exports = function createDlna() {
       if (err || !xml) { dlog('[dlna] description fetch FAILED: ' + location + ' · ' + (err && err.message)); return; }
       // only MediaRenderers (must have an AVTransport service)
       if (!new RegExp(AVT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(xml)) { dlog('[dlna] not a MediaRenderer (no AVTransport service): ' + location); return; }
-      const name = tag(xml, 'friendlyName') || 'DLNA Renderer';
+      // friendlyName is an unbounded attacker-influenced string that reaches the device list, the
+      // on-disk cache and the DIDL we send back. Bound it and drop control characters; it is a
+      // label. (It reaches the DOM via textContent, checked — not innerHTML — so this is about
+      // size and log/cache hygiene, not script injection.)
+      const name = String(tag(xml, 'friendlyName') || 'DLNA Renderer')
+        .replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 128) || 'DLNA Renderer';
+      // URLBase comes from the device's OWN xml, and every control URL is resolved against it. An
+      // SSDP responder is unauthenticated, so a hostile one could set it to an off-LAN host and
+      // have every later SOAP action — with our media URL in the body — posted to the internet.
+      // The LOCATION was LAN-checked; that check has to survive this redirection too.
+      //
+      // Host filtering was deliberately removed here once because it dropped the LG, whose control
+      // URL sits on a different port from its LOCATION. So the rule is NOT "same host as LOCATION"
+      // — it is "still on the LAN", which keeps the LG working and refuses the exfiltration.
       const base = (tag(xml, 'URLBase')) || new URL(location).origin;
-      // Resolve the SOAP control URL exactly like the original known-working build (no host filtering —
-      // that's what was dropping the LG). The LOCATION itself was already LAN-validated above.
       const ctrl = (svcType) => {
         const blocks = xml.match(/<service>[\s\S]*?<\/service>/gi) || [];
         for (const b of blocks) if (b.includes(svcType)) {
           const c = tag(b, 'controlURL'); if (!c) continue;
-          try { return new URL(c, base).href; } catch (e) {}
+          try {
+            const resolved = new URL(c, base).href;
+            if (!isLanUrl(resolved)) { dlog('[dlna] REFUSED off-LAN controlURL: ' + resolved); continue; }
+            return resolved;
+          } catch (e) {}
         }
         return null;
       };
@@ -161,6 +195,9 @@ module.exports = function createDlna() {
       if (!avControl) { dlog('[dlna] DROPPED "' + name + '" — has AVTransport in XML but no controlURL parsed · ' + location); return; }
       dlog('[dlna] FOUND renderer: "' + name + '" · avControl=' + avControl);
       const host = new URL(location).hostname;
+      // Bound the map. Each distinct LOCATION string is a new entry, so one responder answering
+      // with varying paths could otherwise grow it without limit and flood the device list.
+      if (devices.size >= 64) { dlog('[dlna] device cap reached, ignoring ' + location); return; }
       devices.set(location, { location, host, name, avControl, rcControl: ctrl(RCS) });
       // Remember it: this exact LOCATION is re-fetchable over HTTP even when SSDP goes quiet.
       saveCache([{ location, host, name }].concat(loadCache().filter((c) => c.location !== location)));
