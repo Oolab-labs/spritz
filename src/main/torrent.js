@@ -8,6 +8,7 @@
 const path = require('path');
 const fs = require('fs');
 const { app } = require('electron');
+const { criticalWindow, bufferHealth } = require('./buffer-plan'); // readahead sized in seconds
 
 // Opt-in plain-file diagnostic log (set SPRITZ_DEBUG=1 to enable; open /tmp/spritz-torrent.log in Finder).
 // Off by default so a public build never writes magnet links / filenames to world-readable /tmp.
@@ -116,8 +117,12 @@ module.exports = function createTorrent(send) {
 
   // Where mpv is in the file, as a 0..1 fraction (main pushes this from the time-pos property).
   // Used to keep the download's urgency travelling WITH the play head.
-  let playFrac = 0;
-  function setPlayhead(frac) { if (typeof frac === 'number' && frac >= 0 && frac <= 1) playFrac = frac; }
+  let playFrac = 0, mediaDuration = 0;
+  function setPlayhead(frac, durationSec) {
+    if (typeof frac === 'number' && frac >= 0 && frac <= 1) playFrac = frac;
+    // Duration turns the readahead window from a piece count into an amount of playback time.
+    if (typeof durationSec === 'number' && durationSec > 0) mediaDuration = durationSec;
+  }
 
   // Keep a CRITICAL window just ahead of the play head. webtorrent marks pieces critical only
   // reactively, for the bytes the HTTP server is being asked for right now — often a single piece —
@@ -125,20 +130,23 @@ module.exports = function createTorrent(send) {
   // Past the prebuffer, nothing was urgent any more: pieces arrived in plain sequential order at
   // whatever rate the swarm felt like, so a marginal swarm underruns mpv's cache and playback
   // stalls with the spinner. Re-target the window every progress tick instead.
-  const READAHEAD_PIECES = 24; // ~a few seconds to tens of seconds depending on piece length/bitrate
+  // Seconds of playback to keep urgent. Wide enough to ride out a slow patch, narrow enough that
+  // the critical set still means something. See buffer-plan.js for why this is time, not pieces.
+  const READAHEAD_SECONDS = 30;
   function refreshCritical() {
     if (!active || !activeFile) return;
     try {
-      const span = activeFile._endPiece - activeFile._startPiece + 1;
-      if (span <= 1) return;
-      // playFrac is a TIME fraction mapped onto BYTES, which is only approximate on VBR content,
-      // and clearing _critical below also drops webtorrent's own reactive mark for the read it is
-      // currently serving. Start a couple of pieces BEHIND the estimate so both stay covered even
-      // when the mapping is off — cheap insurance against prioritising just past the real read head.
-      const est = activeFile._startPiece + Math.floor(playFrac * span);
-      const at = Math.max(activeFile._startPiece, est - 2);
-      const end = Math.min(activeFile._endPiece, at + READAHEAD_PIECES);
-      if (end < at) return;
+      const win = criticalWindow({
+        startPiece: activeFile._startPiece,
+        endPiece: activeFile._endPiece,
+        pieceLength: active.pieceLength,
+        fileBytes: activeFile.length,
+        durationSec: mediaDuration,
+        playFrac,
+        targetSeconds: READAHEAD_SECONDS
+      });
+      if (!win) return;
+      const { at, end } = win;
       // CLEAR the previous window first. webtorrent's critical() only ever SETS _critical[i] = true
       // (lib/torrent.js) and never unsets it, so re-marking a moving window every second makes the
       // critical set grow without bound. Once most of the file is flagged, `_critical[piece] ||
@@ -149,13 +157,34 @@ module.exports = function createTorrent(send) {
     } catch (e) {}
   }
 
+  // Contiguous downloaded bytes ahead of the play head: the runway before playback starves.
+  // Reuses bufferedRanges(), which already merges contiguous pieces — a gap ends the runway, since
+  // playback stops at the first missing piece no matter how much sits beyond it.
+  function bytesAheadOfPlayhead() {
+    const f = activeFile;
+    if (!f || !f.length) return null;
+    const seg = bufferedRanges().find(([a, b]) => playFrac >= a - 1e-9 && playFrac < b);
+    return seg ? (seg[1] - playFrac) * f.length : 0;
+  }
+
   function emitProgress() {
     if (!active) return;
     refreshCritical();
+    const ahead = bytesAheadOfPlayhead();
+    // Reported, not acted on. Knowing "this stalls in about 20 seconds" is worth telling the user;
+    // reacting by widening the urgent set would add contention exactly when the swarm is short of
+    // it, which is the wrong direction.
+    const health = bufferHealth({
+      bufferedBytesAhead: ahead,
+      downloadBps: active.downloadSpeed,
+      fileBytes: activeFile && activeFile.length,
+      durationSec: mediaDuration
+    });
     send('torrent:progress', {
       peers: active.numPeers, senders: activeSenders(), speed: active.downloadSpeed,
       downloaded: active.downloaded, length: active.length, progress: active.progress,
-      buffered: bufferedRanges() // [[startFrac,endFrac],…] of the playing file — drawn on the scrubber
+      buffered: bufferedRanges(), // [[startFrac,endFrac],…] of the playing file — drawn on the scrubber
+      health // {known, risk, secondsBuffered, sustainable, secondsToEmpty}
     });
     // Stall watch: once any bytes flow, the torrent is alive — cancel the stall timer.
     if (stallTimer && active.downloaded > 0) { clearTimeout(stallTimer); stallTimer = null; }

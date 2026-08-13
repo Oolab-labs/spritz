@@ -861,7 +861,7 @@ if (!gotLock) {
         // sequential download. Cheap: a couple of numbers, no allocation, and torrent.js only acts
         // on it once per second when it emits progress.
         if (ev && ev.type === 'property-change' && ev.name === 'time-pos' && typeof ev.value === 'number' && mpvDuration > 0) {
-          try { torrent.setPlayhead(ev.value / mpvDuration); } catch (e) {}
+          try { torrent.setPlayhead(ev.value / mpvDuration, mpvDuration); } catch (e) {}
         }
         if (ev && ev.type === 'property-change' && ev.name === 'duration' && typeof ev.value === 'number') mpvDuration = ev.value;
         send('player-event', ev);
