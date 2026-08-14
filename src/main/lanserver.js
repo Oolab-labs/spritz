@@ -25,6 +25,7 @@ const { spawn } = require('child_process');
 // The copy-vs-transcode decision. It used to live here, inline, twice (serveHls and mkvArgs); it is
 // now one pure, unit-tested function and these sites only turn its answer into ffmpeg arguments.
 const { planPlayback } = require('./playback-planner');
+const { trimToCompleteCues, coverageEnd } = require('./vtt-window'); // serving a partially-extracted track
 
 function findBin(name) {
   const bundled = process.resourcesPath ? [path.join(process.resourcesPath, 'bin', name)] : []; // packaged → portable
@@ -115,6 +116,12 @@ function sniffCharenc(filePath) {
 // decode, no encode, so a 4K file is retimed at disk speed rather than re-rendered. Applied only when
 // the plan asks for it, which it does only for profile 8 (see playback-planner.js).
 const DOVI_STRIP = ['-bsf:v', 'filter_units=remove_types=62|63'];
+
+// How long a subtitle extraction may run before what it has is served. Generous enough that a local
+// file always finishes cleanly inside it, short enough that a receiver waiting on the track does not
+// give up. The cost of overrunning is a blank subtitle menu; the cost of stopping early is only a
+// shorter run of cues.
+const SUB_BUDGET_MS = 20000;
 
 // What the probe asks ffprobe for. Named and exported because one missing field here is invisible:
 // `stream_side_data=side_data_type` alone reports THAT a stream carries Dolby Vision and never which
@@ -994,9 +1001,16 @@ module.exports = function createLanServer(opts) {
     if (cached && safeStat(cached)) return serveFile(req, res, cached);
     try { fs.mkdirSync(path.join(REMUX_DIR, 'subs'), { recursive: true }); } catch (e) {}
     const out = path.join(REMUX_DIR, 'subs', newToken() + '.vtt');
+    // Embedded subtitles start at the position the cast started from, with absolute timestamps.
+    // Seeking the input jumps straight to that region rather than reading up to it, which matters
+    // enormously on a torrent: the bytes around the play head are already on disk from sequential
+    // download, so those cues come out at disk speed. -copyts keeps cue times file-absolute, which is
+    // what the video stream uses (-ss/-copyts in mkvArgs) and therefore what they must match.
+    const from = Math.max(0, Math.floor((mkvEntry.startSec || 0)));
     const args = sub.kind === 'external'
       ? ['-loglevel', 'error', '-y', '-sub_charenc', sniffCharenc(sub.ref), '-i', sub.ref, '-c:s', 'webvtt', '-f', 'webvtt', out]
-      : ['-loglevel', 'error', '-y', '-i', mkvEntry.input, '-map', '0:s:' + sub.ref, '-c:s', 'webvtt', '-f', 'webvtt', out];
+      : ['-loglevel', 'error', '-y', ...(from > 0 ? ['-ss', String(from), '-copyts'] : []),
+        '-i', mkvEntry.input, '-map', '0:s:' + sub.ref, '-c:s', 'webvtt', '-f', 'webvtt', out];
     const ff = spawn(FFMPEG, args);
     ff.stderr.on('data', () => {});
     // Track it. These were spawned into a local and never referenced again: cancelMkv() killed only
@@ -1011,12 +1025,32 @@ module.exports = function createLanServer(opts) {
     // The receiver giving up (or the cast ending) should end the work it asked for. Without this the
     // extraction outlives the request that justified it.
     req.on('close', () => { if (!ff.killed && ff.exitCode === null) { clog('sub extract abandoned by receiver: ' + base); try { ff.kill('SIGKILL'); } catch (x) {} } });
-    ff.on('error', () => { drop(); fail(); });
+    // Collecting every cue means reading the whole source, because subtitle samples are interleaved
+    // through the media. On a torrent that is hours and the receiver gives up long before. So the run
+    // is given a deadline and whatever it produced by then is served: on a local file it finishes far
+    // inside the budget and nothing changes, and on a torrent it yields the stretch that is actually
+    // downloaded, which is the stretch about to be watched.
+    let timedOut = false;
+    const budget = setTimeout(() => {
+      if (ff.exitCode === null && !ff.killed) { timedOut = true; clog('sub extract ' + base + ': budget reached, serving what was extracted'); try { ff.kill('SIGKILL'); } catch (x) {} }
+    }, SUB_BUDGET_MS);
+    ff.on('error', () => { clearTimeout(budget); drop(); fail(); });
     ff.on('close', (code) => {
-      drop();
-      clog('sub extract ' + base + ' exited code=' + code + ' after ' + (Date.now() - t0) + 'ms size=' + ((safeStat(out) || {}).size));
+      clearTimeout(budget); drop();
+      clog('sub extract ' + base + ' exited code=' + code + (timedOut ? ' (deadline)' : '') + ' after ' + (Date.now() - t0) + 'ms size=' + ((safeStat(out) || {}).size || 0));
       if (!mkvEntry || mkvEntry.token !== token) { try { fs.unlinkSync(out); } catch (x) {} return fail(); } // superseded
-      if (code === 0 && safeStat(out)) { shiftVtt(out, mkvEntry.subDelay); mkvEntry.subCache[base] = out; serveFile(req, res, out); } else fail();
+      // A clean exit means the file is complete. A killed one may end mid-cue, so it is trimmed back
+      // to the last complete cue — a receiver that rejects a malformed tail drops the whole track,
+      // which would turn "some subtitles" into "no subtitles".
+      if (code !== 0) {
+        let salvaged = null;
+        try { salvaged = trimToCompleteCues(fs.readFileSync(out, 'utf8')); } catch (x) {}
+        if (!salvaged) { clog('sub extract ' + base + ': nothing usable extracted'); return fail(); }
+        try { fs.writeFileSync(out, salvaged); } catch (x) { return fail(); }
+        clog('sub extract ' + base + ': serving partial track covering to ' + Math.round(coverageEnd(salvaged)) + 's');
+      }
+      if (!safeStat(out)) return fail();
+      shiftVtt(out, mkvEntry.subDelay); mkvEntry.subCache[base] = out; serveFile(req, res, out);
     });
   }
   function serveMkvStream(req, res, token) {
