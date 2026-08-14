@@ -121,3 +121,14 @@ test('the probe asks for the Dolby Vision fields the plan depends on', () => {
   // The side-data list is only populated when stream_side_data is requested in the first place.
   assert.match(PROBE_ENTRIES, /stream_side_data=/, 'side data must be requested, not assumed');
 });
+
+// The cast stream is a live pipe with no seeking and no known length, so what the receiver is told
+// has to match what the socket actually delivers. Those two facts lived in three places and had
+// already drifted: the server sent Matroska, one call site declared Matroska, the other fell through
+// to a video/mp4 guess because a /mkv/ token URL has no file extension.
+test('the cast route publishes the container it actually serves', () => {
+  const lan = require('../src/main/lanserver.js')({ onWarn: () => {} });
+  assert.equal(typeof lan.castMime, 'function', 'call sites need to read the type, not restate it');
+  assert.match(lan.castMime(), /^video\//, 'should be a video MIME type');
+  lan.teardown();
+});

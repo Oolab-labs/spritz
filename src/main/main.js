@@ -1252,7 +1252,10 @@ if (!gotLock) {
     const pos = info && typeof info.startSec === 'number' ? info.startSec : (mpvPos() || lastAvTime);
     try { mpvAddon.command('stop'); } catch (e) {} // hand off from local playback (AirPlay already dropped by beginCast)
     setEngine('chromecast');
-    cast.load(host, { url, title: lastCastTitle, contentType: ctypeFor(url), currentTime: pos, subs: subs || [] }, (err) => {
+    // A /mkv/ URL carries no extension, so ctypeFor() fell through to a plain video/mp4 guess that
+    // happened to disagree with what the server sent. Ask the server what it is actually serving.
+    const isLivePipe = !!castMkv && /\/mkv\//.test(String(url || ''));
+    cast.load(host, { url, title: lastCastTitle, contentType: isLivePipe ? lan.castMime() : ctypeFor(url), livePipe: isLivePipe, currentTime: pos, subs: subs || [] }, (err) => {
       // The source changed (or a cast was cancelled) during the ~12s handshake → don't resurrect. (Audit M3)
       if (gen !== loadGen) { try { cast.stop(); } catch (e) {} setEngine('mpv'); return; }
       if (err) { if (err.detailedErrorCode) console.error('[cast] LOAD failed, detailedErrorCode=' + err.detailedErrorCode + ' (104=container/codec unsupported, e.g. a real Chromecast rejecting MKV)'); resumeLocalFromChromecast(); send('cast-event', { type: 'error', message: err.message }); }
@@ -1276,7 +1279,7 @@ if (!gotLock) {
     lan.serveMkv(castMkv.input, { caps: castMkv.caps, extraSubs: externalSubs, audioTrack: at, startSec: Math.max(0, startSec || 0), burnSub: bs, subDelay: castMkv.subDelay || 0 }, (u, sideloadSubs, audioTracks, aTrack, dur, menuSubs) => {
       if (gen !== loadGen || castEngine !== 'chromecast' || !u) return;
       castMkv.audioTrack = aTrack; castMkv.burnSub = (bs != null && bs >= 0) ? bs : null; castMkv.menuSubs = menuSubs || [];
-      cast.load(host, { url: u, title: lastCastTitle, contentType: 'video/x-matroska', currentTime: Math.max(0, startSec || 0), subs: sideloadSubs || [] }, (err) => {
+      cast.load(host, { url: u, title: lastCastTitle, contentType: lan.castMime(), livePipe: true, currentTime: Math.max(0, startSec || 0), subs: sideloadSubs || [] }, (err) => {
         if (err) { send('cast-event', { type: 'error', message: err.message }); return; }
         send('cast-event', { type: 'started', host, audioTracks: audioTracks || [], audioActive: aTrack, isMkv: true, subTracks: menuSubs || [], burnActive: castMkv.burnSub });
         if (cb) cb();

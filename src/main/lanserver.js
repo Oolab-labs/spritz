@@ -859,7 +859,17 @@ module.exports = function createLanServer(opts) {
   // fail. One video (-c:v copy for castable H.264/HEVC, else videotoolbox transcode) + EXACTLY ONE
   // audio track (language switch = re-cast with a new audioTrack); subtitles are sideloaded separately
   // as WebVTT TEXT tracks (cast.js), not muxed in. Non-seekable pipe → the renderer re-casts on seek.
-  const MKV_CONTAINER = 'matroska', MKV_MIME = 'video/x-matroska'; // swap to mp4(frag)+video/mp4 if a receiver rejects MKV
+  // Fragmented MP4, not Matroska — the swap this line always anticipated. The Cast receiver does not
+  // demux Matroska: it connected, pulled a couple of seconds, and hung up, identically for a 4K H.264
+  // re-encode and a 4K HEVC copy. Two codecs, one behaviour, so the container was what it refused.
+  //
+  // delay_moov is load-bearing and not obvious. empty_moov alone writes the header up front, which
+  // the muxer cannot do for E-AC-3 — "Cannot write moov atom before EAC3 packets parsed" — so the
+  // whole stream fails at startup and the receiver sees the same silence as every other failure
+  // here. delay_moov holds the header back until the first packets are parsed, which costs nothing
+  // and keeps Atmos/surround on the copy path instead of forcing it down to stereo AAC.
+  const MKV_CONTAINER = 'mp4', MKV_MIME = 'video/mp4';
+  const MKV_MUXFLAGS = ['-movflags', 'frag_keyframe+empty_moov+delay_moov+default_base_moof'];
   function cancelMkv() {
     if (mkvProc) { try { mkvProc.kill('SIGKILL'); } catch (e) {} mkvProc = null; }
     // Cancelling the cast must also drop the streaming response — otherwise stopping a cast leaves
@@ -906,14 +916,14 @@ module.exports = function createLanServer(opts) {
       return ['-hide_banner', '-nostdin', '-loglevel', 'error', ...seek, ...inOpts, '-i', input,
         '-filter_complex', fc, '-map', '[vo]', '-map', '0:a:' + audioTrack + '?',
         ...vEnc,
-        ...aArgs, '-max_muxing_queue_size', '1024', '-f', MKV_CONTAINER, 'pipe:1'];
+        ...aArgs, '-max_muxing_queue_size', '1024', ...MKV_MUXFLAGS, '-f', MKV_CONTAINER, 'pipe:1'];
     }
     const vArgs = canCopyV
       ? ['-c:v', 'copy', ...(isHevc ? ['-tag:v', 'hvc1'] : []), ...(plan.stripDovi ? DOVI_STRIP : [])]
       : [...(needScale ? ['-vf', 'scale=-2:' + cap] : []), ...vEnc];
     return ['-hide_banner', '-nostdin', '-loglevel', 'error', ...seek, ...inOpts, '-i', input,
       '-map', '0:v:0', '-map', '0:a:' + audioTrack + '?', '-sn',
-      ...vArgs, ...aArgs, '-max_muxing_queue_size', '1024', '-f', MKV_CONTAINER, 'pipe:1'];
+      ...vArgs, ...aArgs, '-max_muxing_queue_size', '1024', ...MKV_MUXFLAGS, '-f', MKV_CONTAINER, 'pipe:1'];
   }
   // serveMkv(input, opts, cb) → cb(url, sideloadSubs, audioTracks, audioTrack, dur, menuSubs).
   // opts = {caps, audioTrack, startSec, extraSubs, burnSub}
@@ -1190,6 +1200,10 @@ module.exports = function createLanServer(opts) {
   function cancelActive() { cancelHls(); cancelRemux(); cancelMkv(); files.clear(); dlnaProxies.clear(); }
 
   return { serve, serveDlna, serveSubtitleForDlna, prepareCast, serveHls, serveMkv, teardown, cancelActive, lanAddress, avCompatible,
+    // The container this route actually serves. What the receiver is told must agree with what the
+    // socket delivers, so it is read from here rather than written out again at each call site —
+    // where it had already drifted to a hardcoded Matroska type in one place and video/mp4 in another.
+    castMime: () => MKV_MIME,
     serverPort: () => (server && server.listening ? port : null) }; // diagnostics: where receivers are pointed
 };
 

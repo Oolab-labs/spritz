@@ -395,7 +395,12 @@ module.exports = function createCast() {
         // from the ORIGINAL start (the receiver can't seek a live pipe) and 404s if the token was
         // superseded. Ask the orchestrator to re-cast a fresh stream from the live position; seekable
         // (direct MP4) and HLS sources can re-load their URL directly.
-        if (/x-matroska/i.test(media.contentType || '')) { ev.emit('reconnect', { at }); return; }
+        // Keyed on what the stream IS, not what it is called. This tested for the Matroska MIME, so
+        // moving the container to fragmented MP4 would have quietly disabled reconnect: the stream is
+        // just as unseekable, and the breakage would have surfaced much later as a Wi-Fi blip
+        // restarting the film from the beginning. The MIME test remains as a fallback for any caller
+        // not yet taught to declare it.
+        if (media.livePipe || /x-matroska/i.test(media.contentType || '')) { ev.emit('reconnect', { at }); return; }
         setTimeout(() => { if (myGen === castGen) load(host, Object.assign({}, media, { currentTime: at }), () => {}, true); }, 1500); // skip if superseded/stopped
         return;
       }
