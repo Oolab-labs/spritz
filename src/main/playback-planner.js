@@ -112,12 +112,31 @@ function planPlayback(media, device, opts) {
   // turns a watchable transcode into a hard failure, so it must be asserted, not guessed.
   // Re-encoding drops the DV layer and leaves the HDR10 base, which is what these files carry
   // anyway — hence tonemapping is NOT forced here, only copying is refused.
+  //
+  // Profile 8 is the exception, and it is worth taking. That profile is single-layer with a base
+  // layer that is ALREADY valid HDR10 — the Dolby Vision part is metadata riding alongside it — so
+  // dropping that metadata yields a stream an HDR10 receiver plays natively. Removing it is a
+  // bitstream edit, not a re-encode: the pixels are copied through untouched at disk speed, and 4K
+  // HDR survives where a transcode would have cost an hour of CPU and a generation of quality.
+  // Whether the receiver can use the result is already settled by the time we get here — the HEVC
+  // and HDR10 checks above have cleared `canCopyVideo` otherwise.
+  //
+  // Only profile 8. Profile 5 has no HDR10 fallback at all (its base layer is IPT-PQ-C2 and decodes
+  // to badly wrong colour), profile 7 is dual-layer, and a file whose DV was detected from its MP4
+  // codec tag alone reports no profile — all three keep the old behaviour, because guessing wrong
+  // here turns a watchable transcode into a picture that is visibly broken.
   const doviSource = !!m.dovi;
+  let stripDovi = false;
   if (doviSource && !caps.dovi) {
-    if (canCopyVideo) {
-      reasons.push('Receiver cannot handle Dolby Vision — converting (HDR10 is preserved where possible).');
+    if (canCopyVideo && m.doviProfile === 8) {
+      stripDovi = true;
+      reasons.push('Receiver cannot handle Dolby Vision — removing it and sending the HDR10 video untouched.');
+    } else {
+      if (canCopyVideo) {
+        reasons.push('Receiver cannot handle Dolby Vision — converting (HDR10 is preserved where possible).');
+      }
+      canCopyVideo = false;
     }
-    canCopyVideo = false;
   }
 
   const video = canCopyVideo ? VIDEO_COPY : VIDEO_TRANSCODE;
@@ -163,7 +182,9 @@ function planPlayback(media, device, opts) {
     reasons.push('Downscaling ' + height + 'p to ' + cap + 'p for this receiver.');
   }
 
-  if (video === VIDEO_COPY) {
+  // The Dolby Vision strip already said this, and said it more precisely — repeating "sent
+  // untouched" underneath it reads as a contradiction rather than a confirmation.
+  if (video === VIDEO_COPY && !stripDovi) {
     reasons.push('Video is sent untouched' + (hdrSource && keepHdr ? ', HDR preserved.' : '.'));
   }
 
@@ -206,6 +227,9 @@ function planPlayback(media, device, opts) {
     subtitles,
     targetHeight,
     hdr: keepHdr ? 'preserve' : hdrSource ? 'tonemap' : 'none',
+    // Copy the video, but drop the Dolby Vision NAL units on the way through. Only ever true
+    // alongside video:'copy' — it is a property of that copy, not an alternative to it.
+    stripDovi,
     tonemap: needTonemap,
     tonemapAccurate: needTonemap ? canTonemap : null,
     container: 'fmp4',

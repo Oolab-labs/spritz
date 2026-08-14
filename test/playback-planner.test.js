@@ -267,4 +267,62 @@ test('plain HDR10 without DV is unaffected by the DV rule', () => {
   const p = planPlayback(HEVC_4K_HDR, LG_4K);
   assert.strictEqual(p.video, 'copy');
   assert.ok(!p.reasons.some((r) => /Dolby Vision/i.test(r)));
+  assert.strictEqual(p.stripDovi, false);
+});
+
+// --- Dolby Vision profile 8: strip instead of re-encode ---
+//
+// Profile 8 is single-layer and its base layer is already valid HDR10, so removing the DV NAL units
+// leaves a stream an HDR10 receiver plays. That is a bitstream edit on the copy path — the pixels
+// pass through untouched — which is the difference between casting a 4K file instantly and spending
+// an hour re-encoding it into something visibly worse. The other profiles have no such fallback.
+
+const DV_P8_4K = { ...DV_4K, doviProfile: 8 };
+
+test('a profile-8 DV file is stripped and copied rather than re-encoded', () => {
+  const p = planPlayback(DV_P8_4K, LG_4K);
+  assert.strictEqual(p.video, 'copy', 'the expensive re-encode is avoidable here');
+  assert.strictEqual(p.stripDovi, true);
+  assert.strictEqual(p.hdr, 'preserve', 'the HDR10 base layer is exactly what is left behind');
+  assert.ok(p.reasons.some((r) => /Dolby Vision/i.test(r)), 'must still say why: ' + p.reasons.join(' | '));
+});
+
+test('profile 5 is re-encoded, because its base layer is not HDR10', () => {
+  // Stripping DV from profile 5 leaves IPT-PQ-C2 decoded as HDR10 — not a degraded picture but a
+  // visibly wrong one. Getting this wrong is worse than the transcode it replaces.
+  const p = planPlayback({ ...DV_4K, doviProfile: 5 }, LG_4K);
+  assert.strictEqual(p.video, 'transcode');
+  assert.strictEqual(p.stripDovi, false);
+});
+
+test('dual-layer profile 7 is re-encoded', () => {
+  const p = planPlayback({ ...DV_4K, doviProfile: 7 }, LG_4K);
+  assert.strictEqual(p.video, 'transcode');
+  assert.strictEqual(p.stripDovi, false);
+});
+
+test('an unknown profile is treated as unsafe to strip', () => {
+  // DV detected from an MP4 codec tag alone carries no profile. Absence of evidence is not
+  // evidence of profile 8, and the conservative answer costs only CPU.
+  const p = planPlayback(DV_4K, LG_4K);
+  assert.strictEqual(p.video, 'transcode');
+  assert.strictEqual(p.stripDovi, false);
+});
+
+test('a receiver that supports DV never has it stripped', () => {
+  const dvTv = normalise({ hevc: true, hevc4k: true, hdr10: true, dovi: true, maxHeight: 2160,
+    audioCopy: ['aac', 'ac3', 'eac3'], source: 'user-override' });
+  const p = planPlayback(DV_P8_4K, dvTv);
+  assert.strictEqual(p.video, 'copy');
+  assert.strictEqual(p.stripDovi, false, 'removing DV a receiver can use is pure loss');
+});
+
+test('profile 8 on an SDR receiver is still tonemapped, not stripped', () => {
+  // The strip is only reachable once the HEVC and HDR checks have already cleared the copy. A
+  // receiver that cannot show HDR at all needs the encode regardless of what the DV layer says.
+  const sdrOnly = normalise({ hevc: true, hdr10: false, maxHeight: 1080 });
+  const p = planPlayback(DV_P8_4K, sdrOnly);
+  assert.strictEqual(p.video, 'transcode');
+  assert.strictEqual(p.stripDovi, false);
+  assert.strictEqual(p.hdr, 'tonemap');
 });

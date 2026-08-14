@@ -60,6 +60,16 @@ test('the bundled ffmpeg has the encoders the cast paths depend on', (t) => {
   }
 });
 
+test('the bundled ffmpeg can strip Dolby Vision on the copy path', (t) => {
+  if (!FFMPEG) return t.skip('no bundled ffmpeg on this machine');
+  // A profile-8 DV file is cast by copying the video and dropping the DV NAL units on the way
+  // through — no re-encode. That whole route exists only because this bitstream filter does. If a
+  // rebuild ships without it the plan still asks for the strip and ffmpeg exits immediately, so
+  // casting DV fails outright rather than falling back to the transcode.
+  const out = execFileSync(FFMPEG, ['-hide_banner', '-bsfs'], { encoding: 'utf8', timeout: 15000 });
+  assert.ok(/(^|\s)filter_units(\s|$)/m.test(out), 'filter_units missing — DV cannot be stripped');
+});
+
 test('the bundled ffmpeg is self-contained', (t) => {
   if (!FFMPEG) return t.skip('no bundled ffmpeg on this machine');
   // It is built against Homebrew and relocated by build/bundle-dylibs.sh. If a rebuild skips that

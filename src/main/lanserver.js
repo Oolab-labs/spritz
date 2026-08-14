@@ -109,6 +109,13 @@ function sniffCharenc(filePath) {
 
 // Receiver capability profile — drives copy-vs-transcode. A capability-confirmed TV (the LG
 // NANO80T6A and any webOS-24 / Chromecast-built-in / Apple-TV class receiver) decodes 4K HEVC
+// Drop the Dolby Vision NAL units from an HEVC stream while copying it. 62 is the RPU carrying the
+// DV metadata and 63 the enhancement layer; with both gone what remains is the base layer, which for
+// a profile-8 release is ordinary HDR10 that any HDR receiver plays. This runs on the COPY path — no
+// decode, no encode, so a 4K file is retimed at disk speed rather than re-rendered. Applied only when
+// the plan asks for it, which it does only for profile 8 (see playback-planner.js).
+const DOVI_STRIP = ['-bsf:v', 'filter_units=remove_types=62|63'];
+
 // (incl. HDR10) and AC3/EAC3 passthrough, so we COPY instead of needlessly transcoding to 1080p
 // AAC stereo. Unknown/legacy receivers get the conservative profile (downscale 4K, AAC audio).
 // caps = { hevc, hevc4k, h264_4k, hdr10, dovi, audioCopy:Set, maxHeight }
@@ -572,7 +579,7 @@ module.exports = function createLanServer(opts) {
         const parsed = JSON.parse(out);
         const streams = parsed.streams || [];
         const dur = parseFloat(parsed.format && parsed.format.duration) || 0;
-        const audio = [], subs = []; let aN = 0, sN = 0, vcodec = null, width = 0, height = 0, hdr = false, fps = 0, dovi = false;
+        const audio = [], subs = []; let aN = 0, sN = 0, vcodec = null, width = 0, height = 0, hdr = false, fps = 0, dovi = false, doviProfile = null;
         const langCount = {}; // disambiguate duplicate languages in the menu (eng, eng → "English 2")
         for (const s of streams) {
           const tg = s.tags || {}, lang = tg.language || 'und';
@@ -593,8 +600,15 @@ module.exports = function createLanServer(opts) {
             // never read from the media, so the file was offered to the TV and the TV refused it.
             const ctag = String(s.codec_tag_string || '').toLowerCase();
             const sdl = Array.isArray(s.side_data_list) ? s.side_data_list : [];
-            dovi = ctag === 'dvh1' || ctag === 'dvhe'
-              || sdl.some((x) => /dovi|dolby[ _]?vision/i.test(String((x && x.side_data_type) || '')));
+            const doviSd = sdl.find((x) => /dovi|dolby[ _]?vision/i.test(String((x && x.side_data_type) || '')));
+            dovi = ctag === 'dvh1' || ctag === 'dvhe' || !!doviSd;
+            // The PROFILE decides whether this is recoverable cheaply. Profile 8 is single-layer
+            // with a base layer that is already valid HDR10, so dropping the DV metadata leaves a
+            // stream any HDR10 receiver plays — no re-encode. Profile 5 has no such fallback (its
+            // base layer is IPT-PQ-C2 and looks badly wrong decoded as HDR10), and profile 7 is
+            // dual-layer, so both still need the encode. A file detected only by its MP4 codec tag
+            // carries no profile here; left null, and null is treated as "not known to be safe".
+            doviProfile = doviSd && Number.isFinite(+doviSd.dv_profile) ? +doviSd.dv_profile : null;
           } else if (s.codec_type === 'audio') {
             langCount[lang] = (langCount[lang] || 0) + 1;
             const name = tg.title || (lang === 'und' ? 'Audio ' + (aN + 1) : lang.toUpperCase()) + (langCount[lang] > 1 ? ' ' + langCount[lang] : '');
@@ -606,7 +620,7 @@ module.exports = function createLanServer(opts) {
             sN++; // count ALL subtitle streams so idx maps to 0:s:<idx> correctly
           }
         }
-        cb({ audio, subs, vcodec, dur, width, height, hdr, dovi, fps });
+        cb({ audio, subs, vcodec, dur, width, height, hdr, dovi, doviProfile, fps });
       } catch (e) { cb(null); }
     });
   }
@@ -707,7 +721,7 @@ module.exports = function createLanServer(opts) {
           const needScale = !!(info && info.height && cap && cap < info.height);
           const scaleExpr = 'scale=-2:' + cap;
           const scale = needScale ? ['-vf', scaleExpr] : [];
-          if (mode === 'copy') return ['-c:v', 'copy', ...(isHevc ? ['-tag:v', 'hvc1'] : [])];
+          if (mode === 'copy') return ['-c:v', 'copy', ...(isHevc ? ['-tag:v', 'hvc1'] : []), ...(plan.stripDovi ? DOVI_STRIP : [])];
           if (hdr) { // HDR10 (HEVC) — hardware or software
             const enc = mode === 'sw' ? ['-c:v', 'libx265', '-preset', 'fast', '-crf', '20'] : ['-c:v', 'hevc_videotoolbox', '-prio_speed', '1', '-b:v', '10M', '-maxrate', '14M', '-bufsize', '20M'];
             return [...scale, ...enc, '-tag:v', 'hvc1', '-pix_fmt', 'p010le',
@@ -869,7 +883,7 @@ module.exports = function createLanServer(opts) {
         ...aArgs, '-max_muxing_queue_size', '1024', '-f', MKV_CONTAINER, 'pipe:1'];
     }
     const vArgs = canCopyV
-      ? ['-c:v', 'copy', ...(isHevc ? ['-tag:v', 'hvc1'] : [])]
+      ? ['-c:v', 'copy', ...(isHevc ? ['-tag:v', 'hvc1'] : []), ...(plan.stripDovi ? DOVI_STRIP : [])]
       : [...(needScale ? ['-vf', 'scale=-2:' + cap] : []), ...vEnc];
     return ['-hide_banner', '-nostdin', '-loglevel', 'error', ...seek, ...inOpts, '-i', input,
       '-map', '0:v:0', '-map', '0:a:' + audioTrack + '?', '-sn',
