@@ -122,6 +122,8 @@ const DOVI_STRIP = ['-bsf:v', 'filter_units=remove_types=62|63'];
 // give up. The cost of overrunning is a blank subtitle menu; the cost of stopping early is only a
 // shorter run of cues.
 const SUB_BUDGET_MS = 20000;
+// How long to let ffmpeg finish and flush after SIGTERM before insisting.
+const SUB_GRACE_MS = 3000;
 
 // What the probe asks ffprobe for. Named and exported because one missing field here is invisible:
 // `stream_side_data=side_data_type` alone reports THAT a stream carries Dolby Vision and never which
@@ -1030,13 +1032,25 @@ module.exports = function createLanServer(opts) {
     // is given a deadline and whatever it produced by then is served: on a local file it finishes far
     // inside the budget and nothing changes, and on a torrent it yields the stretch that is actually
     // downloaded, which is the stretch about to be watched.
-    let timedOut = false;
+    //
+    // SIGTERM, emphatically not SIGKILL. ffmpeg buffers output and writes the trailer on its way out,
+    // so a killed run loses everything it had. Measured on a fixture: the same extraction killed
+    // yields an empty file, terminated yields eleven cues. The first version of this used SIGKILL and
+    // destroyed precisely what the deadline existed to salvage — every track came back size=0.
+    // (-flush_packets changes nothing; the signal is what matters.)
+    let timedOut = false, grace = null;
     const budget = setTimeout(() => {
-      if (ff.exitCode === null && !ff.killed) { timedOut = true; clog('sub extract ' + base + ': budget reached, serving what was extracted'); try { ff.kill('SIGKILL'); } catch (x) {} }
+      if (ff.exitCode === null && !ff.killed) {
+        timedOut = true;
+        clog('sub extract ' + base + ': budget reached, asking ffmpeg to finish and flush');
+        try { ff.kill('SIGTERM'); } catch (x) {}
+        // Only if it ignores that — a read wedged on a dead socket will not answer SIGTERM.
+        grace = setTimeout(() => { try { ff.kill('SIGKILL'); } catch (x) {} }, SUB_GRACE_MS);
+      }
     }, SUB_BUDGET_MS);
-    ff.on('error', () => { clearTimeout(budget); drop(); fail(); });
+    ff.on('error', () => { clearTimeout(budget); clearTimeout(grace); drop(); fail(); });
     ff.on('close', (code) => {
-      clearTimeout(budget); drop();
+      clearTimeout(budget); clearTimeout(grace); drop();
       clog('sub extract ' + base + ' exited code=' + code + (timedOut ? ' (deadline)' : '') + ' after ' + (Date.now() - t0) + 'ms size=' + ((safeStat(out) || {}).size || 0));
       if (!mkvEntry || mkvEntry.token !== token) { try { fs.unlinkSync(out); } catch (x) {} return fail(); } // superseded
       // A clean exit means the file is complete. A killed one may end mid-cue, so it is trimmed back

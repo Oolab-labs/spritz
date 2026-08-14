@@ -80,3 +80,38 @@ test('the bundled ffmpeg is self-contained', (t) => {
   const leaks = out.split('\n').map((l) => l.trim().split(' ')[0]).filter((p) => p.startsWith('/opt/homebrew'));
   assert.deepStrictEqual(leaks, [], 'unrelocated Homebrew dylibs: ' + leaks.join(', '));
 });
+
+// A subtitle extraction that runs out of time is stopped and whatever it wrote is served. That only
+// works because ffmpeg flushes and writes its trailer when asked to terminate — killed outright it
+// buffers the lot and leaves an empty file. This was not theoretical: the first version used SIGKILL
+// and every track came back at size zero, which looked exactly like "this file has no subtitles".
+test('the bundled ffmpeg flushes what it has when asked to terminate', async (t) => {
+  if (!FFMPEG) return t.skip('no bundled ffmpeg on this machine');
+  const os = require('os');
+  const { spawn } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spritz-sigterm-'));
+  const srt = path.join(dir, 'in.srt');
+  const src = path.join(dir, 'in.mkv');
+  const out = path.join(dir, 'out.vtt');
+  // Cues every second, so a few seconds of reading is guaranteed to have produced some.
+  fs.writeFileSync(srt, Array.from({ length: 30 }, (_, i) => {
+    const s = String(i + 1).padStart(2, '0');
+    return `${i + 1}\n00:00:${s},000 --> 00:00:${s},800\nCue ${i + 1}.\n`;
+  }).join('\n'));
+  execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc=d=32:s=160x120',
+    '-i', srt, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:s', 'srt', '-map', '0:v', '-map', '1:s', src],
+  { stdio: 'ignore', timeout: 90000 });
+
+  // -re reads at playback rate, so the run is still going when it is interrupted.
+  const ff = spawn(FFMPEG, ['-loglevel', 'error', '-y', '-re', '-i', src, '-map', '0:s:0', '-c:s', 'webvtt', '-f', 'webvtt', out]);
+  const exited = new Promise((res) => ff.on('close', res));
+  await new Promise((r) => setTimeout(r, 6000));
+  ff.kill('SIGTERM');
+  await exited;
+
+  const text = fs.readFileSync(out, 'utf8');
+  assert.ok(text.length > 0, 'a terminated extraction must leave its output on disk, not an empty file');
+  assert.match(text, /^WEBVTT/, 'and it must still be a WebVTT document');
+  assert.ok(/-->/.test(text), 'with at least one cue in it');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
