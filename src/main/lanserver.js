@@ -116,6 +116,16 @@ function sniffCharenc(filePath) {
 // the plan asks for it, which it does only for profile 8 (see playback-planner.js).
 const DOVI_STRIP = ['-bsf:v', 'filter_units=remove_types=62|63'];
 
+// What the probe asks ffprobe for. Named and exported because one missing field here is invisible:
+// `stream_side_data=side_data_type` alone reports THAT a stream carries Dolby Vision and never which
+// profile, so every DV file arrived as "DV, profile unknown". Unknown is treated as unsafe to strip,
+// which is right — and the consequence was that a profile-8 file, the recoverable kind, was sent to
+// a full 4K H.264 re-encode instead of a copy the receiver would have played. Nothing errored; the
+// picture simply never arrived. Ask for the fields whose absence changes the decision.
+const PROBE_ENTRIES = 'stream=index,codec_type,codec_name,codec_tag_string,width,height,r_frame_rate,color_transfer,channels,channel_layout' +
+  ':stream_side_data=side_data_type,dv_profile,dv_bl_signal_compatibility_id' +
+  ':stream_tags=language,title:format=duration';
+
 // Opt-in cast diagnostics (SPRITZ_DEBUG=1 → /tmp/spritz-cast.log), matching torrent.js and dlna.js.
 // The cast path had no voice at all: ffmpeg's stderr went into an empty handler, so a transcode that
 // died before emitting a byte looked identical to one still starting up — a receiver on its idle
@@ -582,7 +592,7 @@ module.exports = function createLanServer(opts) {
     // stream + the video codec, but resolves in ~1–3s instead of stalling toward a 12s timeout
     // (which delayed the cast button). Inconclusive probe → vcodec null → serveHls proceeds anyway.
     const ps = spawn(FFPROBE, ['-v', 'error', '-probesize', '4M', '-analyzeduration', '4M',
-      '-show_entries', 'stream=index,codec_type,codec_name,codec_tag_string,width,height,r_frame_rate,color_transfer,channels,channel_layout:stream_side_data=side_data_type:stream_tags=language,title:format=duration', '-of', 'json', input],
+      '-show_entries', PROBE_ENTRIES, '-of', 'json', input],
       { timeout: 5000 });
     ps.stdout.on('data', (d) => { out += d; });
     ps.on('error', () => cb(null));
@@ -591,7 +601,7 @@ module.exports = function createLanServer(opts) {
         const parsed = JSON.parse(out);
         const streams = parsed.streams || [];
         const dur = parseFloat(parsed.format && parsed.format.duration) || 0;
-        const audio = [], subs = []; let aN = 0, sN = 0, vcodec = null, width = 0, height = 0, hdr = false, fps = 0, dovi = false, doviProfile = null;
+        const audio = [], subs = []; let aN = 0, sN = 0, vcodec = null, width = 0, height = 0, hdr = false, fps = 0, dovi = false, doviProfile = null, doviCompat = null;
         const langCount = {}; // disambiguate duplicate languages in the menu (eng, eng → "English 2")
         for (const s of streams) {
           const tg = s.tags || {}, lang = tg.language || 'und';
@@ -621,6 +631,10 @@ module.exports = function createLanServer(opts) {
             // dual-layer, so both still need the encode. A file detected only by its MP4 codec tag
             // carries no profile here; left null, and null is treated as "not known to be safe".
             doviProfile = doviSd && Number.isFinite(+doviSd.dv_profile) ? +doviSd.dv_profile : null;
+            // Profile 8's sub-variants differ in what the base layer actually is: compatibility id 1
+            // is HDR10, 2 is SDR, 4 is HLG. Carried so the plan can describe the result honestly
+            // rather than announcing HDR10 for all of them.
+            doviCompat = doviSd && Number.isFinite(+doviSd.dv_bl_signal_compatibility_id) ? +doviSd.dv_bl_signal_compatibility_id : null;
           } else if (s.codec_type === 'audio') {
             langCount[lang] = (langCount[lang] || 0) + 1;
             const name = tg.title || (lang === 'und' ? 'Audio ' + (aN + 1) : lang.toUpperCase()) + (langCount[lang] > 1 ? ' ' + langCount[lang] : '');
@@ -632,7 +646,7 @@ module.exports = function createLanServer(opts) {
             sN++; // count ALL subtitle streams so idx maps to 0:s:<idx> correctly
           }
         }
-        cb({ audio, subs, vcodec, dur, width, height, hdr, dovi, doviProfile, fps });
+        cb({ audio, subs, vcodec, dur, width, height, hdr, dovi, doviProfile, doviCompat, fps });
       } catch (e) { cb(null); }
     });
   }
@@ -1207,3 +1221,8 @@ function countSegs(dir) { // count .m4s segments (recursively) — drives the HL
   } catch (e) {}
   return n;
 }
+
+// Exported for the regression test. This string decides whether a Dolby Vision file gets a cheap
+// copy or a needless 4K re-encode, and when a field is missing from it nothing errors — the picture
+// just never arrives. Worth pinning.
+module.exports.PROBE_ENTRIES = PROBE_ENTRIES;

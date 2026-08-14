@@ -105,3 +105,19 @@ test('cleanup', () => {
   lan.teardown();
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+// The probe asks ffprobe for an explicit field list, and a field that is not requested is simply
+// absent from the JSON — no error, no warning. That bit us: `stream_side_data=side_data_type` said
+// a stream carried Dolby Vision but never which profile, so every DV file looked like "profile
+// unknown", was refused the cheap strip it qualified for, and went to a 4K H.264 re-encode the
+// receiver would not play. The symptom was a TV on its idle screen, about as far from the cause as
+// a symptom gets. Pin the fields whose absence silently changes the decision.
+test('the probe asks for the Dolby Vision fields the plan depends on', () => {
+  const { PROBE_ENTRIES } = require('../src/main/lanserver.js');
+  assert.ok(PROBE_ENTRIES, 'the probe field list should be exported');
+  assert.match(PROBE_ENTRIES, /dv_profile/, 'without dv_profile every DV file is "profile unknown"');
+  assert.match(PROBE_ENTRIES, /dv_bl_signal_compatibility_id/, 'compatibility id says what the base layer really is');
+  assert.match(PROBE_ENTRIES, /side_data_type/, 'still needed to spot DV at all');
+  // The side-data list is only populated when stream_side_data is requested in the first place.
+  assert.match(PROBE_ENTRIES, /stream_side_data=/, 'side data must be requested, not assumed');
+});
