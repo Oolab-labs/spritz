@@ -96,6 +96,9 @@ jobs:
           curl -sL -o bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos
           chmod +x bin/yt-dlp
           ./build/bundle-dylibs.sh /tmp/ffstage bin/ffmpeg bin/ffprobe
+          # Homebrew installs its binaries read-only, and the copies inherit that, so writing the
+          # relocated versions back over them fails with EACCES.
+          chmod -R u+w bin
           cp -R /tmp/ffstage/ bin/
           ./build/bundle-dylibs.sh /tmp/mpvstage native/mpv/build/Release/mpv_render.node
           cp -R /tmp/mpvstage/ native/mpv/build/Release/
