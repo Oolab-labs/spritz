@@ -9,6 +9,7 @@ const path = require('path');
 const fs = require('fs');
 const { app } = require('electron');
 const { criticalWindow, bufferHealth } = require('./buffer-plan'); // readahead sized in seconds
+const { findMoov, isMp4Name } = require('./mp4-index');             // where the MP4 index actually lives
 
 // Opt-in plain-file diagnostic log (set SPRITZ_DEBUG=1 to enable; open /tmp/spritz-torrent.log in Finder).
 // Off by default so a public build never writes magnet links / filenames to world-readable /tmp.
@@ -53,6 +54,11 @@ const BEST_TRACKERS = [
 // hangs on piece 0.) The timeout is generous so we never hand off a headless URL (that = "never starts").
 const PREBUFFER_BYTES = 4 * 1024 * 1024;
 const PREBUFFER_TIMEOUT = 50000; // last-resort handoff for a slow-but-alive torrent (STALL_TIMEOUT errors a dead one at 40s)
+// Fetching a trailing index is a handful of pieces, but they come from wherever the swarm has them,
+// which can be slow. Give it real time — the alternative is a receiver stuck on a grey screen — then
+// cast regardless rather than trapping the user in a wait with no way out.
+const INDEX_TIMEOUT = 90000;
+const HEADER_READ_TIMEOUT = 30000; // one box header; only slow when its piece is not on disk yet
 
 module.exports = function createTorrent(send) {
   let WT = null, client = null, active = null, server = null, progressTimer = null;
@@ -293,6 +299,64 @@ module.exports = function createTorrent(send) {
     if (active && active.files[index]) startServerAndPlay(active.files[index]);
   }
 
+  // Read a byte range out of the active file. Small reads only — this exists to fetch box headers.
+  function readRange(file, start, length) {
+    return new Promise((resolve, reject) => {
+      let s;
+      try { s = file.createReadStream({ start, end: start + length - 1 }); } catch (e) { return reject(e); }
+      const bufs = [];
+      const to = setTimeout(() => { try { s.destroy(); } catch (e) {} reject(new Error('read timed out')); }, HEADER_READ_TIMEOUT);
+      s.on('data', (b) => bufs.push(b));
+      s.on('error', (e) => { clearTimeout(to); reject(e); });
+      s.on('end', () => { clearTimeout(to); resolve(Buffer.concat(bufs)); });
+    });
+  }
+
+  // Make sure a cast can actually start.
+  //
+  // Playing locally hides this problem: mpv seeks to wherever the index is and waits. A receiver
+  // cannot, and neither can the transcoder feeding it — without the index nothing demuxes, so not a
+  // single byte reaches the TV and it sits on its idle screen looking like a hang. When the index is
+  // at the end of the file (see mp4-index.js) and the torrent has only downloaded the front, that is
+  // exactly what happens.
+  //
+  // So before casting, find the index and fetch it. Deliberately NOT a blanket "download the tail":
+  // that was tried in June and reverted, because making every first play wait on distant pieces
+  // stalled startup over a cold swarm. This runs only on the cast path, only for MP4-family files,
+  // and only fetches when the index is genuinely out of reach — a front-loaded file returns
+  // immediately, having read two box headers.
+  function ensureIndexForCast(cb) {
+    const file = activeFile, t = active;
+    const done = (why) => { tlog('cast index: ' + why); try { cb(); } catch (e) {} };
+    if (!t || !file) return done('no active torrent — nothing to do');
+    if (!isMp4Name(file.name)) return done('not an MP4 container — skipped');
+    findMoov((off, len) => readRange(file, off, len), file.length).then((moov) => {
+      if (!moov) return done('index not located — casting anyway');
+      if (moov.atFront) return done('index is at the front — nothing to fetch');
+      const pl = t.pieceLength, base = file.offset || 0;
+      const from = Math.floor((base + moov.offset) / pl);
+      const to = Math.floor((base + moov.offset + moov.size - 1) / pl);
+      const have = () => { let n = 0; for (let p = from; p <= to; p++) { let h = false; try { h = t.bitfield.get(p); } catch (e) {} if (h) n++; } return n; };
+      const total = to - from + 1;
+      if (have() >= total) return done('index already downloaded (' + total + ' pieces)');
+      tlog('cast index: at byte ' + moov.offset + ' (' + Math.round(moov.size / 1048576) + 'MB, pieces ' + from + '-' + to + ') — fetching before cast');
+      send('toast', { message: 'Fetching the file index before casting…' });
+      // critical(), not select(): this is now the one thing standing between the user and a picture,
+      // so it outranks the read-ahead window rather than queueing behind it.
+      try { t.select(from, to, 1); } catch (e) {}
+      try { t.critical(from, to); } catch (e) {}
+      const t0 = Date.now();
+      const poll = () => {
+        if (activeFile !== file || !active) return done('source changed while fetching the index');
+        const n = have();
+        if (n >= total) return done('index ready after ' + (Date.now() - t0) + 'ms');
+        if (Date.now() - t0 > INDEX_TIMEOUT) return done('index fetch timed out at ' + n + '/' + total + ' pieces — casting anyway');
+        setTimeout(poll, 400);
+      };
+      poll();
+    }).catch((e) => done('index lookup failed (' + e.message + ') — casting anyway'));
+  }
+
   function cancel() {
     if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
     if (metaTimer) { clearTimeout(metaTimer); metaTimer = null; }
@@ -312,5 +376,5 @@ module.exports = function createTorrent(send) {
     try { fs.rmSync(DL_DIR, { recursive: true, force: true }); } catch (e) {}
   }
 
-  return { add, selectFile, cancel, teardown, setPlayhead };
+  return { add, selectFile, cancel, teardown, setPlayhead, ensureIndexForCast };
 };

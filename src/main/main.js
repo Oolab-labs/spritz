@@ -766,10 +766,18 @@ if (!gotLock) {
     const filePath = decodeURIComponent(s.replace(/^file:\/\//, ''));
     const input = tor ? s : filePath;
     if (!tor && !/^\//.test(filePath)) return cb(null);
-    lan.serveMkv(input, { caps, extraSubs: externalSubs, audioTrack, startSec }, (u, sideloadSubs, audioTracks, aTrack, dur, menuSubs) => {
-      if (!u) return cb(null);
-      cb(u, { subs: sideloadSubs || [], menuSubs: menuSubs || [], audioTracks: audioTracks || [], dur: dur || 0, isMkv: true, input, caps, audioTrack: aTrack });
-    });
+    const serve = () => {
+      lan.serveMkv(input, { caps, extraSubs: externalSubs, audioTrack, startSec }, (u, sideloadSubs, audioTracks, aTrack, dur, menuSubs) => {
+        if (!u) return cb(null);
+        cb(u, { subs: sideloadSubs || [], menuSubs: menuSubs || [], audioTracks: audioTracks || [], dur: dur || 0, isMkv: true, input, caps, audioTrack: aTrack });
+      });
+    };
+    // ffmpeg cannot emit a frame until it has demuxed the source, and it cannot demux an MP4 whose
+    // index sits at the end of a file the torrent has only downloaded the front of. It blocks, the
+    // receiver never receives a byte, and the TV shows its idle screen indefinitely — which reads as
+    // "casting is broken" rather than "one 8 MB region is missing". Fetch it first when needed.
+    if (tor) { try { return torrent.ensureIndexForCast(serve); } catch (e) { return serve(); } }
+    serve();
   }
 
   // Resolve a DLNA-playable URL — NEVER HLS (DLNA renderers can't play m3u8). For a LOCAL file we
