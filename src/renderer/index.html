@@ -123,7 +123,10 @@
       <div class="menu-sep"></div>
       <div class="menu-action" id="sub-online">Download Subtitles (OpenSubtitles)</div>
       <div class="menu-action" id="sub-add">Add Subtitle…</div>
-      <div class="menu-action" id="sub-generate">Generate Subtitles (Whisper)</div>
+      <!-- Shelved: transcription quality and runtime on a feature-length film were not good enough to
+           offer as a normal menu item. The main-process handler is kept and works; set
+           SPRITZ_EXPERIMENTAL=1 to put this back in the menu. -->
+      <div class="menu-action hidden" id="sub-generate">Generate Subtitles (Whisper)</div>
     </div>
     <div class="menu hidden" id="menu-cast">
       <div class="menu-title">Cast / AirPlay</div>

@@ -6,6 +6,9 @@
 const { contextBridge, ipcRenderer, webUtils, clipboard } = require('electron');
 
 contextBridge.exposeInMainWorld('soda', {
+  // Shelved or half-finished features stay in the tree but out of the menu. A boolean, resolved
+  // here — not the environment itself, which the renderer has no business being handed.
+  experimental: !!process.env.SPRITZ_EXPERIMENTAL,
   player: {
     // url = absolute path or http(s) URL; opts.start = resume seconds
     load: (url, opts) => ipcRenderer.send('player:load', { url, start: opts && opts.start, referer: opts && opts.referer }),

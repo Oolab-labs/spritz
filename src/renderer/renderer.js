@@ -699,6 +699,9 @@ $('#sub-online').addEventListener('click', async () => {
   if (res && res.ok) { soda.player.addSubtitleFile(res.srt); toast('Subtitles added: ' + (res.name || 'OpenSubtitles') + ' ✓', 3000); }
   else toast((res && res.error) || 'No subtitles found — try Whisper', 4000);
 });
+// Whisper is shelved (see index.html): it works, but it is too slow and too inaccurate on a
+// feature-length film to sit in the menu next to two subtitle sources that are neither.
+if (soda.experimental) $('#sub-generate').classList.remove('hidden');
 $('#sub-generate').addEventListener('click', async () => {
   closeMenus();
   if (!currentLocalPath) { showSponsorToast('AI subs need a local file'); return; }

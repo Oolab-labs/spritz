@@ -490,7 +490,14 @@ if (!gotLock) {
       return { ok: false, error: 'No subtitles produced' };
     } catch (e) { try { fs.unlinkSync(wav); } catch (_) {} return { ok: false, error: e.message }; }
   });
-  function run(cmd, args, timeout) { return new Promise((res, rej) => { const p = spawn(cmd, args, { timeout: timeout || 0 }); p.stderr.on('data', () => {}); p.on('error', rej); p.on('close', (c) => c === 0 ? res() : rej(new Error(path.basename(cmd) + (c === null ? ' timed out' : ' failed')))); }); }
+  // BOTH pipes have to be drained, not just stderr. A child that writes past the 64 KiB pipe buffer
+  // into a stream nobody reads blocks on that write forever, and the only symptom is the timeout
+  // firing much later with a misleading message. whisper-cli prints the transcript to STDOUT —
+  // measured at roughly 28 bytes per second of audio, with stderr carrying only its few KB of model
+  // info — so a feature-length film deadlocked somewhere past the half-hour mark while a short test
+  // clip, well under 64 KiB, always finished. That gap is exactly why this looked like "works
+  // standalone, broken in the app" and sent the search after the wrong change.
+  function run(cmd, args, timeout) { return new Promise((res, rej) => { const p = spawn(cmd, args, { timeout: timeout || 0 }); p.stdout.on('data', () => {}); p.stderr.on('data', () => {}); p.on('error', rej); p.on('close', (c) => c === 0 ? res() : rej(new Error(path.basename(cmd) + (c === null ? ' timed out' : ' failed')))); }); }
 
   // ---- OpenSubtitles (legacy XML-RPC, no API key) ----
   // Hash the file and fetch a matching subtitle. Uses the OpenSubtitles
