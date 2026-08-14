@@ -121,7 +121,7 @@ const DOVI_STRIP = ['-bsf:v', 'filter_units=remove_types=62|63'];
 // file always finishes cleanly inside it, short enough that a receiver waiting on the track does not
 // give up. The cost of overrunning is a blank subtitle menu; the cost of stopping early is only a
 // shorter run of cues.
-const SUB_BUDGET_MS = 20000;
+const SUB_BUDGET_MS = 12000;
 // How long to let ffmpeg finish and flush after SIGTERM before insisting.
 const SUB_GRACE_MS = 3000;
 
@@ -886,6 +886,7 @@ module.exports = function createLanServer(opts) {
     // on a torrent an orphaned one keeps pulling for as long as the app lives.
     for (const p of mkvSubProcs) { try { p.kill('SIGKILL'); } catch (e) {} }
     mkvSubProcs = [];
+    clearSubQueue();
     // Cancelling the cast must also drop the streaming response — otherwise stopping a cast leaves
     // the TV holding an open connection to a stream nothing is feeding any more.
     if (mkvRes) { try { mkvRes.destroy(); } catch (e) {} mkvRes = null; }
@@ -1015,6 +1016,29 @@ module.exports = function createLanServer(opts) {
   // On-demand WebVTT for a sideloaded MKV-cast subtitle. Extracts the one track to a temp file (cached),
   // then serves it via serveFile (range + CORS + text/vtt). The receiver fetches this only when the
   // user turns the subtitle on, so the cast itself never waits on subtitle extraction.
+  // The receiver asks for every sideloaded track the moment a cast starts, not when the viewer picks
+  // one. Run in parallel, four extractions then fight over the same torrent: measured on a real cast,
+  // one produced usable cues and the other three were starved so thoroughly they could not even
+  // respond to a signal, and were killed having written nothing. Each one alone reads at disk speed.
+  // So they take turns — one extraction at a time, each with the bandwidth to actually finish.
+  let subQueue = [], subRunning = false;
+  function enqueueSub(job) {
+    subQueue.push(job);
+    pumpSubs();
+  }
+  function pumpSubs() {
+    if (subRunning) return;
+    const job = subQueue.shift();
+    if (!job) return;
+    subRunning = true;
+    job(() => { subRunning = false; pumpSubs(); });
+  }
+  function clearSubQueue() {
+    // Queued work for a cast that is over should not run. The responses are already dead.
+    for (const job of subQueue) { try { job.abandon && job.abandon(); } catch (e) {} }
+    subQueue = [];
+  }
+
   function serveMkvSub(req, res, token, name) {
     if (!mkvEntry || mkvEntry.token !== token) { res.writeHead(404); res.end(); return; }
     const base = String(name).replace(/\.vtt$/i, '');
@@ -1022,6 +1046,21 @@ module.exports = function createLanServer(opts) {
     if (!sub) { res.writeHead(404); res.end(); return; }
     const cached = mkvEntry.subCache[base];
     if (cached && safeStat(cached)) return serveFile(req, res, cached);
+    if (subRunning || subQueue.length) clog('sub extract queued: ' + base + ' (' + (subQueue.length + 1) + ' waiting)');
+    enqueueSub((finished) => runSubExtract(req, res, token, name, finished));
+  }
+
+  function runSubExtract(req, res, token, name, finished) {
+    const done = (() => { let called = false; return () => { if (!called) { called = true; finished(); } }; })();
+    // Waiting in the queue takes time, and the receiver may have given up during it. Extracting for a
+    // response nobody is listening to would spend the whole budget and hold up the track that is.
+    if (req.destroyed || res.writableEnded) { clog('sub extract skipped: request gone while queued'); return done(); }
+    if (!mkvEntry || mkvEntry.token !== token) { try { res.writeHead(404); res.end(); } catch (x) {} return done(); }
+    const base = String(name).replace(/\.vtt$/i, '');
+    const sub = mkvEntry.subs.find((s) => s.name === base);
+    if (!sub) { try { res.writeHead(404); res.end(); } catch (x) {} return done(); }
+    const cached = mkvEntry.subCache[base];
+    if (cached && safeStat(cached)) { serveFile(req, res, cached); return done(); }
     try { fs.mkdirSync(path.join(REMUX_DIR, 'subs'), { recursive: true }); } catch (e) {}
     const out = path.join(REMUX_DIR, 'subs', newToken() + '.vtt');
     // Embedded subtitles start at the position the cast started from, with absolute timestamps.
@@ -1044,7 +1083,7 @@ module.exports = function createLanServer(opts) {
     const drop = () => { const i = mkvSubProcs.indexOf(ff); if (i >= 0) mkvSubProcs.splice(i, 1); };
     clog('sub extract start: ' + base + ' (' + sub.kind + ')');
     const t0 = Date.now();
-    const fail = () => { try { res.writeHead(500, { 'Access-Control-Allow-Origin': '*' }); res.end(); } catch (x) {} };
+    const fail = () => { try { res.writeHead(500, { 'Access-Control-Allow-Origin': '*' }); res.end(); } catch (x) {} done(); };
     // The receiver giving up (or the cast ending) should end the work it asked for. Without this the
     // extraction outlives the request that justified it.
     req.on('close', () => { if (!ff.killed && ff.exitCode === null) { clog('sub extract abandoned by receiver: ' + base); try { ff.kill('SIGKILL'); } catch (x) {} } });
@@ -1070,6 +1109,7 @@ module.exports = function createLanServer(opts) {
       }
     }, SUB_BUDGET_MS);
     ff.on('error', () => { clearTimeout(budget); clearTimeout(grace); drop(); fail(); });
+    // Whatever happens next, the next queued extraction gets its turn.
     ff.on('close', (code) => {
       clearTimeout(budget); clearTimeout(grace); drop();
       clog('sub extract ' + base + ' exited code=' + code + (timedOut ? ' (deadline)' : '') + ' after ' + (Date.now() - t0) + 'ms size=' + ((safeStat(out) || {}).size || 0));
@@ -1086,6 +1126,7 @@ module.exports = function createLanServer(opts) {
       }
       if (!safeStat(out)) return fail();
       shiftVtt(out, mkvEntry.subDelay); mkvEntry.subCache[base] = out; serveFile(req, res, out);
+      done();
     });
   }
   function serveMkvStream(req, res, token) {
