@@ -11,7 +11,7 @@
     "start": "electron .",
     "start:trace": "electron . --enable-logging",
     "rebuild": "for d in native/*/; do (cd \"$d\" && npx node-gyp rebuild --target=$(node -p \"require('electron/package.json').version\") --arch=arm64 --dist-url=https://electronjs.org/headers) || exit 1; done",
-    "dist": "electron-builder --mac --arm64",
+    "dist": "node build/preflight-dist.js && electron-builder --mac --arm64",
     "postinstall": "electron-builder install-app-deps || true",
     "lint": "eslint ."
   },

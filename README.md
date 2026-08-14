@@ -290,7 +290,12 @@ toggle **System Settings → Privacy & Security → Local Network** off and on b
 suspecting the code.
 
 To produce a distributable `.app`/`.dmg`: `npm run dist` (electron-builder — install it
-first with `npm i -D electron-builder`). If you redistribute a build bundling the GPL
+first with `npm i -D electron-builder`). That runs `build/preflight-dist.js` first, which
+refuses to package a tree that would produce an app only this machine can run — no
+`bin/ffmpeg`, an addon still linked to `/opt/homebrew`, missing entitlements. Each
+refusal names the command that fixes it. It exists because none of those failures are
+visible at build time: electron-builder will cheerfully produce a `.dmg` with no ffmpeg in
+it, and the result works perfectly until someone else opens it. If you redistribute a build bundling the GPL
 `ffmpeg`/`libmpv` binaries, you must also carry the corresponding-source offer described
 under [License](#license).
 
