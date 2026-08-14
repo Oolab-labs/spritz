@@ -104,3 +104,52 @@ test('the real tree is checked without throwing', () => {
   const problems = check(path.join(__dirname, '..'));
   assert.ok(Array.isArray(problems));
 });
+
+// Verifying the OUTPUT, which the input preflight structurally cannot do. It passed a tree that
+// produced a .dmg with no native addons in it at all — the app would have launched and played
+// nothing, and nothing in the build said a word.
+const { verify } = require('../build/verify-package');
+
+function packagedApp({ addons = ['mpv_render.node', 'airplay.node', 'nowplaying.node'], bins = ['ffmpeg', 'ffprobe', 'yt-dlp'], ytdlpScript = false } = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'spritz-pkg-'));
+  const app = path.join(root, 'Spritz.app');
+  const bin = path.join(app, 'Contents', 'Resources', 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  for (const b of bins) fs.writeFileSync(path.join(bin, b), b === 'yt-dlp' && ytdlpScript ? '#!/opt/homebrew/bin/python\n' : 'binary');
+  const unpacked = path.join(app, 'Contents', 'Resources', 'app.asar.unpacked', 'native', 'x', 'build', 'Release');
+  fs.mkdirSync(unpacked, { recursive: true });
+  for (const a of addons) fs.writeFileSync(path.join(unpacked, a), 'addon');
+  return { root, app };
+}
+
+test('a package missing its native addons is refused', () => {
+  const { root, app } = packagedApp({ addons: ['airplay.node', 'nowplaying.node'] });
+  const problems = verify(app);
+  assert.ok(problems.some((p) => /mpv_render\.node is not in the package/.test(p.what)), JSON.stringify(problems));
+  cleanup(root);
+});
+
+test('a package missing a media binary is refused', () => {
+  const { root, app } = packagedApp({ bins: ['ffprobe', 'yt-dlp'] });
+  assert.ok(verify(app).some((p) => /ffmpeg is not in the package/.test(p.what)));
+  cleanup(root);
+});
+
+test('a package carrying the Homebrew yt-dlp shim is refused', () => {
+  const { root, app } = packagedApp({ ytdlpScript: true });
+  assert.ok(verify(app).some((p) => /yt-dlp is a script/.test(p.what)));
+  cleanup(root);
+});
+
+test('a complete package passes', () => {
+  const { root, app } = packagedApp();
+  assert.deepEqual(verify(app), []);
+  cleanup(root);
+});
+
+test('a missing build is reported rather than passing vacuously', () => {
+  // An empty dist/ must not read as "nothing wrong with the package".
+  const problems = verify(path.join(os.tmpdir(), 'spritz-does-not-exist-' + Date.now(), 'Spritz.app'));
+  assert.equal(problems.length, 1);
+  assert.match(problems[0].what, /no packaged app/);
+});

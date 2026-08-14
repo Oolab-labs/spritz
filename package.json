@@ -2,7 +2,7 @@
   "name": "spritz",
   "productName": "Spritz",
   "version": "2.0.0-alpha.0",
-  "description": "Spritz — a modern, arm64-native macOS media player that plays anything (libmpv), streams torrents, and casts to AirPlay, Chromecast, and DLNA. Inspired by classic streaming media players.",
+  "description": "Spritz \u2014 a modern, arm64-native macOS media player that plays anything (libmpv), streams torrents, and casts to AirPlay, Chromecast, and DLNA. Inspired by classic streaming media players.",
   "main": "src/main/main.js",
   "author": "Spritz contributors",
   "license": "GPL-3.0-or-later",
@@ -11,7 +11,7 @@
     "start": "electron .",
     "start:trace": "electron . --enable-logging",
     "rebuild": "for d in native/*/; do (cd \"$d\" && npx node-gyp rebuild --target=$(node -p \"require('electron/package.json').version\") --arch=arm64 --dist-url=https://electronjs.org/headers) || exit 1; done",
-    "dist": "node build/preflight-dist.js && electron-builder --mac --arm64",
+    "dist": "node build/preflight-dist.js && electron-builder --mac --arm64 && node build/verify-package.js",
     "postinstall": "electron-builder install-app-deps || true",
     "lint": "eslint ."
   },
@@ -20,17 +20,16 @@
     "productName": "Spritz",
     "asar": true,
     "asarUnpack": [
-      "native/**/*.node",
-      "native/**/build/Release/lib/**",
+      "native/**/build/Release/**",
       "vendor/mpv/**"
     ],
     "files": [
       "src/**",
-      "native/**/*.node",
       "vendor/mpv/**",
       "vendor/shaders/**",
       "!**/*.{o,obj,cpp,mm,h}",
       "!native/**/build/**",
+      "native/**/build/Release/*.node",
       "native/**/build/Release/lib/**"
     ],
     "extraResources": [
@@ -116,6 +115,7 @@
   },
   "devDependencies": {
     "electron": "^42.4.0",
+    "electron-builder": "^26.15.3",
     "eslint": "^9.39.5",
     "globals": "^17.11.0",
     "node-addon-api": "^8.8.0",
