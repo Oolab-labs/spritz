@@ -987,7 +987,28 @@ module.exports = function createLanServer(opts) {
         });
         // mkvEntry.subs = the on-demand-servable TEXT subs only (serveMkvSub looks them up by name).
         mkvEntry = { token, input, info, caps, audioTrack, startSec, burnSub, subDelay, subs: subDefs.filter((s) => s.kind !== 'burn'), subCache: {} };
-        cb(`http://${lan}:${port}/mkv/${token}/video.mkv`, sideloadSubs, audioTracks, audioTrack, dur, menuSubs);
+        // What is actually going out, as distinct from what the file is. Only this is evidence about
+        // a receiver: a picture that was re-encoded or downscaled, or audio that was converted, says
+        // nothing about what the device can decode. The caller records it if the stream plays.
+        const plan = planPlayback(info || {}, caps, { canTonemap: CAN_TONEMAP });
+        const chosenAudio = plan.audioTracks && plan.audioTracks[audioTrack];
+        const burning = burnSub != null && burnSub >= 0;
+        const videoCopied = !plan.speculative && plan.video === 'copy' && !burning;
+        const srcAudio = info && info.audio && info.audio[audioTrack];
+        const sent = {
+          container: MKV_CONTAINER,
+          videoCodec: videoCopied ? ((info && info.vcodec) || null) : 'h264',
+          height: videoCopied ? ((info && info.height) || 0) : (plan.targetHeight || (info && info.height) || 0),
+          // A stripped DV stream is not DV, and a tonemapped picture is not HDR — so a receiver
+          // playing either proves nothing about DV or HDR support.
+          hdr: !!(info && info.hdr) && videoCopied && !plan.tonemap,
+          dovi: !!(info && info.dovi) && videoCopied && !plan.stripDovi,
+          videoCopied,
+          audioCodec: (chosenAudio && chosenAudio.action === 'copy') ? ((srcAudio && srcAudio.codec) || null) : 'aac',
+          audioCopied: !!(chosenAudio && chosenAudio.action === 'copy')
+        };
+        clog('sending: ' + JSON.stringify(sent));
+        cb(`http://${lan}:${port}/mkv/${token}/video.mkv`, sideloadSubs, audioTracks, audioTrack, dur, menuSubs, sent);
       });
     });
   }

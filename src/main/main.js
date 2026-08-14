@@ -361,6 +361,10 @@ if (!gotLock) {
   }
   ipcMain.handle('diag:get', () => { try { return diagSnapshot(); } catch (e) { return null; } });
   const history = require('./history')(); // resume positions / recents
+  const deviceMemory = require('./device-memory-store')(); // what each receiver has been seen to play
+  // An observation waiting on proof. Set when a cast starts, converted to a recorded success only
+  // once the receiver has demonstrably decoded and advanced through the stream — see castStatus.
+  let pendingObservation = null;
 
   // ---- DLNA / UPnP casting (parallel to Chromecast) ----
   let dlnaPoll = null;
@@ -675,8 +679,28 @@ if (!gotLock) {
   let castMkv = null; // { input, caps, audioTracks:[{idx,name,lang}], dur, audioTrack }
   cast.on('devices', (devices) => { diagCast = devices || []; send('cast-event', { type: 'devices', devices }); });
   cast.on('error', (e) => { recordErr('cast', e.message); send('cast-event', { type: 'error', message: e.message }); });
+  // A load that the receiver accepts is NOT proof it can play the stream. The grey-screen failures
+  // all had a successful load: the receiver took the request, fetched a couple of seconds, and hung
+  // up. Recording a success there would have written a permanent, false claim that this TV plays 4K
+  // HEVC in Matroska — and since observations only ever widen a profile, nothing would undo it.
+  //
+  // So proof is playback that got somewhere: the receiver reporting PLAYING and the position having
+  // advanced past where the stream began. That cannot happen without decoding what was sent.
+  const OBSERVE_AFTER_SEC = 5;
+  function confirmObservation(s) {
+    if (!pendingObservation || !s || s.playerState !== 'PLAYING') return;
+    if (!(typeof s.currentTime === 'number')) return;
+    if (s.currentTime - pendingObservation.from < OBSERVE_AFTER_SEC) return;
+    const { key, traits } = pendingObservation;
+    pendingObservation = null;
+    deviceMemory.noteSuccess(key, Object.assign({}, traits, { at: Date.now() }));
+    const d = deviceMemory.describe(key);
+    if (d) console.log('[cast] learned ' + (d.label || key) + ' plays: ' + d.played.join(', '));
+  }
+
   cast.on('status', (s) => {
     if (!s) return;
+    confirmObservation(s);
     if (typeof s.currentTime === 'number') lastAvTime = s.currentTime; // reuse resume clock (absolute: MKV uses -copyts)
     const dur = (castMkv && castMkv.dur) || (s.media && s.media.duration) || 0; // MKV stream length is the source's
     send('cast-event', { type: 'status', cur: s.currentTime || 0, dur, state: s.playerState });
@@ -767,9 +791,9 @@ if (!gotLock) {
     const input = tor ? s : filePath;
     if (!tor && !/^\//.test(filePath)) return cb(null);
     const serve = () => {
-      lan.serveMkv(input, { caps, extraSubs: externalSubs, audioTrack, startSec }, (u, sideloadSubs, audioTracks, aTrack, dur, menuSubs) => {
+      lan.serveMkv(input, { caps, extraSubs: externalSubs, audioTrack, startSec }, (u, sideloadSubs, audioTracks, aTrack, dur, menuSubs, sent) => {
         if (!u) return cb(null);
-        cb(u, { subs: sideloadSubs || [], menuSubs: menuSubs || [], audioTracks: audioTracks || [], dur: dur || 0, isMkv: true, input, caps, audioTrack: aTrack });
+        cb(u, { subs: sideloadSubs || [], menuSubs: menuSubs || [], audioTracks: audioTracks || [], dur: dur || 0, isMkv: true, input, caps, audioTrack: aTrack, sent: sent || null });
       });
     };
     // ffmpeg cannot emit a frame until it has demuxed the source, and it cannot demux an MP4 whose
@@ -1222,7 +1246,12 @@ if (!gotLock) {
   });
   ipcMain.on('cast:load', (_e, { host } = {}) => {
     if (!host) { send('cast-event', { type: 'error', message: 'No TV selected.' }); return; }
-    const caps = cast.capsFor(host);
+    // Start from what discovery believes, then add what this receiver has actually been seen to
+    // play. A device that demonstrably decoded 4K HEVC HDR should not be re-guessed as 1080p-only
+    // because a later probe was less informative — that is the whole point of ranking capabilities
+    // by where they came from. Widening only, and a user override still wins.
+    const discovered = cast.capsFor(host);
+    const caps = deviceMemory.profileFor(deviceMemory.keyFor({ label: discovered && discovered.label, host }), discovered);
     const gen = loadGen;
     const wasCasting = isCasting(); // coming from another cast → mpv is already stopped (resume on failure)
     captureTracks(); // capture language/subtitle from mpv while it may still be live (no-op if already casting)
@@ -1241,7 +1270,7 @@ if (!gotLock) {
       if (gen !== loadGen) { setEngine('mpv'); return; } // source changed while resolving (player:load handles mpv)
       if (!av) return castFailedLocal(wasCasting, 'cast-event', 'This source can’t be cast to this TV.');
       castMkv = (meta && meta.isMkv) ? { host, input: meta.input, caps: meta.caps, audioTracks: meta.audioTracks, dur: meta.dur, audioTrack: meta.audioTrack, burnSub: null, subDelay: 0, menuSubs: meta.menuSubs || [] } : null;
-      doCastLoad(host, av, (meta && meta.subs) || [], gen, { startSec, audioTracks: (meta && meta.audioTracks) || [], audioTrack: (meta && meta.audioTrack) || 0, menuSubs: (meta && meta.menuSubs) || [] });
+      doCastLoad(host, av, (meta && meta.subs) || [], gen, { startSec, audioTracks: (meta && meta.audioTracks) || [], audioTrack: (meta && meta.audioTrack) || 0, menuSubs: (meta && meta.menuSubs) || [], sent: (meta && meta.sent) || null, deviceLabel: (meta && meta.caps && meta.caps.label) || null });
     });
   });
   function doCastLoad(host, url, subs, gen, info) {
@@ -1255,10 +1284,24 @@ if (!gotLock) {
     // A /mkv/ URL carries no extension, so ctypeFor() fell through to a plain video/mp4 guess that
     // happened to disagree with what the server sent. Ask the server what it is actually serving.
     const isLivePipe = !!castMkv && /\/mkv\//.test(String(url || ''));
+    // Arm the observation. It stays pending — and is recorded only if the receiver actually gets
+    // somewhere in the stream.
+    const devLabel = (info && info.deviceLabel) || (castMkv && castMkv.caps && castMkv.caps.label) || null;
+    const obsKey = deviceMemory.keyFor({ label: devLabel, host });
+    pendingObservation = (obsKey && info && info.sent)
+      ? { key: obsKey, from: pos || 0, traits: Object.assign({ label: devLabel }, info.sent) }
+      : null;
     cast.load(host, { url, title: lastCastTitle, contentType: isLivePipe ? lan.castMime() : ctypeFor(url), livePipe: isLivePipe, currentTime: pos, subs: subs || [] }, (err) => {
       // The source changed (or a cast was cancelled) during the ~12s handshake → don't resurrect. (Audit M3)
-      if (gen !== loadGen) { try { cast.stop(); } catch (e) {} setEngine('mpv'); return; }
-      if (err) { if (err.detailedErrorCode) console.error('[cast] LOAD failed, detailedErrorCode=' + err.detailedErrorCode + ' (104=container/codec unsupported, e.g. a real Chromecast rejecting MKV)'); resumeLocalFromChromecast(); send('cast-event', { type: 'error', message: err.message }); }
+      if (gen !== loadGen) { pendingObservation = null; try { cast.stop(); } catch (e) {} setEngine('mpv'); return; }
+      if (err) {
+        if (err.detailedErrorCode) console.error('[cast] LOAD failed, detailedErrorCode=' + err.detailedErrorCode + ' (104=container/codec unsupported, e.g. a real Chromecast rejecting MKV)');
+        // Recorded as context only. What a refusal does NOT tell us is which of the stream's
+        // properties was unacceptable, so it must not narrow anything (see device-memory.js).
+        if (obsKey) deviceMemory.noteFailure(obsKey, Object.assign({ at: Date.now() }, (info && info.sent) || {}), err.message);
+        pendingObservation = null;
+        resumeLocalFromChromecast(); send('cast-event', { type: 'error', message: err.message });
+      }
       else send('cast-event', { type: 'started', host, audioTracks: (info && info.audioTracks) || [], audioActive: (info && info.audioTrack) || 0, isMkv: !!castMkv, subTracks: (info && info.menuSubs) || [], burnActive: null });
     });
   }
