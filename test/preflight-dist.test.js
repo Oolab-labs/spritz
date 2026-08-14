@@ -77,6 +77,27 @@ test('every problem carries the command that fixes it', () => {
   cleanup(root);
 });
 
+test('a script bound to this machine is refused, even though otool sees nothing in it', () => {
+  // The hole that let a "ready to package" tree ship a dead yt-dlp: Homebrew generates a Python shim
+  // whose shebang points into /opt/homebrew/Cellar, with the formula VERSION in the path — so it
+  // breaks on the next local upgrade as well as on every other Mac. It is not Mach-O, so the
+  // library check passed it silently.
+  const root = fixture();
+  fs.writeFileSync(path.join(root, 'bin', 'yt-dlp'),
+    '#!/opt/homebrew/Cellar/yt-dlp/2026.6.9/libexec/bin/python\nimport sys\n');
+  const problems = check(root);
+  assert.ok(mentions(problems, /yt-dlp is a script whose interpreter is/), JSON.stringify(problems));
+  assert.match(problems.find((p) => /yt-dlp/.test(p.what)).fix, /yt-dlp_macos/, 'and points at the standalone build');
+  cleanup(root);
+});
+
+test('an ordinary script that is not machine-bound is left alone', () => {
+  const root = fixture();
+  fs.writeFileSync(path.join(root, 'bin', 'helper'), '#!/bin/sh\necho hi\n');
+  assert.deepEqual(check(root), [], '/bin/sh exists everywhere');
+  cleanup(root);
+});
+
 test('the real tree is checked without throwing', () => {
   // Whatever the answer is here, it must be an answer — a preflight that crashes on an unexpected
   // tree is a preflight that gets deleted.

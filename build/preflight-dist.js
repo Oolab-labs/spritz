@@ -27,6 +27,23 @@ function homebrewRefs(file) {
   }
 }
 
+// A script is not a binary, and otool sees nothing in one. bin/yt-dlp is a Homebrew-generated Python
+// shim whose shebang points at an interpreter inside /opt/homebrew/Cellar — with the formula VERSION
+// in the path, so it breaks on this machine at the next upgrade and on any other machine
+// immediately. The Mach-O check passed it happily, which is how this preflight declared a tree ready
+// to package while shipping a dead yt-dlp.
+function machineBoundScript(file) {
+  let head;
+  try {
+    const fd = fs.openSync(file, 'r');
+    try { const b = Buffer.alloc(512); const n = fs.readSync(fd, b, 0, 512, 0); head = b.subarray(0, n).toString('utf8'); } finally { fs.closeSync(fd); }
+  } catch (e) { return null; }
+  if (!head.startsWith('#!')) return null;              // not a script
+  const shebang = head.split('\n')[0];
+  const m = /(\/opt\/homebrew\S*|\/usr\/local\/Cellar\S*)/.exec(shebang);
+  return m ? m[1] : null;
+}
+
 // Returns a list of problems, each { what, fix }. Empty means ready to package.
 // `root` is injectable so this is testable against a fixture rather than only the real tree.
 function check(root) {
@@ -51,6 +68,25 @@ function check(root) {
         what: `bin/${name} still links ${leaks.length} Homebrew librar${leaks.length === 1 ? 'y' : 'ies'} (${path.basename(leaks[0])}…)`,
         fix: `./build/bundle-dylibs.sh /tmp/ffstage bin/ffmpeg bin/ffprobe, then copy the result back over bin/`
       });
+    }
+  }
+
+  // Everything else shipped in bin/ — yt-dlp in particular, which is a script rather than a binary.
+  const binDir = at('bin');
+  if (exists(binDir)) {
+    for (const f of fs.readdirSync(binDir)) {
+      const p = at('bin', f);
+      let st; try { st = fs.statSync(p); } catch (e) { continue; }
+      if (!st.isFile()) continue;
+      const interp = machineBoundScript(p);
+      if (interp) {
+        problems.push({
+          what: `bin/${f} is a script whose interpreter is ${interp} — it runs on this machine only`,
+          fix: f === 'yt-dlp'
+            ? 'Use the standalone build instead: curl -L -o bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos && chmod +x bin/yt-dlp'
+            : 'Replace it with a self-contained build, or drop it from bin/'
+        });
+      }
     }
   }
 
