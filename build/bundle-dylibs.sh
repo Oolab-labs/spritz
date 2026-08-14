@@ -10,7 +10,14 @@
 #
 # Usage:  build/bundle-dylibs.sh <staging-dir> <binary> [binary...]
 #   e.g.  build/bundle-dylibs.sh /tmp/stage ./ffmpeg ./ffprobe
-# Produces <staging-dir>/{binaries...,lib/} ready to drop into Contents/Resources/bin.
+#         build/bundle-dylibs.sh /tmp/stage native/mpv/build/Release/mpv_render.node
+# Produces <staging-dir>/{binaries...,lib/} ready to drop in beside the originals.
+#
+# Executables and loadable modules need DIFFERENT reference bases, and getting it wrong produces a
+# file that looks correctly relocated and still fails to load. @executable_path resolves against the
+# main program — right for ffmpeg, wrong for a .node, which is loaded by Electron and would resolve
+# against Electron's own directory. Loadable modules therefore get @loader_path, which resolves
+# against the file doing the loading. Chosen per input from its extension.
 #
 # Signing: rewriting a load command invalidates any existing signature, so every file is re-signed
 # ad-hoc here. The .app itself must still be re-signed afterwards (deploy.sh does that).
@@ -60,19 +67,30 @@ done
 count="$(printf '%s' "$SEEN" | grep -c . || true)"
 echo "collected $count dylibs into $LIBDIR"
 
-# Rewrite install names. Each copied dylib gets an id of @executable_path/lib/<name>, and every
-# reference to a relocated lib — from the binaries AND from the other libs — is repointed at it.
+# Rewrite install names, repointing every reference to a relocated lib — from the binaries AND from
+# the other libs — at the copy in lib/. The base differs by who is doing the referencing:
+#
+#   lib → lib      @loader_path/<name>       siblings in the same directory, so this is correct
+#                                            regardless of what ends up loading them
+#   binary → lib   @executable_path/lib/…    for an executable
+#                  @loader_path/lib/…        for a .node, loaded by Electron rather than run
 retarget() {
+  local prefix="$2"
   for dep in $(deps_of "$1"); do
-    install_name_tool -change "$dep" "@executable_path/lib/$(basename "$dep")" "$1"
+    install_name_tool -change "$dep" "$prefix$(basename "$dep")" "$1"
   done
 }
 
 for base in $SEEN; do
-  install_name_tool -id "@executable_path/lib/$base" "$LIBDIR/$base"
-  retarget "$LIBDIR/$base"
+  install_name_tool -id "@loader_path/$base" "$LIBDIR/$base"
+  retarget "$LIBDIR/$base" '@loader_path/'
 done
-for b in "$@"; do retarget "$STAGE/$(basename "$b")"; done
+for b in "$@"; do
+  case "$(basename "$b")" in
+    *.node|*.dylib|*.so) retarget "$STAGE/$(basename "$b")" '@loader_path/lib/' ;;
+    *)                   retarget "$STAGE/$(basename "$b")" '@executable_path/lib/' ;;
+  esac
+done
 
 # Re-sign: the rewrites above invalidate whatever signature each file carried.
 for f in "$LIBDIR"/*.dylib; do codesign --force --sign - "$f" >/dev/null 2>&1 || true; done

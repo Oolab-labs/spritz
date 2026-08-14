@@ -21,6 +21,7 @@
     "asar": true,
     "asarUnpack": [
       "native/**/*.node",
+      "native/**/build/Release/lib/**",
       "vendor/mpv/**"
     ],
     "files": [
@@ -29,7 +30,14 @@
       "vendor/mpv/**",
       "vendor/shaders/**",
       "!**/*.{o,obj,cpp,mm,h}",
-      "!native/**/build/**"
+      "!native/**/build/**",
+      "native/**/build/Release/lib/**"
+    ],
+    "extraResources": [
+      {
+        "from": "bin",
+        "to": "bin"
+      }
     ],
     "mac": {
       "category": "public.app-category.video",

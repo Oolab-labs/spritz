@@ -251,10 +251,30 @@ cd ..
 `--disable-libxcb` matters: configure otherwise detects X11 and drags in seven
 libraries a macOS media player has no use for.
 
-Put the result where the app looks for it — `Contents/Resources/bin/` in a packaged
-build, or ahead of Homebrew on `PATH` when running from source. `npm test` includes
+Put the result in `bin/` at the repository root. That directory is deliberately not in
+git — it holds build outputs, not source — and `npm run dist` copies it to
+`Contents/Resources/bin/`, which is where the app looks at runtime. When running from
+source instead, put it ahead of Homebrew on `PATH`. `npm test` includes
 `test/ffmpeg-capabilities.test.js`, which asserts the filters are present and that no
 `/opt/homebrew` path survived relocation; run it to confirm the build is good.
+
+### The mpv addon needs the same treatment
+
+`native/mpv` links `libmpv`, and a freshly built `mpv_render.node` points straight at
+`/opt/homebrew/opt/mpv/lib/libmpv.2.dylib`. That works on the machine that built it and
+nowhere else, so a `.dmg` shipped without this step launches to an immediate failure on
+any Mac without Homebrew mpv:
+
+```bash
+npm run rebuild
+./build/bundle-dylibs.sh /tmp/mpvstage native/mpv/build/Release/mpv_render.node
+cp -R /tmp/mpvstage/ native/mpv/build/Release/
+```
+
+The script picks the reference base from the file's extension — `@loader_path` for a
+`.node`, because a loadable module is loaded by Electron rather than run, and
+`@executable_path` would resolve against Electron's own directory instead of the addon's.
+`otool -L` on the result should show no `/opt/homebrew` entries.
 
 ### Deploying into an installed .app
 
