@@ -116,6 +116,18 @@ function sniffCharenc(filePath) {
 // the plan asks for it, which it does only for profile 8 (see playback-planner.js).
 const DOVI_STRIP = ['-bsf:v', 'filter_units=remove_types=62|63'];
 
+// Opt-in cast diagnostics (SPRITZ_DEBUG=1 → /tmp/spritz-cast.log), matching torrent.js and dlna.js.
+// The cast path had no voice at all: ffmpeg's stderr went into an empty handler, so a transcode that
+// died before emitting a byte looked identical to one still starting up — a receiver on its idle
+// screen and nothing else. Every hypothesis about that screen was unfalsifiable as a result.
+const CDBG = !!process.env.SPRITZ_DEBUG;
+const CLOG = '/tmp/spritz-cast.log';
+if (CDBG) { try { fs.writeFileSync(CLOG, '[cast] log started ' + new Date().toISOString() + '\n'); } catch (e) {} }
+function clog(m) {
+  if (!CDBG) return;
+  try { fs.appendFileSync(CLOG, '[' + new Date().toISOString().slice(11, 23) + '] ' + m + '\n'); } catch (e) {}
+}
+
 // (incl. HDR10) and AC3/EAC3 passthrough, so we COPY instead of needlessly transcoding to 1080p
 // AAC stereo. Unknown/legacy receivers get the conservative profile (downscale 4K, AAC audio).
 // caps = { hevc, hevc4k, h264_4k, hdr10, dovi, audioCopy:Set, maxHeight }
@@ -904,6 +916,14 @@ module.exports = function createLanServer(opts) {
     const subDelay = (opts && opts.subDelay) || 0; // cast subtitle sync offset (seconds, +later/−earlier)
     ensure(() => {
       probeTracks(input, (info) => {
+        // What the probe saw and what the plan decided, before anything acts on it. A probe that
+        // silently returned nothing produces the same downstream behaviour as a healthy one until
+        // ffmpeg fails, several steps later, for reasons that look unrelated.
+        clog(info
+          ? 'probe: ' + info.vcodec + ' ' + info.width + 'x' + info.height + ' hdr=' + info.hdr + ' dovi=' + info.dovi +
+            (info.doviProfile ? ' profile=' + info.doviProfile : '') + ' dur=' + Math.round(info.dur || 0) +
+            's audio=' + ((info.audio || []).length) + ' subs=' + ((info.subs || []).length)
+          : 'probe: FAILED — ffprobe returned nothing for ' + String(input).slice(0, 120));
         const aN = (info && info.audio.length) || 0;
         let audioTrack = (opts && opts.audioTrack) || 0;
         if (audioTrack < 0 || audioTrack >= aN) audioTrack = 0;
@@ -957,8 +977,12 @@ module.exports = function createLanServer(opts) {
     });
   }
   function serveMkvStream(req, res, token) {
-    if (!mkvEntry || mkvEntry.token !== token) { res.writeHead(404); res.end(); return; }
+    if (!mkvEntry || mkvEntry.token !== token) {
+      clog('GET /mkv rejected: ' + (mkvEntry ? 'stale token' : 'no active entry') + ' — the receiver asked for a stream we are no longer serving');
+      res.writeHead(404); res.end(); return;
+    }
     const e = mkvEntry;
+    clog('GET /mkv from ' + (req.socket && req.socket.remoteAddress) + ' method=' + req.method + ' input=' + String(e.input).slice(0, 120));
     if (mkvProc) { try { mkvProc.kill('SIGKILL'); } catch (x) {} mkvProc = null; } // a fresh GET supersedes (receiver reconnect)
     // ...and so does its RESPONSE. Killing the old ffmpeg leaves onEnd() short-circuiting on the
     // `ff !== mkvProc` guard, so the superseded response was never ended — every receiver reconnect
@@ -985,10 +1009,20 @@ module.exports = function createLanServer(opts) {
       if (mkvRes === res) mkvRes = null;
     };
     function launch(sw) {
-      const ff = mkvProc = spawn(FFMPEG, mkvArgs(e.input, e.info, e.caps, e.audioTrack, e.startSec, e.burnSub, sw));
-      ff.stderr.on('data', () => {});
+      const args = mkvArgs(e.input, e.info, e.caps, e.audioTrack, e.startSec, e.burnSub, sw);
+      const ff = mkvProc = spawn(FFMPEG, args);
+      const t0 = Date.now();
+      let errTail = '';
+      clog('ffmpeg launch' + (sw ? ' (software encoder retry)' : '') + ': ' + args.join(' '));
+      // Keep the last of stderr rather than discarding it. Bounded, because a long transcode emits a
+      // great deal of it and the interesting part is always the end.
+      ff.stderr.on('data', (b) => { errTail = (errTail + b.toString()).slice(-4000); });
       ff.stdout.on('error', () => {}); // EPIPE when the TV drops the socket — harmless
-      ff.stdout.once('data', () => { produced = true; });
+      ff.stdout.once('data', () => { produced = true; clog('first byte out after ' + (Date.now() - t0) + 'ms'); });
+      ff.on('close', (code) => {
+        clog('ffmpeg exited code=' + code + ' after ' + (Date.now() - t0) + 'ms, produced=' + produced);
+        if (errTail.trim()) clog('ffmpeg stderr:\n' + errTail.trim());
+      });
       ff.stdout.pipe(res, { end: false }); // keep res open across a hw→sw relaunch; pipe preserves backpressure
       ff.on('error', () => onEnd(ff, -1)); // spawn failure — never a clean end
       ff.on('close', (code) => onEnd(ff, code));
