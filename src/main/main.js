@@ -1251,7 +1251,7 @@ if (!gotLock) {
     // because a later probe was less informative — that is the whole point of ranking capabilities
     // by where they came from. Widening only, and a user override still wins.
     const discovered = cast.capsFor(host);
-    const caps = deviceMemory.profileFor(deviceMemory.keyFor({ label: discovered && discovered.label, host }), discovered);
+    const caps = deviceMemory.profileFor(deviceMemory.keyFor({ id: discovered && discovered.id, label: discovered && discovered.label, host }), discovered);
     const gen = loadGen;
     const wasCasting = isCasting(); // coming from another cast → mpv is already stopped (resume on failure)
     captureTracks(); // capture language/subtitle from mpv while it may still be live (no-op if already casting)
@@ -1270,7 +1270,7 @@ if (!gotLock) {
       if (gen !== loadGen) { setEngine('mpv'); return; } // source changed while resolving (player:load handles mpv)
       if (!av) return castFailedLocal(wasCasting, 'cast-event', 'This source can’t be cast to this TV.');
       castMkv = (meta && meta.isMkv) ? { host, input: meta.input, caps: meta.caps, audioTracks: meta.audioTracks, dur: meta.dur, audioTrack: meta.audioTrack, burnSub: null, subDelay: 0, menuSubs: meta.menuSubs || [] } : null;
-      doCastLoad(host, av, (meta && meta.subs) || [], gen, { startSec, audioTracks: (meta && meta.audioTracks) || [], audioTrack: (meta && meta.audioTrack) || 0, menuSubs: (meta && meta.menuSubs) || [], sent: (meta && meta.sent) || null, deviceLabel: (meta && meta.caps && meta.caps.label) || null });
+      doCastLoad(host, av, (meta && meta.subs) || [], gen, { startSec, audioTracks: (meta && meta.audioTracks) || [], audioTrack: (meta && meta.audioTrack) || 0, menuSubs: (meta && meta.menuSubs) || [], sent: (meta && meta.sent) || null, deviceLabel: (meta && meta.caps && meta.caps.label) || null, deviceId: (meta && meta.caps && meta.caps.id) || null });
     });
   });
   function doCastLoad(host, url, subs, gen, info) {
@@ -1287,7 +1287,7 @@ if (!gotLock) {
     // Arm the observation. It stays pending — and is recorded only if the receiver actually gets
     // somewhere in the stream.
     const devLabel = (info && info.deviceLabel) || (castMkv && castMkv.caps && castMkv.caps.label) || null;
-    const obsKey = deviceMemory.keyFor({ label: devLabel, host });
+    const obsKey = deviceMemory.keyFor({ id: (info && info.deviceId) || null, label: devLabel, host });
     pendingObservation = (obsKey && info && info.sent)
       ? { key: obsKey, from: pos || 0, traits: Object.assign({ label: devLabel }, info.sent) }
       : null;

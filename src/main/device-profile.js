@@ -33,11 +33,11 @@ function defaultProfile() {
   return {
     hevc: true, hevc4k: false, h264_4k: false, hdr10: true, dovi: false,
     audioCopy: AUDIO_BASIC.slice(), maxHeight: 1080,
-    source: 'default', label: null
+    source: 'default', label: null, id: null
   };
 }
 
-function build({ isTv, fourK, source, label }) {
+function build({ isTv, fourK, source, label, id }) {
   const passthrough = isTv || fourK; // Dolby passthrough is safe on TVs and 4K receivers
   return {
     hevc: !!(isTv || fourK),
@@ -48,7 +48,11 @@ function build({ isTv, fourK, source, label }) {
     audioCopy: (passthrough ? AUDIO_PASSTHROUGH : AUDIO_BASIC).slice(),
     maxHeight: fourK ? 2160 : 1080,
     source: source || 'inferred-from-name',
-    label: label || null
+    label: label || null,
+    // A stable identity for this device, where the discovery layer has one. Everything that
+    // remembers a device across sessions keys on this: an address is a DHCP lease, and a memory
+    // keyed on one gets silently transplanted onto whatever answers there next week.
+    id: id || null
   };
 }
 
@@ -70,7 +74,10 @@ function fromEureka(j) {
   return build({
     isTv: tv, fourK,
     source: said ? 'reported' : 'inferred-from-name',
-    label: (j && j.name) || info.model_name || null
+    label: (j && j.name) || info.model_name || null,
+    // ssdp_udn is the device's own UPnP identity and survives both a DHCP lease and a rename.
+    // (mac_address is present but the LG reports all zeros, so it is useless here.)
+    id: (j && j.ssdp_udn) || null
   });
 }
 
@@ -92,7 +99,8 @@ function normalise(caps) {
     audioCopy: audio.map((a) => String(a).toLowerCase()),
     maxHeight: Number.isFinite(caps.maxHeight) && caps.maxHeight > 0 ? caps.maxHeight : d.maxHeight,
     source: SOURCES.includes(caps.source) ? caps.source : 'default',
-    label: caps.label || null
+    label: caps.label || null,
+    id: caps.id || null
   };
 }
 

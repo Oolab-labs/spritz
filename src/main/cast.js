@@ -27,6 +27,7 @@ let multicastDns = null, dnsTxt = null, castv2 = null;
 const mdnsLib = () => (multicastDns || (multicastDns = require('multicast-dns')));
 const txtLib = () => (dnsTxt || (dnsTxt = require('dns-txt')()));
 const castLib = () => (castv2 || (castv2 = require('castv2-client')));
+const deviceProfile = require('./device-profile'); // one definition of what a receiver can decode
 
 // Physical-LAN private IPv4s only (skip loopback + VPN/tunnel interfaces).
 function lanSubnets() {
@@ -65,23 +66,14 @@ module.exports = function createCast() {
   // media spec says 2015+ receivers decode HEVC Main10 (4K on 4K-capable units) and pass AC3/EAC3
   // through; webOS/Android-TV/Apple-TV-class TVs (e.g. the LG NANO80T6A) do the full set. Old 1080p
   // dongles (3rd-gen Chromecast) do H.264 only → conservative (transcode HEVC, AAC audio).
-  const isTvLike = (s) => /\bTV\b|webos|nanocell|oled|qled|neo|bravia|google ?tv|android ?tv|\blg\b|samsung|sony|vizio|hisense|tcl|philips/i.test(s || '');
-  function capsProfile(isTv, fourK) {
-    const passthrough = isTv || fourK; // Dolby passthrough is safe on TVs / 4K receivers
-    return {
-      hevc: isTv || fourK, hevc4k: fourK, h264_4k: fourK, hdr10: true, dovi: false,
-      audioCopy: passthrough ? ['aac', 'mp3', 'alac', 'ac3', 'eac3'] : ['aac', 'mp3', 'alac'],
-      maxHeight: fourK ? 2160 : 1080
-    };
-  }
-  function capsFromMdns(name, model) { const tv = isTvLike((model || '') + ' ' + (name || '')); return capsProfile(tv, tv); }
-  function capsFromEureka(j) {
-    const di = j.device_info || {};
-    const tv = isTvLike([j.name, di.model_name, di.manufacturer, di.product_name].join(' '));
-    const blocked = di['4k_blocked']; // 0 → 4K allowed; 1 → 1080p-capped; absent → infer from class
-    const fourK = blocked === 0 || blocked === '0' || (tv && blocked == null);
-    return capsProfile(tv, fourK);
-  }
+  // device-profile.js was written to be the one place that answers this, and this file never
+  // adopted it — it kept its own copy of the same logic. The two agreed on the capability values
+  // (proven identical across 420 name/model/4k_blocked combinations before the swap), but the copy
+  // here produced a bare capability bag with no label, no id and no record of where the answer came
+  // from. Anything that wants to remember a device across sessions needs exactly those, and without
+  // them the device memory fell back to keying on an IP address.
+  const capsFromMdns = (name, model) => deviceProfile.fromMdns(name, model);
+  const capsFromEureka = (j) => deviceProfile.fromEureka(j);
   // Drop devices not seen for a while (powered off / left the network) — Chromecast/LG emit no
   // reliable goodbye, so evict by staleness on each sweep instead of lingering until app restart.
   function reapDevices() {
