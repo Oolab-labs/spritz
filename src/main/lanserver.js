@@ -233,7 +233,8 @@ module.exports = function createLanServer(opts) {
   let remuxProc = null, remuxOut = null; // current ffmpeg remux + its temp file
   let hlsProc = null, hlsDir = null, hlsToken = null; // current live HLS remux
   let subProcs = []; // background WebVTT sidecar-extraction ffmpegs (one per text sub track)
-  let mkvProc = null, mkvEntry = null, mkvRes = null; // current single-stream Matroska cast (Chromecast transport)
+  let mkvProc = null, mkvEntry = null, mkvRes = null; // current single-stream cast (Chromecast transport)
+  let mkvSubProcs = [];  // on-demand WebVTT extractions for that cast — tracked so they can be killed
   const newToken = () => crypto.randomBytes(16).toString('hex'); // unguessable (LAN-exposed)
 
   function ensure(cb) {
@@ -872,6 +873,10 @@ module.exports = function createLanServer(opts) {
   const MKV_MUXFLAGS = ['-movflags', 'frag_keyframe+empty_moov+delay_moov+default_base_moof'];
   function cancelMkv() {
     if (mkvProc) { try { mkvProc.kill('SIGKILL'); } catch (e) {} mkvProc = null; }
+    // ...and every subtitle extraction this cast started. They read the source from end to end, so
+    // on a torrent an orphaned one keeps pulling for as long as the app lives.
+    for (const p of mkvSubProcs) { try { p.kill('SIGKILL'); } catch (e) {} }
+    mkvSubProcs = [];
     // Cancelling the cast must also drop the streaming response — otherwise stopping a cast leaves
     // the TV holding an open connection to a stream nothing is feeding any more.
     if (mkvRes) { try { mkvRes.destroy(); } catch (e) {} mkvRes = null; }
@@ -992,10 +997,24 @@ module.exports = function createLanServer(opts) {
     const args = sub.kind === 'external'
       ? ['-loglevel', 'error', '-y', '-sub_charenc', sniffCharenc(sub.ref), '-i', sub.ref, '-c:s', 'webvtt', '-f', 'webvtt', out]
       : ['-loglevel', 'error', '-y', '-i', mkvEntry.input, '-map', '0:s:' + sub.ref, '-c:s', 'webvtt', '-f', 'webvtt', out];
-    const ff = spawn(FFMPEG, args); ff.stderr.on('data', () => {});
+    const ff = spawn(FFMPEG, args);
+    ff.stderr.on('data', () => {});
+    // Track it. These were spawned into a local and never referenced again: cancelMkv() killed only
+    // the stream ffmpeg, so stopping a cast left every extraction running. Observed after one stopped
+    // cast — four of them still reading the torrent minutes later, competing with playback for the
+    // same bandwidth and with each other.
+    mkvSubProcs.push(ff);
+    const drop = () => { const i = mkvSubProcs.indexOf(ff); if (i >= 0) mkvSubProcs.splice(i, 1); };
+    clog('sub extract start: ' + base + ' (' + sub.kind + ')');
+    const t0 = Date.now();
     const fail = () => { try { res.writeHead(500, { 'Access-Control-Allow-Origin': '*' }); res.end(); } catch (x) {} };
-    ff.on('error', fail);
+    // The receiver giving up (or the cast ending) should end the work it asked for. Without this the
+    // extraction outlives the request that justified it.
+    req.on('close', () => { if (!ff.killed && ff.exitCode === null) { clog('sub extract abandoned by receiver: ' + base); try { ff.kill('SIGKILL'); } catch (x) {} } });
+    ff.on('error', () => { drop(); fail(); });
     ff.on('close', (code) => {
+      drop();
+      clog('sub extract ' + base + ' exited code=' + code + ' after ' + (Date.now() - t0) + 'ms size=' + ((safeStat(out) || {}).size));
       if (!mkvEntry || mkvEntry.token !== token) { try { fs.unlinkSync(out); } catch (x) {} return fail(); } // superseded
       if (code === 0 && safeStat(out)) { shiftVtt(out, mkvEntry.subDelay); mkvEntry.subCache[base] = out; serveFile(req, res, out); } else fail();
     });
