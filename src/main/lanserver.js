@@ -430,6 +430,37 @@ module.exports = function createLanServer(opts) {
     if (hlsDir) { try { fs.rmSync(hlsDir, { recursive: true, force: true }); } catch (e) {} hlsDir = null; }
     hlsToken = null;
   }
+  // Pause the AirPlay preparation while another route is casting.
+  //
+  // The HLS remux is started at load time so the AirPlay picker has something ready the instant it
+  // is tapped. It keeps running through a Chromecast or DLNA cast, for a route that cast is not
+  // using — measured twice on real sessions at ~300-345% CPU (12m50s of CPU in 3m44s of wall on one
+  // of them), with its own subtitle extractions, all reading the same torrent as the live cast. The
+  // selections log showed it holding pieces at the front of the file at the same priority as the
+  // cast's read head, so the swarm was being split between a stream someone is watching and one
+  // nobody is.
+  //
+  // Suspended rather than cancelled, deliberately. cancelHls() is destructive — it SIGKILLs the
+  // remux, deletes the temp directory and nulls the token — which leaves the AVPlayer bound to an
+  // item that has stopped existing. That regression has been paid for once already: engaging AirPlay
+  // in that window produced the OS "Could not connect" dialog. SIGSTOP costs the CPU and the reads
+  // while keeping the token, the directory and every segment already written, so the item stays
+  // valid and this is reversible by definition.
+  function suspendAirplayPrep() {
+    let n = 0;
+    if (hlsProc) { try { process.kill(hlsProc.pid, 'SIGSTOP'); n++; } catch (e) {} }
+    for (const p of subProcs) { try { process.kill(p.pid, 'SIGSTOP'); n++; } catch (e) {} }
+    if (n) clog('suspended ' + n + ' AirPlay preparation process(es) for the duration of this cast');
+    return n;
+  }
+  function resumeAirplayPrep() {
+    let n = 0;
+    if (hlsProc) { try { process.kill(hlsProc.pid, 'SIGCONT'); n++; } catch (e) {} }
+    for (const p of subProcs) { try { process.kill(p.pid, 'SIGCONT'); n++; } catch (e) {} }
+    if (n) clog('resumed ' + n + ' AirPlay preparation process(es)');
+    return n;
+  }
+
   // The HLS remux runs faster than playback and keeps every segment (a receiver may seek back),
   // so the temp dir grows to ~the whole movie. Warn once if it gets large rather than silently
   // filling the disk (it's reclaimed on cancelHls/teardown when the cast ends).
@@ -1372,6 +1403,7 @@ module.exports = function createLanServer(opts) {
     // those updates, and only this module knows when a stream is being restarted — so the number has
     // to cross over.
     noteCastPosition: (sec) => { if (mkvEntry && Number.isFinite(sec) && sec > 0) mkvEntry.livePos = sec; },
+    suspendAirplayPrep, resumeAirplayPrep,
     serverPort: () => (server && server.listening ? port : null) }; // diagnostics: where receivers are pointed
 };
 

@@ -153,6 +153,15 @@ if (!gotLock) {
     engineLog.push({ t: Date.now(), from: prev, to: next, reason: reason || '' });
     if (engineLog.length > 12) engineLog.shift();
     castEngine = next;
+    // Chromecast and DLNA do not use the AirPlay HLS remux, but it keeps running through their
+    // casts — burning a third of the CPU and pulling the same torrent from the front of the file
+    // while the cast reads from the middle, at equal priority. Suspend it for the duration and let
+    // it go again on the way back. Done here because every route change passes through this
+    // function, so no path can forget.
+    try {
+      if (next === 'chromecast' || next === 'dlna') lan.suspendAirplayPrep();
+      else if (next === 'mpv' || next === 'airplay') lan.resumeAirplayPrep();
+    } catch (e) {}
   }
   const isCasting = () => castEngine === 'airplay' || castEngine === 'chromecast' || castEngine === 'dlna';
   // Tear down whatever is currently casting, then enter 'pending' for the new kind. Called at intent,
