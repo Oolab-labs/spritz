@@ -897,6 +897,10 @@ module.exports = function createLanServer(opts) {
   }
   // Build the single-stream ffmpeg args. info from probeTracks; reuses the capability-negotiated
   // copy-vs-transcode decision (so a 4K-capable LG copies, an old dongle transcodes to 1080p H.264).
+  // -loglevel warning, not error. At `error` ffmpeg SUPPRESSES its "Will reconnect at <offset> in N
+  // second(s)" messages, so a stream that spends minutes fighting a stalled input and then gives up
+  // records the giving-up and nothing about the fight. That is the difference between knowing a cast
+  // died and knowing why.
   function mkvArgs(input, info, capsRaw, audioTrack, startSec, burnSub, swEncode) {
     // Same decision, same function as serveHls — that is the point of the extraction. `encPlan` (the
     // plan with the copy taken off the table) answers for the burn-in and transcode branches below,
@@ -928,7 +932,7 @@ module.exports = function createLanServer(opts) {
       // as WebVTT, so the only way to show them on the Cast receiver is to composite them onto the
       // frames. Forces a videotoolbox re-encode (overlay is incompatible with -c:v copy).
       const fc = `[0:v:0][0:s:${burnSub}]overlay` + (needScale ? `,scale=-2:${cap}` : '') + '[vo]';
-      return ['-hide_banner', '-nostdin', '-loglevel', 'error', ...seek, ...inOpts, '-i', input,
+      return ['-hide_banner', '-nostdin', '-loglevel', 'warning', ...seek, ...inOpts, '-i', input,
         '-filter_complex', fc, '-map', '[vo]', '-map', '0:a:' + audioTrack + '?',
         ...vEnc,
         ...aArgs, '-max_muxing_queue_size', '1024', ...MKV_MUXFLAGS, '-f', MKV_CONTAINER, 'pipe:1'];
@@ -936,7 +940,7 @@ module.exports = function createLanServer(opts) {
     const vArgs = canCopyV
       ? ['-c:v', 'copy', ...(isHevc ? ['-tag:v', 'hvc1'] : []), ...(plan.stripDovi ? DOVI_STRIP : [])]
       : [...(needScale ? ['-vf', 'scale=-2:' + cap] : []), ...vEnc];
-    return ['-hide_banner', '-nostdin', '-loglevel', 'error', ...seek, ...inOpts, '-i', input,
+    return ['-hide_banner', '-nostdin', '-loglevel', 'warning', ...seek, ...inOpts, '-i', input,
       '-map', '0:v:0', '-map', '0:a:' + audioTrack + '?', '-sn',
       ...vArgs, ...aArgs, '-max_muxing_queue_size', '1024', ...MKV_MUXFLAGS, '-f', MKV_CONTAINER, 'pipe:1'];
   }

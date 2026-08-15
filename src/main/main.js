@@ -362,6 +362,13 @@ if (!gotLock) {
   ipcMain.handle('diag:get', () => { try { return diagSnapshot(); } catch (e) { return null; } });
   const history = require('./history')(); // resume positions / recents
   const deviceMemory = require('./device-memory-store')(); // what each receiver has been seen to play
+  // The receiver's own opinion, which the app records nowhere. Until now the only trace of what the
+  // TV thought was whether a resume marker survived — evidence destroyed by the very failure being
+  // diagnosed. Appends to the same file lanserver writes, so the stream's life and the receiver's
+  // view of it read as one timeline.
+  const CASTLOG = '/tmp/spritz-cast.log';
+  const castLog = (m) => { if (!process.env.SPRITZ_DEBUG) return; try { fs.appendFileSync(CASTLOG, '[' + new Date().toISOString().slice(11, 23) + '] ' + m + '\n'); } catch (e) {} };
+  let lastPlayerState = null;
   // An observation waiting on proof. Set when a cast starts, converted to a recorded success only
   // once the receiver has demonstrably decoded and advanced through the stream — see castStatus.
   let pendingObservation = null;
@@ -700,6 +707,15 @@ if (!gotLock) {
 
   cast.on('status', (s) => {
     if (!s) return;
+    // Every transition, with the reason attached. FINISHED mid-film and ERROR mid-film are entirely
+    // different failures that look identical from outside, and this is the line that separates them.
+    if (s.playerState && s.playerState !== lastPlayerState) {
+      castLog('receiver state ' + (lastPlayerState || '-') + ' -> ' + s.playerState +
+        (s.idleReason ? ' (' + s.idleReason + ')' : '') +
+        ' at ' + Math.round(s.currentTime || 0) + 's' +
+        (castMkv && castMkv.dur ? ' of ' + Math.round(castMkv.dur) + 's' : ''));
+      lastPlayerState = s.playerState;
+    }
     confirmObservation(s);
     if (typeof s.currentTime === 'number') lastAvTime = s.currentTime; // reuse resume clock (absolute: MKV uses -copyts)
     const dur = (castMkv && castMkv.dur) || (s.media && s.media.duration) || 0; // MKV stream length is the source's
@@ -709,6 +725,7 @@ if (!gotLock) {
   // home without a cast:stop that would reload+replay the finished file locally) and tell the renderer
   // to clear resume + leave the wedged last frame. (Audit M5)
   cast.on('ended', () => {
+    castLog('receiver reported the media FINISHED' + (castMkv && castMkv.dur ? ' (stream was ' + Math.round(castMkv.dur) + 's long)' : '') + ' — tearing the session down and clearing resume');
     if (castEngine !== 'chromecast') return;
     setEngine('mpv'); castMkv = null;
     try { cast.stop(); } catch (e) {}

@@ -173,9 +173,27 @@ module.exports = function createTorrent(send) {
     return seg ? (seg[1] - playFrac) * f.length : 0;
   }
 
+  // Where the swarm's effort is actually going. webtorrent's piece picker rotates between equal
+  // priority selections, so two selections at the same priority split the peer request slots between
+  // them — and a cast reading from the middle of a file while a stale selection still points at the
+  // front would starve the half that matters, at a healthy-looking aggregate speed. Reading the
+  // private _selections is deliberate: there is no public view of this, and inferring it from
+  // download speed is exactly the guesswork that has cost this project days.
+  function logSelections() {
+    if (!DBG || !active) return;
+    try {
+      const items = (active._selections && active._selections._items) || active._selections || [];
+      const desc = (Array.isArray(items) ? items : []).map((x) =>
+        ((x.from + (x.offset || 0)) + '-' + x.to + '/p' + x.priority + (x.isStreamSelection ? 's' : ''))).join(' ');
+      if (desc && desc !== lastSelDesc) { tlog('selections: ' + desc); lastSelDesc = desc; }
+    } catch (e) {}
+  }
+  let lastSelDesc = null;
+
   function emitProgress() {
     if (!active) return;
     refreshCritical();
+    logSelections();
     const ahead = bytesAheadOfPlayhead();
     // Reported, not acted on. Knowing "this stalls in about 20 seconds" is worth telling the user;
     // reacting by widening the urgent set would add contention exactly when the swarm is short of
