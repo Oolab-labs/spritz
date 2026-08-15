@@ -52,17 +52,25 @@ function entryFor(mem, key) {
 // Traits of a stream that played. Only what was sent UNTOUCHED counts as evidence about the
 // receiver: a 4K file downscaled to 1080p before sending proves nothing about 4K, and audio
 // re-encoded to AAC proves nothing about passthrough.
-//   { videoCodec, height, hdr, dovi, audioCodec, videoCopied, audioCopied }
+//   { videoCodec, width, height, hdr, dovi, audioCodec, videoCopied, audioCopied }
 function recordSuccess(mem, key, traits) {
   if (!mem || !key || !traits) return mem;
   const e = entryFor(mem, key);
   const o = e.observed;
   const h = Number(traits.height) || 0;
+  const w = Number(traits.width) || 0;
   const vc = String(traits.videoCodec || '').toLowerCase();
+  // 4K is a frame size, not a height. A scope-framed feature is 3840x1606 — a 4K stream by every
+  // measure that matters to a decoder, and 554 lines short of the height test. Judged on height alone
+  // the first real cast of one recorded maxHeight 1606 and learned nothing about 4K at all, which is
+  // how this was found. Either dimension qualifying is the honest test.
+  const isFourK = h >= 2160 || w >= 3840;
 
   if (traits.videoCopied && h) {
+    // maxHeight stays the height that actually went out — claiming 2160 for a 1606-tall stream would
+    // be inventing evidence. It is the 4K CODEC flags that the frame size settles.
     o.maxHeight = Math.max(o.maxHeight || 0, h);
-    if (h >= 2160) {
+    if (isFourK) {
       if (vc === 'hevc' || vc === 'h265') o.hevc4k = true;
       if (vc === 'h264' || vc === 'avc') o.h264_4k = true;
     }

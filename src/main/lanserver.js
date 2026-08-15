@@ -1000,6 +1000,10 @@ module.exports = function createLanServer(opts) {
           container: MKV_CONTAINER,
           videoCodec: videoCopied ? ((info && info.vcodec) || null) : 'h264',
           height: videoCopied ? ((info && info.height) || 0) : (plan.targetHeight || (info && info.height) || 0),
+          // Width matters as much as height. A scope-framed 4K film is 3840x1606, which is every bit
+          // a 4K stream to decode and nowhere near 2160 tall — judged on height alone it teaches
+          // nothing about 4K support.
+          width: videoCopied ? ((info && info.width) || 0) : 0,
           // A stripped DV stream is not DV, and a tonemapped picture is not HDR — so a receiver
           // playing either proves nothing about DV or HDR support.
           hdr: !!(info && info.hdr) && videoCopied && !plan.tonemap,

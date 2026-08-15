@@ -109,3 +109,29 @@ test('what a device has played can be described', () => {
   assert.ok(d.played.includes('HDR10'));
   assert.ok(d.played.includes('EAC3'));
 });
+
+test('a scope-framed 4K film still teaches 4K support', () => {
+  // Found in real data, not imagined: the first cast of a 3840x1606 feature recorded maxHeight 1606
+  // and learned nothing about 4K, because the test was on height alone and a 2.39:1 frame is 554
+  // lines short of 2160. It is a 4K stream by every measure a decoder cares about.
+  const m = mem.emptyMemory();
+  mem.recordSuccess(m, KEY, { videoCodec: 'hevc', width: 3840, height: 1606, hdr: true, videoCopied: true });
+  const out = apply(m, deviceProfile.defaultProfile());
+  assert.equal(out.hevc4k, true, 'width should qualify it as 4K');
+  assert.equal(out.maxHeight, 1606, 'but the recorded height stays the height that actually went out');
+});
+
+test('a genuinely small frame is not promoted by the width rule', () => {
+  const m = mem.emptyMemory();
+  mem.recordSuccess(m, KEY, { videoCodec: 'hevc', width: 1920, height: 1080, videoCopied: true });
+  const out = apply(m, deviceProfile.defaultProfile());
+  assert.equal(out.hevc4k, false);
+  assert.equal(out.maxHeight, 1080);
+});
+
+test('a tall 4K frame still qualifies without a width', () => {
+  // Width is additive, not a replacement — an older record with no width must behave as before.
+  const m = mem.emptyMemory();
+  mem.recordSuccess(m, KEY, { videoCodec: 'hevc', height: 2160, videoCopied: true });
+  assert.equal(apply(m, deviceProfile.defaultProfile()).hevc4k, true);
+});
