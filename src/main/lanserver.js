@@ -27,6 +27,7 @@ const { spawn } = require('child_process');
 const { planPlayback } = require('./playback-planner');
 const { trimToCompleteCues, coverageEnd } = require('./vtt-window'); // serving a partially-extracted track
 const { probeWithRetries } = require('./probe-retry');                 // a failed probe means a blind re-encode
+const { resumePosition } = require('./resume-point');                   // where a re-requested stream restarts
 
 function findBin(name) {
   const bundled = process.resourcesPath ? [path.join(process.resourcesPath, 'bin', name)] : []; // packaged → portable
@@ -1006,7 +1007,7 @@ module.exports = function createLanServer(opts) {
           sideIdx++;
         });
         // mkvEntry.subs = the on-demand-servable TEXT subs only (serveMkvSub looks them up by name).
-        mkvEntry = { token, input, info, caps, audioTrack, startSec, burnSub, subDelay, subs: subDefs.filter((s) => s.kind !== 'burn'), subCache: {} };
+        mkvEntry = { token, input, info, caps, audioTrack, startSec, burnSub, subDelay, subs: subDefs.filter((s) => s.kind !== 'burn'), subCache: {}, livePos: 0, servedOnce: false, dur };
         // What is actually going out, as distinct from what the file is. Only this is evidence about
         // a receiver: a picture that was re-encoded or downscaled, or audio that was converted, says
         // nothing about what the device can decode. The caller records it if the stream plays.
@@ -1185,7 +1186,14 @@ module.exports = function createLanServer(opts) {
       if (mkvRes === res) mkvRes = null;
     };
     function launch(sw) {
-      const args = mkvArgs(e.input, e.info, e.caps, e.audioTrack, e.startSec, e.burnSub, sw);
+      // The receiver re-requests this URL whenever the stream stalls, and that is not something we
+      // control. Relaunching from e.startSec fed it video from behind where it had already played,
+      // so it buffered until ffmpeg caught up and then re-requested again — a loop that looks like
+      // "the cast only runs for a few minutes, around the middle of the film". Restart from where it
+      // actually is.
+      const from = resumePosition({ first: !e.servedOnce, startSec: e.startSec, livePos: e.livePos, durationSec: e.dur });
+      if (from !== e.startSec) clog('restarting the stream at ' + from + 's (receiver was at ' + Math.round(e.livePos) + 's, original start ' + e.startSec + 's)');
+      const args = mkvArgs(e.input, e.info, e.caps, e.audioTrack, from, e.burnSub, sw);
       const ff = mkvProc = spawn(FFMPEG, args);
       const t0 = Date.now();
       let errTail = '';
@@ -1194,7 +1202,7 @@ module.exports = function createLanServer(opts) {
       // great deal of it and the interesting part is always the end.
       ff.stderr.on('data', (b) => { errTail = (errTail + b.toString()).slice(-4000); });
       ff.stdout.on('error', () => {}); // EPIPE when the TV drops the socket — harmless
-      ff.stdout.once('data', () => { produced = true; clog('first byte out after ' + (Date.now() - t0) + 'ms'); });
+      ff.stdout.once('data', () => { produced = true; e.servedOnce = true; clog('first byte out after ' + (Date.now() - t0) + 'ms'); });
       ff.on('close', (code) => {
         clog('ffmpeg exited code=' + code + ' after ' + (Date.now() - t0) + 'ms, produced=' + produced);
         if (errTail.trim()) clog('ffmpeg stderr:\n' + errTail.trim());
@@ -1356,6 +1364,10 @@ module.exports = function createLanServer(opts) {
     // socket delivers, so it is read from here rather than written out again at each call site —
     // where it had already drifted to a hardcoded Matroska type in one place and video/mp4 in another.
     castMime: () => MKV_MIME,
+    // The receiver's live position, pushed in from the cast status stream. Only the orchestrator sees
+    // those updates, and only this module knows when a stream is being restarted — so the number has
+    // to cross over.
+    noteCastPosition: (sec) => { if (mkvEntry && Number.isFinite(sec) && sec > 0) mkvEntry.livePos = sec; },
     serverPort: () => (server && server.listening ? port : null) }; // diagnostics: where receivers are pointed
 };
 

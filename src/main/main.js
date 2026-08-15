@@ -718,6 +718,10 @@ if (!gotLock) {
     }
     confirmObservation(s);
     if (typeof s.currentTime === 'number') lastAvTime = s.currentTime; // reuse resume clock (absolute: MKV uses -copyts)
+    // Tell the LAN server where the receiver actually is. If it re-requests the stream — which it
+    // does on any stall, and which we do not control — this is what stops the restart being served
+    // from the original seek point, minutes behind where it is playing.
+    if (castMkv && typeof s.currentTime === 'number') { try { lan.noteCastPosition(s.currentTime); } catch (e) {} }
     const dur = (castMkv && castMkv.dur) || (s.media && s.media.duration) || 0; // MKV stream length is the source's
     send('cast-event', { type: 'status', cur: s.currentTime || 0, dur, state: s.playerState });
   });
