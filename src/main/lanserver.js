@@ -896,7 +896,11 @@ module.exports = function createLanServer(opts) {
   // and keeps Atmos/surround on the copy path instead of forcing it down to stereo AAC.
   const MKV_CONTAINER = 'mp4', MKV_MIME = 'video/mp4';
   const MKV_MUXFLAGS = ['-movflags', 'frag_keyframe+empty_moov+delay_moov+default_base_moof'];
-  function cancelMkv() {
+  function cancelMkv(why) {
+    // Who ends a cast, and why, was unrecorded — so a stream that vanished mid-film was
+    // indistinguishable from one the receiver dropped. The TV then plays out its buffer and stalls
+    // with no request for more, which is exactly what "the cast got stuck" looks like.
+    if (mkvProc || mkvRes) clog('cast stream ENDED by ' + (why || 'cancelMkv') );
     if (mkvProc) { try { mkvProc.kill('SIGKILL'); } catch (e) {} mkvProc = null; }
     // ...and every subtitle extraction this cast started. They read the source from end to end, so
     // on a torrent an orphaned one keeps pulling for as long as the app lives.
@@ -987,7 +991,7 @@ module.exports = function createLanServer(opts) {
         let audioTrack = (opts && opts.audioTrack) || 0;
         if (audioTrack < 0 || audioTrack >= aN) audioTrack = 0;
         const token = newToken();
-        cancelMkv();
+        cancelMkv('a new cast being prepared');
         const audioTracks = (info && info.audio) ? info.audio.map((a) => ({ idx: a.idx, name: a.name, lang: a.lang })) : [];
         const dur = (info && info.dur) || 0;
         // Build the subtitle menu. TEXT subs → on-demand WebVTT (sideloaded, toggled instantly); BITMAP
@@ -1160,7 +1164,7 @@ module.exports = function createLanServer(opts) {
     }
     const e = mkvEntry;
     clog('GET /mkv from ' + (req.socket && req.socket.remoteAddress) + ' method=' + req.method + ' input=' + String(e.input).slice(0, 120));
-    if (mkvProc) { try { mkvProc.kill('SIGKILL'); } catch (x) {} mkvProc = null; } // a fresh GET supersedes (receiver reconnect)
+    if (mkvProc) { clog('cast stream ENDED by a fresh GET superseding it'); try { mkvProc.kill('SIGKILL'); } catch (x) {} mkvProc = null; } // a fresh GET supersedes (receiver reconnect)
     // ...and so does its RESPONSE. Killing the old ffmpeg leaves onEnd() short-circuiting on the
     // `ff !== mkvProc` guard, so the superseded response was never ended — every receiver reconnect
     // stranded a half-open socket for the life of the process. Destroy it explicitly.
@@ -1212,7 +1216,7 @@ module.exports = function createLanServer(opts) {
       ff.on('close', (code) => onEnd(ff, code));
     }
     req.on('close', () => {
-      if (mkvProc) { try { mkvProc.kill('SIGKILL'); } catch (x) {} mkvProc = null; }
+      if (mkvProc) { clog('cast stream ENDED by the receiver closing the connection'); try { mkvProc.kill('SIGKILL'); } catch (x) {} mkvProc = null; }
       if (mkvRes === res) mkvRes = null;
     });
     launch(false);
@@ -1346,7 +1350,7 @@ module.exports = function createLanServer(opts) {
   }
 
   function teardown() {
-    cancelRemux(); cancelHls(); cancelMkv();
+    cancelRemux(); cancelHls(); cancelMkv('teardown');
     try { if (server) server.close(); } catch (e) {} server = null;
     files.clear(); dlnaProxies.clear(); // drop all token→path / proxy entries (were leaking until quit)
     try { fs.rmSync(REMUX_DIR, { recursive: true, force: true }); } catch (e) {}
@@ -1357,7 +1361,7 @@ module.exports = function createLanServer(opts) {
   // changes or a torrent is cancelled, so an orphan ffmpeg isn't left reading a dead URL. Also prune
   // the per-source token Maps (they only grew until app-quit before): the previous source's /file/ and
   // /dlna/ URLs are dead now, and the next source re-registers its own afterwards. (Audit M7)
-  function cancelActive() { cancelHls(); cancelRemux(); cancelMkv(); files.clear(); dlnaProxies.clear(); }
+  function cancelActive() { cancelHls(); cancelRemux(); cancelMkv('cancelActive — the source changed or casting stopped'); files.clear(); dlnaProxies.clear(); }
 
   return { serve, serveDlna, serveSubtitleForDlna, prepareCast, serveHls, serveMkv, teardown, cancelActive, lanAddress, avCompatible,
     // The container this route actually serves. What the receiver is told must agree with what the
