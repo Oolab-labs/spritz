@@ -26,6 +26,7 @@ const { spawn } = require('child_process');
 // now one pure, unit-tested function and these sites only turn its answer into ffmpeg arguments.
 const { planPlayback } = require('./playback-planner');
 const { trimToCompleteCues, coverageEnd } = require('./vtt-window'); // serving a partially-extracted track
+const { probeWithRetries } = require('./probe-retry');                 // a failed probe means a blind re-encode
 
 function findBin(name) {
   const bundled = process.resourcesPath ? [path.join(process.resourcesPath, 'bin', name)] : []; // packaged → portable
@@ -595,15 +596,29 @@ module.exports = function createLanServer(opts) {
   }
 
   // Probe audio + text-subtitle tracks (bounded read so a torrent's header is enough, no stall).
-  function probeTracks(input, cb) { memoProbe('tracks', input, (done) => probeTracksRaw(input, done), cb); }
-  function probeTracksRaw(input, cb) {
+  // A probe that returns nothing sends the planner to a full re-encode, so it is worth trying again
+  // rather than accepting it. Only failures pay for this; the common case is unchanged.
+  function probeTracks(input, cb) {
+    memoProbe('tracks', input, (done) => {
+      probeWithRetries(
+        (timeoutMs, next) => probeTracksRaw(input, timeoutMs, next),
+        (info, attempts) => {
+          if (!info) clog('probe gave up after ' + attempts + ' attempts — the plan will re-encode blind');
+          else if (attempts > 1) clog('probe succeeded on attempt ' + attempts);
+          done(info);
+        },
+        { onAttempt: (n, ms) => { if (n > 1) clog('probe retry ' + n + ' (timeout ' + ms + 'ms)'); } }
+      );
+    }, cb);
+  }
+  function probeTracksRaw(input, timeoutMs, cb) {
     let out = '';
     // 4M/5s: a standard MKV front-loads all track headers, so this still sees every audio/sub
     // stream + the video codec, but resolves in ~1–3s instead of stalling toward a 12s timeout
     // (which delayed the cast button). Inconclusive probe → vcodec null → serveHls proceeds anyway.
     const ps = spawn(FFPROBE, ['-v', 'error', '-probesize', '4M', '-analyzeduration', '4M',
       '-show_entries', PROBE_ENTRIES, '-of', 'json', input],
-      { timeout: 5000 });
+      { timeout: timeoutMs || 5000 });
     ps.stdout.on('data', (d) => { out += d; });
     ps.on('error', () => cb(null));
     ps.on('close', () => {
