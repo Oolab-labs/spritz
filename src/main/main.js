@@ -336,7 +336,15 @@ if (!gotLock) {
     send(channel, payload);
   };
   const torrent = require('./torrent')(torrentSend);
-  const lan = require('./lanserver')({ onWarn: (m) => send('toast', { message: m }) }); // LAN file server for local-file AirPlay
+  const lan = require('./lanserver')({
+    onWarn: (m) => send('toast', { message: m }),
+    // Pausing a cast kills it. The stream is a live pipe, so a paused receiver stops reading, the
+    // socket fills, and about thirty seconds later the TV drops the connection — measured:
+    // "PLAYING -> PAUSED at 3480s" then "ENDED by the receiver closing the connection" 33s later,
+    // after which nothing was feeding the TV and pressing play did nothing. The cast was never over;
+    // it just had no supply. Put one back.
+    onCastStreamLost: (why) => recoverCast(why)
+  }); // LAN file server for local-file AirPlay
   const cast = require('./cast')();     // Google Cast (Chromecast / LG webOS)
   const dlna = require('./dlna')();     // DLNA / UPnP "play to"
 
@@ -369,6 +377,7 @@ if (!gotLock) {
     };
   }
   ipcMain.handle('diag:get', () => { try { return diagSnapshot(); } catch (e) { return null; } });
+  const { trustPosition } = require('./resume-point'); // which receiver clocks are worth believing
   const history = require('./history')(); // resume positions / recents
   const deviceMemory = require('./device-memory-store')(); // what each receiver has been seen to play
   // The receiver's own opinion, which the app records nowhere. Until now the only trace of what the
@@ -381,6 +390,14 @@ if (!gotLock) {
   // An observation waiting on proof. Set when a cast starts, converted to a recorded success only
   // once the receiver has demonstrably decoded and advanced through the stream — see castStatus.
   let pendingObservation = null;
+  // The receiver's last position while it was genuinely showing the film. Distinct from lastAvTime,
+  // which is shared with the local/AirPlay resume clock; this one is never written by a transitional
+  // zero, so a recast always has somewhere honest to resume from.
+  let lastCastPos = 0;
+  // A live cast whose stream dies is not over — the receiver simply stops being fed. Bounded so a
+  // genuinely broken source cannot loop.
+  let castRecoveries = 0;
+  const MAX_CAST_RECOVERIES = 3;
 
   // ---- DLNA / UPnP casting (parallel to Chromecast) ----
   let dlnaPoll = null;
@@ -726,7 +743,14 @@ if (!gotLock) {
       lastPlayerState = s.playerState;
     }
     confirmObservation(s);
-    if (typeof s.currentTime === 'number') lastAvTime = s.currentTime; // reuse resume clock (absolute: MKV uses -copyts)
+    // Only believe the clock while the receiver is actually showing the film. It reports
+    // currentTime 0 during IDLE and BUFFERING, and taking that at face value wipes the resume
+    // position — observed: a recast triggered while paused at 3876s relaunched at 3391s, minutes
+    // behind, because the position it read had been clobbered by a transitional zero.
+    if (trustPosition(s.playerState, s.currentTime)) {
+      lastAvTime = s.currentTime;
+      lastCastPos = s.currentTime;
+    }
     // Tell the LAN server where the receiver actually is. If it re-requests the stream — which it
     // does on any stall, and which we do not control — this is what stops the restart being served
     // from the original seek point, minutes behind where it is playing.
@@ -753,7 +777,7 @@ if (!gotLock) {
     if (now - mkvReconnectAt > 30000) mkvReconnects = 0; // 30s of stability resets the budget
     if (mkvReconnects >= 3) { resumeLocalFromChromecast(); send('cast-event', { type: 'error', message: 'Cast connection lost.' }); return; }
     mkvReconnects++; mkvReconnectAt = now;
-    recastMkv(at || lastAvTime || 0, castMkv.audioTrack); // fresh MKV stream from the live position
+    recastMkv(at || lastCastPos || lastAvTime || 0, castMkv.audioTrack); // fresh MKV stream from the live position
   });
   function resumeLocalFromChromecast() {
     setEngine('mpv'); castMkv = null;
@@ -1299,6 +1323,7 @@ if (!gotLock) {
     resolveChromecast(mpvLastUrl, caps, aTrack, startSec, (av, meta) => {
       if (gen !== loadGen) { setEngine('mpv'); return; } // source changed while resolving (player:load handles mpv)
       if (!av) return castFailedLocal(wasCasting, 'cast-event', 'This source can’t be cast to this TV.');
+      castRecoveries = 0; // a new cast gets a fresh budget
       castMkv = (meta && meta.isMkv) ? { host, input: meta.input, caps: meta.caps, audioTracks: meta.audioTracks, dur: meta.dur, audioTrack: meta.audioTrack, burnSub: null, subDelay: 0, menuSubs: meta.menuSubs || [] } : null;
       doCastLoad(host, av, (meta && meta.subs) || [], gen, { startSec, audioTracks: (meta && meta.audioTracks) || [], audioTrack: (meta && meta.audioTrack) || 0, menuSubs: (meta && meta.menuSubs) || [], sent: (meta && meta.sent) || null, deviceLabel: (meta && meta.caps && meta.caps.label) || null, deviceId: (meta && meta.caps && meta.caps.id) || null });
     });
@@ -1359,6 +1384,24 @@ if (!gotLock) {
       });
     });
   }
+  // Re-establish a cast whose stream died under it. Deliberately narrow: only while a Chromecast
+  // session is genuinely still live, only when the receiver has not said the film finished, and
+  // bounded — a source that cannot be streamed must be allowed to fail rather than loop.
+  function recoverCast(why) {
+    if (castEngine !== 'chromecast' || !castMkv) return;
+    if (castRecoveries >= MAX_CAST_RECOVERIES) {
+      castLog('not recovering: already retried ' + castRecoveries + ' times');
+      send('cast-event', { type: 'error', message: 'The cast stopped and could not be resumed.' });
+      return;
+    }
+    const at = lastCastPos || lastAvTime || 0;
+    castRecoveries++;
+    castLog('recovering the cast (' + why + ') from ' + Math.round(at) + 's — attempt ' + castRecoveries);
+    // A moment's grace: the receiver has just closed a socket, and re-offering it a stream in the
+    // same tick tends to be refused.
+    setTimeout(() => { if (castEngine === 'chromecast' && castMkv) recastMkv(at, castMkv.audioTrack); }, 1200);
+  }
+
   ipcMain.on('cast:play', () => { try { cast.play(); } catch (e) {} });
   ipcMain.on('cast:pause', () => { try { cast.pause(); } catch (e) {} });
   // A single MKV-cast "seek" is a whole re-cast: fresh ffmpeg + a receiver LOAD. Dragging the
@@ -1378,15 +1421,15 @@ if (!gotLock) {
   });
   ipcMain.on('cast:setVolume', (_e, { f } = {}) => { try { cast.setVolume(f); } catch (e) {} });
   ipcMain.on('cast:setSourceAudio', (_e, { idx } = {}) => { // MKV audio-language change → re-cast at current pos (keep burn)
-    if (castMkv && castEngine === 'chromecast') recastMkv(lastAvTime || 0, Math.max(0, parseInt(idx, 10) || 0));
+    if (castMkv && castEngine === 'chromecast') recastMkv(lastCastPos || lastAvTime || 0, Math.max(0, parseInt(idx, 10) || 0));
   });
   ipcMain.on('cast:setBurnSub', (_e, { subIdx } = {}) => { // burn a bitmap sub in (subIdx>=0) or off (-1) → re-cast
-    if (castMkv && castEngine === 'chromecast') recastMkv(lastAvTime || 0, castMkv.audioTrack, (subIdx >= 0 ? subIdx : -1));
+    if (castMkv && castEngine === 'chromecast') recastMkv(lastCastPos || lastAvTime || 0, castMkv.audioTrack, (subIdx >= 0 ? subIdx : -1));
   });
   ipcMain.on('cast:subDelay', (_e, { delta } = {}) => { // MKV cast subtitle sync: shift the sideloaded VTT cues → re-cast
     if (!castMkv || castEngine !== 'chromecast') return;
     castMkv.subDelay = Math.round(((castMkv.subDelay || 0) + (parseFloat(delta) || 0)) * 10) / 10; // 0.1s precision
-    recastMkv(lastAvTime || 0, castMkv.audioTrack);
+    recastMkv(lastCastPos || lastAvTime || 0, castMkv.audioTrack);
   });
   ipcMain.on('cast:stop', () => { resumeLocalFromChromecast(); send('cast-event', { type: 'stopped' }); });
   ipcMain.handle('cast:mediaTracks', () => { try { return cast.tracks(); } catch (e) { return null; } });
@@ -1394,7 +1437,7 @@ if (!gotLock) {
     // Switching to a TEXT sub (or off) while a bitmap sub is BURNED IN → un-burn first (re-cast without
     // overlay), then apply the sideloaded text track on the fresh cast. Otherwise toggle live.
     if (castMkv && castEngine === 'chromecast' && kind === 'subs' && castMkv.burnSub != null) {
-      return recastMkv(lastAvTime || 0, castMkv.audioTrack, -1, () => { if (id >= 0) { try { cast.setTrack('subs', id); } catch (e) {} } });
+      return recastMkv(lastCastPos || lastAvTime || 0, castMkv.audioTrack, -1, () => { if (id >= 0) { try { cast.setTrack('subs', id); } catch (e) {} } });
     }
     try { cast.setTrack(kind, id); } catch (e) {}
   });

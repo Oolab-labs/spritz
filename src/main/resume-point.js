@@ -50,4 +50,15 @@ function resumePosition({ first, startSec, livePos, durationSec, rewind } = {}) 
   return Math.max(start, Math.floor(pos - back));
 }
 
-module.exports = { resumePosition, REWIND_SEC };
+// Is a position the receiver just reported worth believing?
+//
+// It reports currentTime 0 while IDLE and while BUFFERING, and taking those at face value wipes the
+// resume clock. Measured consequence: a recast triggered while the film was paused at 3876s
+// relaunched at 3391s, minutes behind, because a transitional zero had overwritten the position it
+// read.
+function trustPosition(playerState, currentTime) {
+  if (typeof currentTime !== 'number' || !(currentTime > 0)) return false;
+  return playerState === 'PLAYING' || playerState === 'PAUSED';
+}
+
+module.exports = { resumePosition, trustPosition, REWIND_SEC };

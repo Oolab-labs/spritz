@@ -231,6 +231,10 @@ const HLS_DIR = path.join(os.tmpdir(), 'spritz', 'hls');
 
 module.exports = function createLanServer(opts) {
   const onWarn = (opts && opts.onWarn) || (() => {});
+  // Called when the cast stream stops for a reason that is NOT a deliberate teardown. The receiver
+  // hanging up looks identical to being cancelled from in here, but only one of them means the
+  // viewer is now staring at a stalled picture with nothing being sent.
+  const onCastStreamLost = (opts && opts.onCastStreamLost) || (() => {});
   // Sweep leftover transcode segments / remux temp MP4s from previous runs at startup. A long cast
   // keeps every fMP4 segment (a full transcoded copy) and remux makes a full temp MP4 — crashes can
   // orphan gigabytes here. Active sessions clean themselves (cancelHls/cancelRemux); this clears the
@@ -1247,7 +1251,11 @@ module.exports = function createLanServer(opts) {
       ff.on('close', (code) => onEnd(ff, code));
     }
     req.on('close', () => {
-      if (mkvProc) { clog('cast stream ENDED by the receiver closing the connection'); try { mkvProc.kill('SIGKILL'); } catch (x) {} mkvProc = null; }
+      if (mkvProc) {
+        clog('cast stream ENDED by the receiver closing the connection');
+        try { mkvProc.kill('SIGKILL'); } catch (x) {} mkvProc = null;
+        try { onCastStreamLost('the receiver closed the connection'); } catch (x) {}
+      }
       if (mkvRes === res) mkvRes = null;
     });
     launch(false);

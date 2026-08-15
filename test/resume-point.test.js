@@ -58,3 +58,25 @@ test('the result is never negative and never behind the start', () => {
     assert.ok(at >= 10, `startSec floor held for livePos=${live}`);
   }
 });
+
+const { trustPosition } = require('../src/main/resume-point');
+
+test('a position is believed only while the receiver is showing the film', () => {
+  assert.equal(trustPosition('PLAYING', 3876), true);
+  assert.equal(trustPosition('PAUSED', 3876), true, 'paused is still a real position');
+});
+
+test('the transitional zeros are not believed', () => {
+  // The receiver reports 0 while IDLE and while BUFFERING. Believing those wiped the resume clock
+  // and sent a recast back minutes behind where the viewer actually was.
+  assert.equal(trustPosition('IDLE', 0), false);
+  assert.equal(trustPosition('BUFFERING', 0), false);
+  assert.equal(trustPosition('PLAYING', 0), false, 'zero is never a position worth keeping');
+});
+
+test('a missing or nonsense clock is not believed', () => {
+  assert.equal(trustPosition('PLAYING', undefined), false);
+  assert.equal(trustPosition('PLAYING', NaN), false);
+  assert.equal(trustPosition('PLAYING', -5), false);
+  assert.equal(trustPosition(undefined, 100), false);
+});
