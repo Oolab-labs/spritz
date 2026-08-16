@@ -29,6 +29,7 @@ const { trimToCompleteCues, coverageEnd } = require('./vtt-window'); // serving 
 const { probeWithRetries } = require('./probe-retry');                 // a failed probe means a blind re-encode
 const { resumePosition } = require('./resume-point');                   // where a re-requested stream restarts
 const { canSendOriginal } = require('./send-original');                 // when ffmpeg is not needed at all
+const { classifyFailure, shouldRetryInSoftware } = require('./ffmpeg-failure'); // why a run produced nothing
 
 function findBin(name) {
   const bundled = process.resourcesPath ? [path.join(process.resourcesPath, 'bin', name)] : []; // packaged → portable
@@ -1270,13 +1271,21 @@ module.exports = function createLanServer(opts) {
     res.writeHead(200, { 'Content-Type': MKV_MIME, 'Accept-Ranges': 'none', 'Cache-Control': 'no-cache', 'Connection': 'close' });
     if (req.method === 'HEAD') return res.end();
     let produced = false, triedSw = false;
+    let errTail = '';   // last stderr of the CURRENT launch; onEnd is declared out here and needs it
     const onEnd = (ff, code) => {
       if (ff !== mkvProc) return;
       mkvProc = null;
       // The encoder died before emitting a single byte (e.g. a hardware videotoolbox transcode of an
       // exotic codec it can't handle) → retry ONCE with the software libx264 encoder, reusing the open
       // 200 (no body sent yet, so the receiver just keeps waiting on the same connection).
-      if (!produced && !triedSw) { triedSw = true; return launch(true); }
+      // Retry with the software encoder only when the ENCODER is what failed. When the source went
+      // quiet, a different encoder changes nothing — it just spends the receiver's patience on a
+      // second doomed attempt and files the result under the wrong cause.
+      if (!produced && !triedSw) {
+        const kind = classifyFailure(errTail);
+        if (shouldRetryInSoftware(errTail)) { triedSw = true; clog('no output (' + kind + ' failure) — retrying with the software encoder'); return launch(true); }
+        clog('no output and the input is what failed — not retrying, a different encoder cannot help');
+      }
       // How this connection closes is the ONLY signal the receiver gets about whether the media
       // finished. A clean res.end() is indistinguishable from a complete stream, so an ffmpeg that
       // crashed or was killed mid-film made the TV report IDLE/FINISHED — playback "ending" early
@@ -1297,7 +1306,7 @@ module.exports = function createLanServer(opts) {
       const args = mkvArgs(e.input, e.info, e.caps, e.audioTrack, from, e.burnSub, sw);
       const ff = mkvProc = spawn(FFMPEG, args);
       const t0 = Date.now();
-      let errTail = '';
+      errTail = '';
       clog('ffmpeg launch' + (sw ? ' (software encoder retry)' : '') + ': ' + args.join(' '));
       // Keep the last of stderr rather than discarding it. Bounded, because a long transcode emits a
       // great deal of it and the interesting part is always the end.
