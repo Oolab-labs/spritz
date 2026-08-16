@@ -123,6 +123,27 @@ const DOVI_STRIP = ['-bsf:v', 'filter_units=remove_types=62|63'];
 // file always finishes cleanly inside it, short enough that a receiver waiting on the track does not
 // give up. The cost of overrunning is a blank subtitle menu; the cost of stopping early is only a
 // shorter run of cues.
+// How long ffmpeg waits on a silent input before giving up. Thirty seconds was too impatient for a
+// torrent: a swarm that goes quiet while one piece arrives late produces a gap longer than that at
+// perfectly healthy average speed, and the stream died rather than waited. The old Soda Player
+// shipped 120s for years on the same job, and a cast that pauses for a moment is strictly better
+// than one that ends.
+//
+// Its companion flag `-seekable 0` is deliberately NOT copied. That app read its input sequentially
+// from the start; this one seeks to the resume position (-ss), which on an HTTP source is a range
+// request. Declaring the input unseekable would force ffmpeg to read and discard everything up to
+// the seek point — on a mid-film resume, gigabytes.
+const HTTP_READ_TIMEOUT_US = 120000000;
+
+// Things a receiver has no use for and can trip over: chapter markers, container metadata, and
+// embedded A53 closed captions riding inside the video bitstream. The old player stripped all three
+// on its TV path. Verified accepted by the bundled ffmpeg on the copy path.
+const CAST_HYGIENE = ['-map_chapters', '-1', '-map_metadata', '-1', '-a53cc', '0'];
+
+// Most tracks a viewer will never choose, and on a streamed source each one costs a pass over the
+// torrent. Enough to cover the languages anyone actually reaches for, far short of forty-one.
+const MAX_REMOTE_SIDELOAD_SUBS = 8;
+
 const SUB_BUDGET_MS = 12000;
 // How long to let ffmpeg finish and flush after SIGTERM before insisting.
 const SUB_GRACE_MS = 3000;
@@ -773,7 +794,7 @@ module.exports = function createLanServer(opts) {
         const transcode = !plan.speculative && plan.video === 'transcode';
 
         const inOpts = /^https?:\/\//i.test(input)
-          ? ['-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5', '-rw_timeout', '30000000']
+          ? ['-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5', '-rw_timeout', String(HTTP_READ_TIMEOUT_US)]
           : [];
         const hlsOpts = ['-hls_segment_type', 'fmp4', '-hls_time', '2', '-hls_list_size', '0',
           '-hls_playlist_type', 'event', '-hls_flags', 'append_list+omit_endlist', '-hls_fmp4_init_filename', 'init.mp4'];
@@ -977,7 +998,7 @@ module.exports = function createLanServer(opts) {
       ? ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-profile:v', 'high']
       : ['-c:v', 'h264_videotoolbox', '-prio_speed', '1', '-b:v', '8M', '-maxrate', '12M', '-bufsize', '16M', '-pix_fmt', 'yuv420p', '-profile:v', 'high'];
     const inOpts = /^https?:\/\//i.test(input)
-      ? ['-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5', '-rw_timeout', '30000000']
+      ? ['-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5', '-rw_timeout', String(HTTP_READ_TIMEOUT_US)]
       : [];
     // Resume/seek: input-seek with -copyts so video PTS stays file-absolute and aligns with the
     // sideloaded WebVTT (whose cue times are also file-absolute). Position 0 → no seek (cleanest).
@@ -990,14 +1011,14 @@ module.exports = function createLanServer(opts) {
       return ['-hide_banner', '-nostdin', '-loglevel', 'warning', ...seek, ...inOpts, '-i', input,
         '-filter_complex', fc, '-map', '[vo]', '-map', '0:a:' + audioTrack + '?',
         ...vEnc,
-        ...aArgs, '-max_muxing_queue_size', '1024', ...MKV_MUXFLAGS, '-f', MKV_CONTAINER, 'pipe:1'];
+        ...aArgs, '-max_muxing_queue_size', '1024', ...CAST_HYGIENE, ...MKV_MUXFLAGS, '-f', MKV_CONTAINER, 'pipe:1'];
     }
     const vArgs = canCopyV
       ? ['-c:v', 'copy', ...(isHevc ? ['-tag:v', 'hvc1'] : []), ...(plan.stripDovi ? DOVI_STRIP : [])]
       : [...(needScale ? ['-vf', 'scale=-2:' + cap] : []), ...vEnc];
     return ['-hide_banner', '-nostdin', '-loglevel', 'warning', ...seek, ...inOpts, '-i', input,
       '-map', '0:v:0', '-map', '0:a:' + audioTrack + '?', '-sn',
-      ...vArgs, ...aArgs, '-max_muxing_queue_size', '1024', ...MKV_MUXFLAGS, '-f', MKV_CONTAINER, 'pipe:1'];
+      ...vArgs, ...aArgs, '-max_muxing_queue_size', '1024', ...CAST_HYGIENE, ...MKV_MUXFLAGS, '-f', MKV_CONTAINER, 'pipe:1'];
   }
   // serveMkv(input, opts, cb) → cb(url, sideloadSubs, audioTracks, audioTrack, dur, menuSubs).
   // opts = {caps, audioTrack, startSec, extraSubs, burnSub}
@@ -1038,15 +1059,42 @@ module.exports = function createLanServer(opts) {
           else subDefs.push({ name: 'e' + s.idx, kind: 'embedded', ref: s.idx, lang: s.lang, label: s.name });
         });
         extraSubs.forEach((s, i) => subDefs.push({ name: 'x' + i, kind: 'external', ref: s.path, lang: s.lang || 'und', label: s.name || ('Subtitle ' + (subDefs.length + 1)) }));
+        // The receiver fetches EVERY sideloaded track the moment a cast starts, not when the viewer
+        // picks one — and each fetch is an ffmpeg pass over the source. On a local file that is a
+        // fast disk read and the count does not matter. On a torrent it does: a release with 41
+        // subtitle tracks produced 41 serialised extractions, roughly eight minutes of continuous
+        // reading competing with the stream itself, and about half of them yielded nothing because
+        // the data had not arrived yet.
+        //
+        // The old player refused outright here — "Extracting subtitles from non-local containers is
+        // not supported yet." Capping is more generous than that and keeps the common cases whole:
+        // one language per track, first occurrence wins, and what gets dropped is logged rather than
+        // silently disappearing.
+        const remoteSource = /^https?:\/\//i.test(String(input));
+        let offer = subDefs;
+        if (remoteSource) {
+          const seenLang = new Set();
+          const kept = [];
+          for (const d of subDefs) {
+            if (d.kind === 'burn') { kept.push(d); continue; }   // burn-in costs no extraction
+            const lang = String(d.lang || 'und').toLowerCase();
+            if (seenLang.has(lang) || kept.filter((k) => k.kind !== 'burn').length >= MAX_REMOTE_SIDELOAD_SUBS) continue;
+            seenLang.add(lang);
+            kept.push(d);
+          }
+          const droppedCount = subDefs.length - kept.length;
+          if (droppedCount > 0) clog('offering ' + (kept.length) + ' of ' + subDefs.length + ' subtitle tracks (' + droppedCount + ' dropped: duplicate languages or past the cap for a streamed source)');
+          offer = kept;
+        }
         const sideloadSubs = [], menuSubs = []; let sideIdx = 0;
-        subDefs.forEach((s) => {
+        offer.forEach((s) => {
           if (s.kind === 'burn') { menuSubs.push({ burn: true, subIdx: s.ref, name: s.label, lang: s.lang }); return; }
           sideloadSubs.push({ url: `http://${lan}:${port}/sub/${token}/${s.name}.vtt`, lang: s.lang, name: s.label });
           menuSubs.push({ burn: false, id: 1000 + sideIdx, name: s.label, lang: s.lang }); // cast.js assigns trackId 1000+i in this order
           sideIdx++;
         });
         // mkvEntry.subs = the on-demand-servable TEXT subs only (serveMkvSub looks them up by name).
-        mkvEntry = { token, input, info, caps, audioTrack, startSec, burnSub, subDelay, subs: subDefs.filter((s) => s.kind !== 'burn'), subCache: {}, livePos: 0, servedOnce: false, dur };
+        mkvEntry = { token, input, info, caps, audioTrack, startSec, burnSub, subDelay, subs: offer.filter((s) => s.kind !== 'burn'), subCache: {}, livePos: 0, servedOnce: false, dur };
         // What is actually going out, as distinct from what the file is. Only this is evidence about
         // a receiver: a picture that was re-encoded or downscaled, or audio that was converted, says
         // nothing about what the device can decode. The caller records it if the stream plays.

@@ -618,13 +618,25 @@ if (!gotLock) {
       // (which owns playback + every cast engine) with a gzip bomb. (Audit M2)
       let lu; try { lu = new URL(link); } catch (e) { return { ok: false, error: 'Bad subtitle link' }; }
       if (lu.protocol !== 'https:' || !/(^|\.)opensubtitles\.org$/i.test(lu.hostname)) return { ok: false, error: 'Untrusted subtitle host' };
-      const gz = await new Promise((resolve, reject) => {
-        https.get(link, { headers: { 'User-Agent': 'VLSub 0.10.2' } }, (res) => {
+      const fetchGz = (u) => new Promise((resolve, reject) => {
+        https.get(u, { headers: { 'User-Agent': 'VLSub 0.10.2' } }, (res) => {
+          // A non-200 body is an error page, not a subtitle; gunzip would fail on it several lines
+          // later with something unhelpful.
+          if (res.statusCode !== 200) { res.resume(); reject(new Error('subtitle download HTTP ' + res.statusCode)); return; }
           const chunks = []; let total = 0;
           res.on('data', (c) => { total += c.length; if (total > 8 * 1024 * 1024) { res.destroy(); reject(new Error('Subtitle download too large')); return; } chunks.push(c); });
           res.on('end', () => resolve(Buffer.concat(chunks)));
         }).on('error', reject);
       });
+      // OpenSubtitles will transcode to UTF-8 server-side if the download path asks for it — the old
+      // player used this rather than guessing encodings locally, and a subtitle in the wrong charset
+      // is a screenful of mojibake. Only a path rewrite, so it is attempted first and the original
+      // link is used if the server does not recognise it.
+      const utf8Link = link.includes('/download/') && !link.includes('subencoding-')
+        ? link.replace('/download/', '/download/subencoding-utf8/') : null;
+      let gz = null;
+      if (utf8Link) { try { gz = await fetchGz(utf8Link); } catch (e) { console.log('[subs] utf-8 variant refused (' + e.message + '), using the original link'); } }
+      if (!gz) gz = await fetchGz(link);
       const srt = zlib.gunzipSync(gz, { maxOutputLength: 32 * 1024 * 1024 }); // cap inflated size
       const out = path.join(app.getPath('temp'), 'spritz-os-' + Date.now() + '.srt');
       fs.writeFileSync(out, srt);
