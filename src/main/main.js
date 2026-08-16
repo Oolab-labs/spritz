@@ -863,9 +863,9 @@ if (!gotLock) {
     const input = tor ? s : filePath;
     if (!tor && !/^\//.test(filePath)) return cb(null);
     const serve = () => {
-      lan.serveMkv(input, { caps, extraSubs: externalSubs, audioTrack, startSec }, (u, sideloadSubs, audioTracks, aTrack, dur, menuSubs, sent) => {
+      lan.serveMkv(input, { caps, extraSubs: externalSubs, audioTrack, startSec }, (u, sideloadSubs, audioTracks, aTrack, dur, menuSubs, sent, direct) => {
         if (!u) return cb(null);
-        cb(u, { subs: sideloadSubs || [], menuSubs: menuSubs || [], audioTracks: audioTracks || [], dur: dur || 0, isMkv: true, input, caps, audioTrack: aTrack, sent: sent || null });
+        cb(u, { subs: sideloadSubs || [], menuSubs: menuSubs || [], audioTracks: audioTracks || [], dur: dur || 0, isMkv: true, input, caps, audioTrack: aTrack, sent: sent || null, direct: !!direct });
       });
     };
     // ffmpeg cannot emit a frame until it has demuxed the source, and it cannot demux an MP4 whose
@@ -1342,7 +1342,7 @@ if (!gotLock) {
       if (gen !== loadGen) { setEngine('mpv'); return; } // source changed while resolving (player:load handles mpv)
       if (!av) return castFailedLocal(wasCasting, 'cast-event', 'This source can’t be cast to this TV.');
       castRecoveries = 0; // a new cast gets a fresh budget
-      castMkv = (meta && meta.isMkv) ? { host, input: meta.input, caps: meta.caps, audioTracks: meta.audioTracks, dur: meta.dur, audioTrack: meta.audioTrack, burnSub: null, subDelay: 0, menuSubs: meta.menuSubs || [] } : null;
+      castMkv = (meta && meta.isMkv) ? { host, direct: !!(meta && meta.direct), input: meta.input, caps: meta.caps, audioTracks: meta.audioTracks, dur: meta.dur, audioTrack: meta.audioTrack, burnSub: null, subDelay: 0, menuSubs: meta.menuSubs || [] } : null;
       doCastLoad(host, av, (meta && meta.subs) || [], gen, { startSec, audioTracks: (meta && meta.audioTracks) || [], audioTrack: (meta && meta.audioTrack) || 0, menuSubs: (meta && meta.menuSubs) || [], sent: (meta && meta.sent) || null, deviceLabel: (meta && meta.caps && meta.caps.label) || null, deviceId: (meta && meta.caps && meta.caps.id) || null });
     });
   });
@@ -1443,6 +1443,10 @@ if (!gotLock) {
   // castMkv/castEngine itself, so a timer that fires after casting stopped is a no-op.
   let seekTimer = null, seekTarget = 0;
   ipcMain.on('cast:seek', (_e, { t } = {}) => {
+    // A direct file cast is seekable at the receiver: it just asks for a different byte range. Only
+    // the live pipe has to be rebuilt to move, and rebuilding a seekable one would be strictly worse
+    // — a visible stall in place of an instant jump.
+    if (castMkv && castMkv.direct && castEngine === 'chromecast') { try { cast.seek(t); } catch (e) {} return; }
     if (castMkv && castEngine === 'chromecast') {
       seekTarget = t;
       if (seekTimer) clearTimeout(seekTimer);

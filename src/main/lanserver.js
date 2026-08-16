@@ -28,6 +28,7 @@ const { planPlayback } = require('./playback-planner');
 const { trimToCompleteCues, coverageEnd } = require('./vtt-window'); // serving a partially-extracted track
 const { probeWithRetries } = require('./probe-retry');                 // a failed probe means a blind re-encode
 const { resumePosition } = require('./resume-point');                   // where a re-requested stream restarts
+const { canSendOriginal } = require('./send-original');                 // when ffmpeg is not needed at all
 
 function findBin(name) {
   const bundled = process.resourcesPath ? [path.join(process.resourcesPath, 'bin', name)] : []; // packaged → portable
@@ -1119,7 +1120,20 @@ module.exports = function createLanServer(opts) {
           audioCodec: (chosenAudio && chosenAudio.action === 'copy') ? ((srcAudio && srcAudio.codec) || null) : 'aac',
           audioCopied: !!(chosenAudio && chosenAudio.action === 'copy')
         };
-        clog('sending: ' + JSON.stringify(sent));
+        // If nothing has to be changed and the receiver reads this container, hand over the file
+        // itself, with ranges. That makes the cast seekable and pausable by the receiver, which
+        // removes the entire class of failure the live pipe brings with it. Subtitles still come
+        // from the /sub/ route above, so the entry stays.
+        const direct = canSendOriginal(plan, info, { input, remote: remoteSource, audioTrack, burnSub });
+        if (direct.ok) {
+          clog('sending the original file untouched — no ffmpeg in the path (seekable, pausable)');
+          const directSent = Object.assign({}, sent, { container: (String(input).match(/\.([a-z0-9]+)$/i) || [])[1] || 'mp4', videoCopied: true });
+          return serve(input, (u) => {
+            if (!u) { clog('direct serve failed; falling back to the stream'); return cb(`http://${lan}:${port}/mkv/${token}/video.mkv`, sideloadSubs, audioTracks, audioTrack, dur, menuSubs, sent); }
+            cb(u, sideloadSubs, audioTracks, audioTrack, dur, menuSubs, directSent, true);
+          });
+        }
+        clog('sending: ' + JSON.stringify(sent) + ' (streamed: ' + direct.why + ')');
         cb(`http://${lan}:${port}/mkv/${token}/video.mkv`, sideloadSubs, audioTracks, audioTrack, dur, menuSubs, sent);
       });
     });
