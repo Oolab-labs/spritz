@@ -1412,6 +1412,10 @@ module.exports = function createLanServer(opts) {
     // to cross over.
     noteCastPosition: (sec) => { if (mkvEntry && Number.isFinite(sec) && sec > 0) mkvEntry.livePos = sec; },
     suspendAirplayPrep, resumeAirplayPrep,
+    // Is a cast stream being served right now? Recovery asks, because the receiver often re-requests
+    // the URL on its own — and re-casting on top of a stream that is already flowing tears down a
+    // working one and costs the viewer a visible bounce.
+    hasLiveCastStream: () => !!(mkvProc && mkvRes),
     serverPort: () => (server && server.listening ? port : null) }; // diagnostics: where receivers are pointed
 };
 

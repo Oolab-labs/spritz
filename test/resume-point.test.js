@@ -80,3 +80,26 @@ test('a missing or nonsense clock is not believed', () => {
   assert.equal(trustPosition('PLAYING', -5), false);
   assert.equal(trustPosition(undefined, 100), false);
 });
+
+const { effectiveState } = require('../src/main/resume-point');
+
+test('a frame that omits the state carries the last known one', () => {
+  // The receiver sends frequent timestamp-only frames. Testing those against the state discarded
+  // every position update: measured over a 7m14s cast, the last position recorded was 1s, and the
+  // recovery restarted the film from the beginning.
+  assert.equal(effectiveState(undefined, 'PLAYING'), 'PLAYING');
+  assert.equal(effectiveState(null, 'PAUSED'), 'PAUSED');
+  assert.equal(trustPosition(effectiveState(undefined, 'PLAYING'), 430), true,
+    'a timestamp-only frame mid-playback must update the position');
+});
+
+test('a frame that states its own state wins', () => {
+  assert.equal(effectiveState('BUFFERING', 'PLAYING'), 'BUFFERING');
+  assert.equal(trustPosition(effectiveState('IDLE', 'PLAYING'), 0), false,
+    'and a real transition back to IDLE is still not a position');
+});
+
+test('with nothing known, nothing is assumed', () => {
+  assert.equal(effectiveState(undefined, undefined), null);
+  assert.equal(trustPosition(effectiveState(undefined, undefined), 430), false);
+});

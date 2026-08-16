@@ -61,4 +61,17 @@ function trustPosition(playerState, currentTime) {
   return playerState === 'PLAYING' || playerState === 'PAUSED';
 }
 
-module.exports = { resumePosition, trustPosition, REWIND_SEC };
+// What state is the receiver actually in, given a status frame that may not say?
+//
+// It emits frequent frames carrying only a timestamp, with no playerState and no media block — a
+// quirk this codebase had already documented elsewhere and which the position rule above then
+// discarded, because a frame with no state fails the PLAYING/PAUSED test. The consequence was that
+// the position only ever updated on a state CHANGE: measured over a 7m14s cast, the last recorded
+// position was 1s, and the recovery duly restarted the film from the beginning.
+//
+// A frame that does not mention the state is not a state change. It means "still whatever I said".
+function effectiveState(frameState, lastKnownState) {
+  return frameState || lastKnownState || null;
+}
+
+module.exports = { resumePosition, trustPosition, effectiveState, REWIND_SEC };

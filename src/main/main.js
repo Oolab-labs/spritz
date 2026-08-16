@@ -377,7 +377,7 @@ if (!gotLock) {
     };
   }
   ipcMain.handle('diag:get', () => { try { return diagSnapshot(); } catch (e) { return null; } });
-  const { trustPosition } = require('./resume-point'); // which receiver clocks are worth believing
+  const { trustPosition, effectiveState } = require('./resume-point'); // which receiver clocks are worth believing
   const history = require('./history')(); // resume positions / recents
   const deviceMemory = require('./device-memory-store')(); // what each receiver has been seen to play
   // The receiver's own opinion, which the app records nowhere. Until now the only trace of what the
@@ -747,7 +747,13 @@ if (!gotLock) {
     // currentTime 0 during IDLE and BUFFERING, and taking that at face value wipes the resume
     // position — observed: a recast triggered while paused at 3876s relaunched at 3391s, minutes
     // behind, because the position it read had been clobbered by a transitional zero.
-    if (trustPosition(s.playerState, s.currentTime)) {
+    //
+    // But most position updates arrive on frames that carry ONLY a timestamp, with no state at all,
+    // and testing those against the state discarded every one of them. Over a 7m14s cast the last
+    // position recorded was 1s, so the recovery restarted the film from the beginning — a worse
+    // outcome than the failure it exists to repair. A frame that does not mention the state is not a
+    // state change; it means "still whatever I last said".
+    if (trustPosition(effectiveState(s.playerState, lastPlayerState), s.currentTime)) {
       lastAvTime = s.currentTime;
       lastCastPos = s.currentTime;
     }
@@ -1399,7 +1405,21 @@ if (!gotLock) {
     castLog('recovering the cast (' + why + ') from ' + Math.round(at) + 's — attempt ' + castRecoveries);
     // A moment's grace: the receiver has just closed a socket, and re-offering it a stream in the
     // same tick tends to be refused.
-    setTimeout(() => { if (castEngine === 'chromecast' && castMkv) recastMkv(at, castMkv.audioTrack); }, 1200);
+    //
+    // Then check again before acting. Receivers frequently re-request the URL themselves, and the
+    // server restarts it from the right position without help — observed at 16:43:28, where the
+    // re-GET was already serving 60ms later and this recast arrived 1.2s after that, tore down a
+    // working stream and cost an extra IDLE/BUFFERING bounce. If something is already flowing, the
+    // cast recovered on its own and the best thing to do is nothing.
+    setTimeout(() => {
+      if (castEngine !== 'chromecast' || !castMkv) return;
+      if (lan.hasLiveCastStream()) {
+        castRecoveries--; // it healed itself; do not spend an attempt on it
+        castLog('recovery not needed — the receiver re-requested the stream itself');
+        return;
+      }
+      recastMkv(at, castMkv.audioTrack);
+    }, 1200);
   }
 
   ipcMain.on('cast:play', () => { try { cast.play(); } catch (e) {} });
