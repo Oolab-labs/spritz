@@ -15,10 +15,10 @@ your video  →  Spritz reads the file  →  Spritz reads your TV  →  the best
 ```
 
 Everything runs on your own machine and your own network. No account, nothing uploaded,
-no telemetry. Spritz ships **no** content, catalog, or index of any kind — every file,
+no telemetry. The only time Spritz contacts GitHub (api.github.com) is when you choose **Help → Check for Updates…**; nothing is checked or downloaded automatically. Spritz ships **no** content, catalog, or index of any kind — every file,
 link and stream comes from you.
 
-> Status: `2.0.0-alpha` — macOS 11+ on Apple Silicon (arm64).
+> Status: `2.0.0-rc.15` (release candidate) — macOS 11+ on Apple Silicon (arm64). Read [Status & known limitations](#status--known-limitations) before relying on it.
 
 ## What it does
 
@@ -77,13 +77,20 @@ Any device on the **same local network** (your Mac and the receiver must share t
 
 > **Apple Silicon (M1 or newer) · macOS 11+.** Intel Macs are **not** supported — Spritz is a native arm64 app and won't run under Rosetta.
 
-**Download:** prebuilt Apple-Silicon `.dmg` builds are posted on the [Releases](https://github.com/Oolab-labs/spritz/releases) page — open the `.dmg` and drag **Spritz** to Applications.
+**Download:** each [release](https://github.com/Oolab-labs/spritz/releases) carries the **Mac app** (an Apple-Silicon `.dmg` and `.zip` — open the `.dmg` and drag **Spritz** to Applications) and the **Spritz Receiver** package for LG TVs (an `.ipk`; see [Spritz Receiver for LG webOS](#spritz-receiver-for-lg-webos)). Install the Mac app first: the TV is paired from it.
 
-Builds aren't notarized yet, so on first launch macOS may refuse to open it. Either **right-click Spritz → Open → Open**, or clear the quarantine flag:
+**Opening it the first time.** Builds are **ad hoc signed, not notarized** (there is no paid Apple Developer ID behind them), so macOS blocks the first launch of a downloaded copy. Pick whichever suits you:
 
-```sh
-xattr -dr com.apple.quarantine /Applications/Spritz.app
-```
+- **Terminal, any macOS version.** Clear the quarantine flag, then open Spritz as usual:
+
+  ```sh
+  xattr -dr com.apple.quarantine /Applications/Spritz.app
+  ```
+
+- **System Settings, macOS 15 (Sequoia) and later.** Try to open Spritz once and dismiss the warning. Then open **System Settings → Privacy & Security**, scroll to the Security section, click **Open Anyway** next to Spritz, and confirm with your password or Touch ID. (Right-clicking and choosing Open no longer works there.)
+- **macOS 11 to 14.** Right-click Spritz → **Open** → **Open**.
+
+These steps follow Apple's documented behaviour. They have not yet been tried on a Mac that has never run Spritz, so if yours differs, please open an issue.
 
 **Build it yourself:** see [Build & run from source](#build--run-from-source) below.
 
@@ -111,7 +118,7 @@ Settings → Privacy & Security → Local Network** and make sure Spritz is enab
 it already looks enabled, toggle it off and on. TVs that never advertise themselves can
 be added by IP under **Settings → Manual TV addresses**.
 
-Three routes, picked per device:
+Three routes, picked per device (plus a fourth for TVs running [Spritz Receiver](#spritz-receiver-for-lg-webos)):
 
 - **DLNA** — the original file, untouched. Best for 4K HEVC/HDR10 on a TV that can
   decode it: nothing is re-encoded, so nothing is lost.
@@ -136,6 +143,24 @@ next to the video (`Movie.en.srt`, a `Subs/` folder). Image-based subtitles that
 receiver can't render are burned into the picture instead. OpenSubtitles lookup and
 Whisper generation are available for files that have none.
 
+## Spritz Receiver for LG webOS
+
+Spritz Receiver is a small web app that runs on an LG webOS TV and plays what your Mac sends it. It is separate from the Mac app and is **optional**: DLNA, Chromecast and AirPlay need nothing installed on the TV. It exists for what those routes can't do well, such as switching audio language and picking subtitles from the TV remote.
+
+**Before you start, know what installing it involves.** The receiver is not in the LG Content Store. It is installed as a developer app:
+
+1. Turn on **Developer Mode** on the TV (install LG's *Developer Mode* app from the store and sign in with a free LG developer account).
+2. Install the `.ipk` from a release with LG's webOS CLI (`ares-install`) or a tool such as [dev-manager-desktop](https://github.com/webosbrew/dev-manager-desktop).
+3. **Developer Mode sessions expire.** Sessions were originally 50 hours; LG now documents a 1000-hour maximum ([LG docs](https://webostv.developer.lge.com/develop/getting-started/developer-mode-app)). When a session lapses the TV removes developer apps, and you must extend the session in the Developer Mode app (or reinstall). Plan for this.
+
+**Pairing** ties one TV to your Mac. Open Spritz Receiver on the TV; it looks for Spritz on your network and shows a **4-digit code**. Enter that code in Spritz on your Mac (**Devices**, on the home screen or in the cast menu). You type on the Mac, never on the TV. The code counts down and refreshes itself every five minutes; five wrong tries cancel a pairing. From the TV's idle screen, **Pair again** gets a fresh credential and **Change Mac** points the TV at a different Mac. Revoking a TV is done from the Mac (**Forget**).
+
+**Reinstalling or updating the receiver can change the TV's identity**, so you may have to pair again, and the Mac then lists the old entry as an offline duplicate (it shows when it was last seen). **Forget** the stale one. Developer Mode apps are removed when a session lapses, so expect this.
+
+**If the TV can't find your Mac:** it searches its own network first, then a short list of common home ranges (`192.168.1.x`, `192.168.0.x`, `10.0.0.x`, `10.0.1.x`). A TV on a guest network, a separate VLAN, or an unusual range won't find the Mac. Put both on the same network. If the search finds nothing (it can take about a minute), the TV shows **Can't find Spritz** with a box for the Mac's address, which Spritz shows under **Devices**.
+
+**Where it has been tested:** one TV (LG 55NANO80T6A, webOS firmware 33.31.61). Receiver 0.3.2 was exercised on it for the search, typed-address, pairing, code-refresh and pair-again flows, and for playing a local file and a streaming torrent with audio and subtitles switched from both the Mac and the TV's own menu. This was driven over the TV's web inspector with simulated clicks, not by a person holding the remote. Other models and webOS versions are untested. Receiver and Mac app versions are meant to be used together: **Devices** shows the receiver's version and flags a TV running an older one, but the Mac app does not update it for you.
+
 ## Acceptable use
 
 Spritz is a player and a compatibility layer. It has no catalog, no index, no search,
@@ -157,7 +182,22 @@ live. That responsibility is not transferred by this notice — see
 
 ## Status & known limitations
 
-**Spritz is alpha — in active development.** It works day to day, but expect rough edges; the areas below are known and being improved.
+**Spritz is a release candidate, built and tested by one person on one Mac and one TV.** It works day to day, but expect rough edges. These are the known problems, stated plainly:
+
+**Mac app**
+- **Audio-device crash (worked around since rc.4).** libmpv 0.41.0's CoreAudio output has a bug: when it fails to start (it does on some outputs, e.g. Bluetooth headphones such as the Sony WH-1000XM5, where it logs `unable to set the input channel layout… -50`; standalone mpv fails the same way there), it leaves a device-change listener pointing at freed memory, and the next time macOS adds or removes an audio device (headphones connecting, a display's audio coming or going) the app crashes. Earlier builds, including the original alpha, have this. rc.4 and later start mpv's **AVFoundation** output first and keeps CoreAudio only as a fallback, which avoids the broken start-up. It was verified by creating and removing a CoreAudio device while the app played (the old build crashed every time; rc.4 survived repeated device changes), not just by reading code. The libmpv build itself is still 0.41.0, so if AVFoundation could not start and CoreAudio had to be used, the old exposure would return. mpv's error lines are kept in `~/Library/Application Support/Spritz/mpv.log`; attach it to any crash report.
+- **Not notarized.** See [Install](#install) for opening it past Gatekeeper. Don't redistribute builds as if they were Apple-verified.
+- **YouTube and other `yt-dlp` sites:** the bundled `yt-dlp` has no JavaScript runtime, so some YouTube formats may be missing.
+- **Google Cast to the LG NANO80T6A works as of rc.11** (it did not connect before: a crash on films with subtitles, plus the TV stalling on the live stream). Spritz converts the film on the fly, so seeking and switching audio or subtitles re-casts from the nearest keyframe, which can rewind a few seconds. Other Chromecasts were not tested.
+- **Bundled `ffmpeg` is a GPL build** (see [License](#license)).
+
+**Not yet verified** (these have not passed a hardware test, so treat them as unproven):
+- Playback from a **cold, very large remux** (a long delay before the first frame is expected).
+- **A video freeze that needed a TV reboot** (HDMI) was seen once during development and is not understood.
+- That picture, sound and subtitles stay **aligned by eye** over a full film. Automated checks read the TV's own player state; they cannot see or hear.
+- The Mac's **resume position after you stop casting** and return to local playback.
+- The **first-launch steps** above, on a Mac that has never run Spritz.
+- **AirPlay** reported "Cannot Decode" once, the first time it was started partway through a film; starting it again worked. Not understood.
 
 **4K / HDR casting**
 - **DLNA is the reliable 4K path** — the original file is streamed untouched and the TV decodes it natively (4K HEVC / HDR10 / HDR10+).
@@ -165,7 +205,16 @@ live. That responsibility is not transferred by this notice — see
 - **AirPlay is 1080p H.264 / SDR only** — 4K/HDR is converted down. HDR is now properly tone-mapped rather than simply flattened (the bundled ffmpeg is built with `zscale`/`tonemap`), but DLNA remains the better route for 4K HDR because it re-encodes nothing at all.
 - **Dolby Vision is not passed through**, and some 4K DV files are still rejected by strict DLNA TVs ("file cannot be recognized") — being worked on.
 
-**Audio-track switching** — reliable for local playback, but **not yet reliable while casting**: switching language/track mid-cast can fail or need a re-cast, and not every container switches cleanly.
+**Audio and subtitle switching** — tested on an LG NANO80T6A with local 1080p and 4K files and a streaming torrent, from the Mac and, where the route allows it, from the TV:
+
+| Route | From the Mac | From the TV remote |
+|---|---|---|
+| Spritz Receiver | yes | yes |
+| AirPlay 2 | yes | not applicable |
+| Google Cast | yes (re-casts) | not applicable |
+| DLNA | no: the TV plays the original file, so use its remote | yes (the TV's own menus) |
+
+On a torrent that is still downloading, subtitles, seeks and track changes only reach what has downloaded so far, and AirPlay takes about 40 seconds to become ready on a slow torrent.
 
 **Subtitles** — embedded text subtitles and external SRT work well. Image-based subtitles (PGS/VOBSUB) and styled ASS can now be burned into the picture when a receiver can't render them (the bundled ffmpeg is built with `libass`), though this path is newer and less exercised than the rest. The subtitle toggle can still drop on some cast sessions, and OpenSubtitles lookup is best-effort.
 
@@ -325,7 +374,11 @@ or later (GPL-3.0-or-later)**. See [`LICENSE`](./LICENSE) for the full text and
 [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) for the licenses of all bundled
 and linked third-party components.
 
+A built app carries all of these inside it, in `Spritz.app/Contents/Resources/licenses/` (Help → *Show Licenses in Finder*): the GPL, the notices, Electron's and Chromium's licences, and the licence of every bundled npm package. The package check refuses a build that leaves any of them out, or that bundles a shared library the notices do not name.
+
 ### GPL binaries and corresponding source
+
+Each release attaches **`Spritz-<version>-corresponding-source.tar`**: the source archives of the GPL and LGPL components at the exact versions inside that release, the Homebrew build recipe for each library, an index (`README.md` inside it) and checksums. You do not need to ask for it. If something is missing, open an issue and it will be provided at no charge.
 
 Spritz combines and (in packaged builds) distributes GPL-licensed media components —
 **FFmpeg** built with the GPL encoders x264/x265, and **libmpv** linked against

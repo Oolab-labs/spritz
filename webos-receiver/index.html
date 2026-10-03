@@ -1,0 +1,1425 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1920,height=1080">
+<title>Spritz Receiver</title>
+<style>
+  /* Television, not desktop: 10-foot distance, so nothing here is sized for a mouse. The palette
+     is Spritz's own dark ground rather than a streaming-service gradient — this is a receiver, and
+     it should look like an appliance the Mac drives, not a storefront. */
+  html, body { margin: 0; height: 100%; background: #0b0b0d; color: #f2f2f4;
+    font: 400 28px/1.4 -apple-system, "Helvetica Neue", Arial, sans-serif; overflow: hidden; }
+  #stage { position: fixed; inset: 0; display: none; background: #000; }
+  video { width: 100%; height: 100%; background: #000; }
+
+  #home { position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 28px;
+    background: radial-gradient(ellipse at 50% 36%, #151920 0%, #0e1014 38%, #0b0b0d 70%); }
+  /* The mark, then the name: the same bubbles as the app icon, so launch, home and icon read as one thing. */
+  .brand { display: flex; flex-direction: column; align-items: center; gap: 22px; margin-bottom: 8px; }
+  .mark { width: 132px; height: 132px; border-radius: 30px; box-shadow: 0 14px 44px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.06); }
+  .wordmark { font-size: 72px; font-weight: 200; letter-spacing: 0.26em;
+    text-indent: 0.26em; color: #fff; }
+  /* Static decoration only (a TV's web engine should not be asked to animate a backdrop). */
+  .deco { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .deco i { position: absolute; border-radius: 50%; border: 2px solid rgba(150,200,255,.13);
+    background: radial-gradient(circle at 34% 28%, rgba(255,255,255,.07), rgba(255,255,255,0) 58%); }
+  .deco i:nth-child(1) { width: 300px; height: 300px; left: 3%; top: 10%; }
+  .deco i:nth-child(2) { width: 140px; height: 140px; left: 5%; top: 74%; border-color: rgba(255,150,200,.11); }
+  .deco i:nth-child(3) { width: 220px; height: 220px; right: 9%; top: 58%; }
+  .deco i:nth-child(4) { width: 90px; height: 90px; right: 20%; top: 18%; border-color: rgba(255,150,200,.11); }
+  #home > :not(.deco) { position: relative; }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  #pairbox, #statusbox, #findbox { animation: rise .35s ease-out both; }
+  .rows { display: grid; grid-template-columns: auto auto; gap: 14px 26px; font-size: 30px; justify-content: center;
+    padding: 28px 52px; border-radius: 22px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08); }
+  #hint { margin-top: 18px; }
+  #statusactions { margin-top: 30px; }
+  #pairbox .btnrow { margin-top: 28px; }
+  .k { color: #8b8b93; text-align: right; }
+  .v { color: #f2f2f4; }
+  .dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%;
+    background: #d9534f; margin-right: 12px; vertical-align: -1px; box-shadow: 0 0 12px rgba(217,83,79,.55); }
+  .dot.on { background: #4cd08a; box-shadow: 0 0 12px rgba(76,208,138,.6); }
+  .hint { color: #9a9aa4; font-size: 24px; }
+  /* Idle-screen actions. Large, few, and reachable with arrows + OK: the person is on a sofa with a remote. */
+  .btnrow { display: flex; gap: 20px; justify-content: center; margin-top: 8px; }
+  .btnrow[hidden], #findbox[hidden] { display: none; }
+  #home button, #findbox button { font-size: 26px; padding: 12px 34px; border-radius: 999px; background: rgba(255,255,255,.09); color: #e6e6ea; min-height: 60px; border: 1px solid rgba(255,255,255,.10); }
+  #home button.primary, #findbox button.primary { background: #0583ff; border-color: #0583ff; color: #fff; font-weight: 500; }
+  #home button.primary:focus, #findbox button.primary:focus { background: #2a96ff; }
+  #home button:focus, #findbox button:focus { outline: 3px solid #4da3ff; outline-offset: 2px; background: rgba(77,163,255,.18); color: #fff; }
+  #findbox { text-align: center; max-width: 1100px; }
+  #findbox ol { text-align: left; display: inline-block; list-style: none; counter-reset: step; font-size: 28px; line-height: 1.4; color: #c9c9d1; margin: 8px 0 26px; padding: 0; }
+  #findbox li { counter-increment: step; display: flex; align-items: center; gap: 20px; margin: 14px 0; }
+  #findbox li::before { content: counter(step); flex: none; width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    background: rgba(77,163,255,.16); color: #9ccaff; font-size: 24px; font-weight: 500; }
+  #addr { font-size: 38px; width: 560px; padding: 14px 22px; border-radius: 16px; border: 2px solid rgba(255,255,255,.22); background: #15171c; color: #fff; text-align: center; }
+  #addr:focus { outline: 3px solid #4da3ff; outline-offset: 2px; }
+  .err-line { color: #ffb3ae; font-size: 26px; min-height: 34px; margin: 16px 0 26px; }
+
+  /* The code is the one thing a person is trying to read from a sofa, so it is the biggest thing
+     on the screen by a wide margin and spaced so digits cannot run together at distance. */
+  /* An OVERLAY, not a panel on the home screen. Found on hardware: revoking a paired television
+     mid-film left the new pairing code rendering on #home, which is display:none behind the video —
+     the viewer was told nothing and had no way to re-pair without leaving playback. */
+  #pairbox { text-align: center; }
+  #pairbox.over { position: fixed; inset: 0; z-index: 50; display: flex !important;
+    flex-direction: column; align-items: center; justify-content: center;
+    background: rgba(11,11,13,.94); }
+  .pairlead { font-size: 34px; color: #c9c9d1; margin-bottom: 26px; }
+  /* The plain-text code stays in the page (for assistive tech and tests); the tiles are what is seen. */
+  .code { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .tiles { display: flex; gap: 22px; justify-content: center; margin: 4px 0 30px; }
+  .tiles .d { width: 128px; height: 168px; border-radius: 22px; display: flex; align-items: center; justify-content: center;
+    font-size: 112px; font-weight: 300; font-variant-numeric: tabular-nums; color: #fff;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); box-shadow: 0 10px 30px rgba(0,0,0,.4); }
+  /* Time left on the code, as well as in words: a bar is readable from across the room. */
+  .bar { width: 560px; height: 6px; margin: 28px auto 22px; border-radius: 3px; background: rgba(255,255,255,.10); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 100%; background: #0583ff; border-radius: 3px; transition: width 1s linear; }
+  #statusbox { text-align: center; }
+
+  /* Compact control surface with a separate track drawer. */
+  #ui { position: absolute; left: 88px; right: 88px; bottom: 58px; padding: 18px 0 0;
+    border: 0; background: transparent; text-shadow: 0 1px 6px rgba(0,0,0,.8);
+    opacity: 0; transition: opacity .2s ease; pointer-events: none; }
+  #ui.show { opacity: 1; pointer-events: auto; }
+  #title { font-size: 23px; font-weight: 400; margin-bottom: 18px; color: #d9dce2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar { display: flex; align-items: center; gap: 20px; font-size: 20px; color: #b8bcc4; font-variant-numeric: tabular-nums; }
+  .track { position: relative; flex: 1; height: 2px; background: rgba(255,255,255,.22); border-radius: 3px; overflow: hidden; }
+  .buf, .play { position: absolute; inset: 0 auto 0 0; border-radius: 3px; width: 0; }
+  .buf { background: #777e8c; } .play { background: #eceef2; }
+  button { font: inherit; color: inherit; cursor: pointer; border: 2px solid transparent; }
+  .tabs { margin-top: 18px; display: flex; align-items: center; gap: 14px; }
+  .tabs button { border-radius: 6px; background: transparent; min-height: 48px; padding: 7px 14px; font-size: 22px; }
+  .tabs #play-pause { min-width: 112px; color: #fff; font-weight: 400; }
+  .tabs #audio-choice { margin-left: auto; }
+  .tabs .track-control { max-width: 310px; width: auto; text-align: left; white-space: nowrap; }
+  .control-label { display: inline; font-size: 20px; color: #969ca7; margin-right: 10px; }
+  .control-value { display: inline-block; max-width: 180px; vertical-align: bottom; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button:focus { outline: 1px solid rgba(255,255,255,.65); outline-offset: 1px; background-color: rgba(255,255,255,.07); }
+  button:hover { background-color: rgba(255,255,255,.07); }
+  #control-help { display: none; }
+  #track-panel { position: fixed; top: auto; right: 88px; bottom: 250px; height: auto; max-height: 65vh; width: 510px;
+    padding: 18px; box-sizing: border-box; background: rgba(14,15,18,.94); border: 1px solid rgba(255,255,255,.06); text-shadow: none;
+    border-radius: 12px; display: flex; flex-direction: column; }
+  #track-panel[hidden] { display: none; }
+  .panel-header { position: absolute; right: 12px; top: 14px; z-index: 1; }
+  #track-heading { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); } #track-close { background: transparent; border-radius: 4px; padding: 3px 10px; font-size: 25px; color: #b5bac3; }
+  .panel-tabs { display: flex; gap: 24px; margin: 0 46px 18px 8px; }
+  .panel-tabs button { flex: none; padding: 8px 0; border-radius: 0; background: transparent; font-size: 22px; color: #969ca7; }
+  .panel-tabs button.active { color: #fff; border-bottom-color: #e5e7ec; }
+  #track-options { flex: 1; min-height: 0; max-height: 450px; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 12px; }
+  #track-options button { flex-shrink: 0; width: 100%; text-align: left; background: transparent; border-radius: 4px; min-height: 60px; padding: 9px 12px; scroll-margin: 10px; }
+  #track-options button.selected { color: #fff; }\n  #track-options button:focus { background: rgba(255,255,255,.07); }
+  .track-name { display: block; font-size: 23px; overflow-wrap: anywhere; }
+  .track-detail { display: block; font-size: 17px; color: #929aa8; margin-top: 3px; }
+  #track-help { display: none; }\n  .track-detail:empty { display: none; }\n  #ui { z-index: 1; }
+  #err { position: absolute; top: 54px; left: 64px; max-width: 930px; color: #ffb3ae; font-size: 26px; background: #151820dd; border-radius: 12px; }
+  #err:not(:empty) { padding: 16px 24px; }
+  #badge { position: absolute; top: 54px; right: 64px; font-size: 24px; color: #b2bac8; }
+
+</style>
+
+<div id="home">
+  <div class="deco" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+  <div class="brand"><img class="mark" src="largeIcon.png" alt=""><div class="wordmark">SPRITZ</div></div>
+  <div id="pairbox" style="display:none">
+    <div class="pairlead">Pair this TV with Spritz</div>
+    <div class="code" id="code">----</div>
+    <div class="tiles" id="codetiles" aria-hidden="true"></div>
+    <div class="bar" id="codebar"><i id="barfill"></i></div>
+    <div class="hint" id="pairhint">Enter this code in Spritz on your Mac</div>
+    <div class="hint" id="paircount"></div>
+    <div class="btnrow"><button id="new-code" type="button">Get a new code</button></div>
+  </div>
+  <div id="findbox" hidden>
+    <div class="pairlead">Can’t find Spritz</div>
+    <ol>
+      <li>Open Spritz on your Mac.</li>
+      <li>Check the Mac and this TV are on the same network.</li>
+      <li>Still stuck? Type the Mac’s address below. Spritz shows it under Devices.</li>
+    </ol>
+    <div><input id="addr" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.1.20" aria-label="Mac address"></div>
+    <div class="err-line" id="addr-msg" role="status"></div>
+    <div class="btnrow"><button id="addr-go" class="primary" type="button">Connect</button><button id="find-again" type="button">Search again</button></div>
+  </div>
+  <div id="statusbox">
+    <div class="rows">
+      <div class="k">Mac</div><div class="v"><span id="dot" class="dot"></span><span id="conn">Connecting…</span></div>
+      <div class="k">This screen</div><div class="v" id="who">—</div>
+    </div>
+    <div class="hint" id="hint">Waiting for Spritz</div>
+    <div class="btnrow" id="statusactions" hidden><button id="pair-again" type="button">Pair again</button><button id="change-mac" type="button">Change Mac</button></div>
+  </div>
+</div>
+
+<div id="stage">
+  <video id="v" playsinline crossorigin="anonymous"></video>
+  <div id="badge"></div>
+  <div id="err"></div>
+  <div id="ui">
+    <div id="title"></div>
+    <div class="bar">
+      <span id="cur">00:00</span>
+      <div class="track"><div class="buf" id="buf"></div><div class="play" id="pos"></div></div>
+      <span id="dur">00:00</span>
+    </div>
+    <div class="tabs" role="toolbar" aria-label="Playback controls">
+      <button id="seek-back" type="button" aria-label="Back 30 seconds">-30s</button>
+      <button id="play-pause" type="button">Play</button>
+      <button id="seek-forward" type="button" aria-label="Forward 30 seconds">+30s</button>
+      <button id="audio-choice" class="track-control" type="button"><span class="control-label">Audio</span><span id="audio-value" class="control-value">Default</span></button>
+      <button id="subtitle-choice" class="track-control" type="button"><span class="control-label">Subtitles</span><span id="subtitle-value" class="control-value">Off</span></button>
+    </div>
+    <div id="control-help">← → Navigate · OK Select · Back Picture</div>
+    <div id="track-panel" hidden role="dialog" aria-labelledby="track-heading">
+      <div class="panel-header"><h2 id="track-heading">Audio &amp; subtitles</h2><button id="track-close" type="button" aria-label="Close track menu">×</button></div>
+      <div class="panel-tabs"><button id="track-audio-tab" type="button">Audio</button><button id="track-subtitle-tab" type="button">Subtitles</button></div>
+      <div id="track-options"></div><div id="track-help">↑ ↓ Browse · ← → Switch tab · OK Select · Back Close</div>
+    </div>
+  </div>
+</div>
+
+<script src="hmac.js"></script>
+<script src="start-seek.js"></script>
+<script src="media-tracks.js"></script>
+<script src="subtitle-loader.js"></script>
+<script src="track-menu.js"></script>
+<script src="home-flow.js"></script>
+<script>
+/* Spritz Receiver — a THIN playback endpoint.
+ *
+ * It connects OUT to the Mac, plays what it is told to play, and reports what its own player does.
+ * It does not discover media, choose codecs, or decide anything about delivery. Everything it knows
+ * about the film arrives in a LOAD message.
+ *
+ * Deliberate design points, each of which is a lesson from the VOD investigation or from the cast
+ * paths this is meant to replace:
+ *
+ *  - The control socket and the video are INDEPENDENT. Losing the socket must not touch the video
+ *    element; the TV keeps playing from its own HTTP connection and re-announces itself on
+ *    reconnect. The old cast pipe took the picture down with the control channel and needed a whole
+ *    recovery module to paper over it.
+ *  - `stalled` and `waiting` are reported as FLAGS, never as a playback state. Measured on this
+ *    exact hardware: `stalled` fires at every segment boundary while the clock keeps perfect time.
+ *    Treating it as a fault is how the VOD work lost days.
+ *  - The ±30s keys resolve against video.currentTime HERE, because this is where the true clock is.
+ *    Sending a delta for the Mac to resolve against a second-hand position would be guessing.
+ */
+'use strict';
+
+var PROTOCOL_VERSION = 1;
+/* The well-known DISCOVERY port. Spritz's media and control channel live on an ephemeral port that
+ * changes every run, which a television cannot guess — so this port answers one question and names
+ * the real one. See receiver-service's beacon. */
+var BEACON_PORT = 7737;          // see receiver-service: chosen, not inherited from the 8099 spike
+var PORT = BEACON_PORT;          // replaced by the control port the beacon reports
+var RECONNECT_MIN = 1000, RECONNECT_MAX = 15000;
+
+var el = function (id) { return document.getElementById(id); };
+var video = el('v');
+var ws = null, sid = null, backoff = RECONNECT_MIN, posTimer = null, uiTimer = null;
+var media = { id: null, url: null, title: null };
+/* null means no pending startup check. Zero is a real target, so truthiness cannot represent this
+ * state. The target is already epoch-native: the Mac's epoch mapper produced LOAD.startSec. */
+var startCheckSince = null;
+var startWanted = null, startAttempts = 0, startSawPlaying = false, startLastAction = null;
+var startResumeCheck = null;
+var lastState = 'idle';
+var flags = {};
+var NONCE = null;      // this connection's challenge, from the Mac's greeting
+var authed = false;
+
+/* Told to the Mac only once authenticated: what we are, and what we are already doing. Splitting
+ * this out of the hello handler is what keeps "who am I" separate from "am I allowed to speak". */
+function announce() {
+  send('capabilities', { reported: reportedCapabilities() });
+  lastTrackSnapshot = null;
+  if (media.id) {
+    send('loaded', { mediaId: media.id, epoch: media.epoch, durationSec: filmDuration() });
+    report(video.paused ? 'paused' : 'playing');
+    sendPosition();
+  } else {
+    send('ready', {});
+  }
+}
+
+function showPairing(message, code) {
+  var box = document.getElementById('pairbox');
+  box.style.display = 'block';
+  // Over the picture when a film is up, in the page when it is not.
+  box.className = media.id ? 'over' : '';
+  document.getElementById('statusbox').style.display = 'none';
+  if (code) { document.getElementById('code').textContent = code; paintCodeTiles(code); }
+  if (message) document.getElementById('pairhint').textContent = message;
+  else document.getElementById('pairhint').textContent = 'Enter this code in Spritz on your Mac';
+}
+function paintCodeTiles(code) {
+  try {
+    var html = '';
+    String(code).split('').forEach(function (ch) { html += '<span class="d">' + ch.replace(/[^0-9A-Za-z-]/g, '') + '</span>'; });
+    document.getElementById('codetiles').innerHTML = html;
+  } catch (e) {}
+}
+function hidePairing() {
+  stopPairCountdown();
+  var box = document.getElementById('pairbox');
+  box.style.display = 'none';
+  box.className = '';
+  document.getElementById('statusbox').style.display = 'block';
+}
+
+/* A stable identity that survives reboots and DHCP leases. device-memory.js on the Mac keys device
+ * profiles on an id for exactly this reason: a profile keyed on an address gets silently
+ * transplanted onto whatever answers there next week. */
+function receiverId() {
+  var k = 'spritz.receiverId', v = null;
+  try { v = localStorage.getItem(k); } catch (e) {}
+  if (!v) {
+    v = 'lg-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+    try { localStorage.setItem(k, v); } catch (e) {}
+  }
+  return v;
+}
+var RECEIVER_ID = receiverId();
+
+/* The long-term credential.
+ *
+ * STORAGE, stated honestly rather than assumed: webOS gives a web application ordinary
+ * localStorage. There is no keystore, no secure element and no OS-backed secret storage reachable
+ * from this context — and crypto.subtle is not dependable here either, since WebCrypto requires a
+ * secure context. So the credential sits in localStorage, in the clear, readable by anything with
+ * access to this application's storage.
+ *
+ * That is acceptable for the stated threat model (another DEVICE on the LAN) and NOT acceptable
+ * against anything with code execution on the television — which is out of scope, and is why
+ * revocation exists on the Mac. Measured: this survives app close/relaunch and reinstall, which is
+ * what makes automatic reconnection possible.
+ */
+var TOKEN_KEY = 'spritz.receiverToken';
+function readToken() { try { return localStorage.getItem(TOKEN_KEY) || null; } catch (e) { return null; } }
+function writeToken(t) { try { localStorage.setItem(TOKEN_KEY, t); } catch (e) {} }
+function clearToken() { try { localStorage.removeItem(TOKEN_KEY); } catch (e) {} }
+
+function screenName() {
+  try {
+    if (window.webOS && webOS.deviceInfo) {
+      var d = null;
+      webOS.deviceInfo(function (info) { d = info; });
+      if (d && d.modelName) return d.modelName;
+    }
+  } catch (e) {}
+  return 'webOS TV';
+}
+var NAME = screenName();
+el('who').textContent = NAME;
+
+/* ---- protocol ------------------------------------------------------------------------------ */
+
+function send(type, fields) {
+  if (!ws || ws.readyState !== 1) return false;
+  var m = { v: PROTOCOL_VERSION, type: type, sid: sid, t: Date.now() };
+  for (var k in fields) if (Object.prototype.hasOwnProperty.call(fields, k)) m[k] = fields[k];
+  try { ws.send(JSON.stringify(m)); return true; } catch (e) { return false; }
+}
+
+function report(state, extra) {
+  lastState = state;
+  var f = [];
+  for (var k in flags) if (flags[k]) f.push(k);
+  send('state', Object.assign({ mediaId: media.id, epoch: media.epoch, state: state, flags: f }, extra || {}));
+}
+
+/* Optional zero-based replacement transport; the wire remains in film time.
+ * Existing epoch transports omit these fields and keep their prior clock contract. */
+function timelineOrigin() { return Number(media.timelineOrigin) || 0; }
+function filmTime(nativeTime) { return typeof nativeTime === 'number' && isFinite(nativeTime) && nativeTime >= 0 ? nativeTime + timelineOrigin() : null; }
+function nativeTime(film) { return film - timelineOrigin(); }
+function filmDuration() { return media.timelineOrigin !== undefined ? media.sourceDuration : (isFinite(video.duration) ? video.duration : null); }
+function shiftSubtitleCues(node, origin) {
+  if (!origin || !node || !node.track || node.spritzTimelineShifted) return;
+  var liveCues = node.track.cues;
+  if (!liveCues) return;
+  // TextTrackCueList reorders immediately when startTime changes. Snapshot
+  // references so every cue is converted exactly once.
+  var cues = Array.prototype.slice.call(liveCues);
+  for (var i = cues.length - 1; i >= 0; i--) {
+    var cue = cues[i];
+    if (cue.endTime <= origin) node.track.removeCue(cue);
+    else { cue.startTime = Math.max(0, cue.startTime - origin); cue.endTime -= origin; }
+  }
+  node.spritzTimelineShifted = true;
+}
+
+function bufferedUntil() {
+  try {
+    var b = video.buffered, t = video.currentTime;
+    for (var i = 0; i < b.length; i++) if (b.start(i) <= t + 0.5 && b.end(i) >= t) return filmTime(b.end(i));
+    return b.length ? filmTime(b.end(b.length - 1)) : null;
+  } catch (e) { return null; }
+}
+
+function sendPosition() {
+  if (!media.id) return;
+  send('position', {
+    mediaId: media.id,
+    epoch: media.epoch,
+    currentTime: filmTime(video.currentTime),
+    durationSec: filmDuration(),
+    paused: !!video.paused,
+    seeking: !!video.seeking,
+    requestedTime: media.startSec,
+    videoWidth: video.videoWidth || null,
+    videoHeight: video.videoHeight || null,
+    bufferedUntil: bufferedUntil()
+  });
+}
+
+/* ---- connection ----------------------------------------------------------------------------- */
+
+/* Finding Spritz.
+ *
+ * The television CANNOT use mDNS: a webOS web application has no multicast and no raw sockets, so
+ * the obvious answer — the `_spritz._tcp` advertisement the Mac could trivially publish, since
+ * multicast-dns is already a Spritz dependency — is unusable by the one consumer that needs it.
+ *
+ * So, in order, cheapest first:
+ *   1. the Spritz that last worked, remembered in localStorage. After first run this is the
+ *      every-time path and costs a single request.
+ *   2. host.json, if the package carries one. DEVELOPMENT ONLY — a real install has no such file,
+ *      and it is tried before the sweep purely so a developer's TV connects instantly.
+ *   3. a bounded sweep of the television's own /24. webOS will tell us our own address through
+ *      luna://com.webos.service.connectionmanager, which turns "search the network" into "probe 254
+ *      addresses on one port". LG-specific, and therefore confined to this application.
+ *   4. ask the human, on screen.
+ *
+ * A hardcoded address is deliberately NOT in that list any more.
+ */
+var HOST_KEY = 'spritz.host';
+var PROBE_TIMEOUT_MS = 900;      // a LAN host answers in single-digit ms; this is for the 253 that will not
+var PROBE_CONCURRENCY = 24;      // enough to sweep a /24 in about a second, few enough not to drown the TV
+
+/* A probe succeeds only if Spritz answers AND has a control channel ready. `port: null` means
+ * lanserver has not listened yet — "not ready", not "not here" — so the sweep keeps looking rather
+ * than latching onto a Spritz that cannot yet be connected to. */
+function probe(ip, ok, fail) {
+  var x = new XMLHttpRequest();
+  var done = false;
+  var finish = function (good, port) { if (done) return; done = true; good ? ok(ip, port) : fail(); };
+  try {
+    x.open('GET', 'http://' + ip + ':' + BEACON_PORT + '/spritz/hello', true);
+    x.timeout = PROBE_TIMEOUT_MS;
+    x.onreadystatechange = function () {
+      if (x.readyState !== 4) return;
+      var j = null;
+      try { j = JSON.parse(x.responseText); } catch (e) {}
+      finish(x.status === 200 && j && j.spritz === true && !!j.port, j && j.port);
+    };
+    x.ontimeout = function () { finish(false); };
+    x.onerror = function () { finish(false); };
+    x.send();
+  } catch (e) { finish(false); }
+}
+
+function readJson(url, done) {
+  var x = new XMLHttpRequest();
+  x.open('GET', url, true);
+  x.onreadystatechange = function () {
+    if (x.readyState !== 4) return;
+    var j = null;
+    try { j = JSON.parse(x.responseText); } catch (e) {}
+    done(j);
+  };
+  try { x.send(); } catch (e) { done(null); }
+}
+
+/* The television's own address, so a sweep can be aimed at ONE /24 instead of guessing.
+ *
+ * Two ways, because neither is dependable alone:
+ *
+ *  1. WebRTC. Gathering an ICE candidate on a peer connection with no server exposes the host's own
+ *     address. Chromium may replace it with an mDNS `.local` name for privacy, in which case this
+ *     yields nothing and we fall through — that is a real possibility, not a theoretical one.
+ *  2. luna://com.webos.service.connectionmanager, which is authoritative but needs LG's webOSTV.js.
+ *     That library is NOT in this package and is not in the SDK install here, so `window.webOS` is
+ *     undefined and this path is currently dead. Kept because it is the correct answer the moment
+ *     the library is bundled — and because discovering it was missing cost a hardware round.
+ *
+ * If both fail the caller sweeps a small list of common home subnets instead.
+ */
+function ownAddress(done) {
+  var finished = false;
+  var finish = function (ip) { if (finished) return; finished = true; done(ip || null); };
+  try {
+    var RTC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
+    if (RTC) {
+      var pc = new RTC({ iceServers: [] });
+      var timer = setTimeout(function () { try { pc.close(); } catch (e) {} viaLuna(); }, 1200);
+      pc.onicecandidate = function (e) {
+        if (!e || !e.candidate || !e.candidate.candidate) return;
+        var m = /(\d+\.\d+\.\d+\.\d+)/.exec(e.candidate.candidate);
+        // A .local mDNS candidate carries no address; ignore it and let the timeout fall through.
+        if (!m || /^127\./.test(m[1])) return;
+        clearTimeout(timer);
+        try { pc.close(); } catch (e2) {}
+        finish(m[1]);
+      };
+      try { pc.createDataChannel('x'); } catch (e) {}
+      pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).catch(function () {
+        clearTimeout(timer); viaLuna();
+      });
+      return;
+    }
+  } catch (e) {}
+  viaLuna();
+
+  function viaLuna() {
+  try {
+    if (!window.webOS || !webOS.service || !webOS.service.request) return finish(null);
+    webOS.service.request('luna://com.webos.service.connectionmanager', {
+      method: 'getStatus',
+      parameters: {},
+      onSuccess: function (r) {
+        var ip = null;
+        try {
+          if (r.wired && r.wired.ipAddress) ip = r.wired.ipAddress;
+          else if (r.wifi && r.wifi.ipAddress) ip = r.wifi.ipAddress;
+        } catch (e) {}
+        finish(ip);
+      },
+      onFailure: function () { finish(null); }
+    });
+  } catch (e) { finish(null); }
+  }
+}
+
+/* When the television will not say where it is, sweep the subnets a home network actually uses.
+ * Bounded on purpose: four /24s, not the whole RFC1918 space, because an unbounded search on a TV
+ * takes minutes and looks like a hang. If Spritz is somewhere else, the human can still be asked. */
+var COMMON_SUBNETS = ['192.168.1.', '192.168.0.', '10.0.0.', '10.0.1.'];
+
+function sweep(selfIp, done) {
+  var m = /^(\d+\.\d+\.\d+)\.(\d+)$/.exec(String(selfIp || ''));
+  if (!m) return done(null);
+  var base = m[1] + '.';
+  var mine = Number(m[2]);
+  var candidates = [];
+  for (var i = 1; i <= 254; i++) if (i !== mine) candidates.push(base + i);
+  say('Looking for Spritz on ' + base + '0/24…');
+
+  var next = 0, active = 0, found = false;
+  function pump() {
+    if (found) return;
+    if (next >= candidates.length && active === 0) return done(null);
+    while (active < PROBE_CONCURRENCY && next < candidates.length && !found) {
+      var ip = candidates[next++];
+      active++;
+      /* eslint-disable no-loop-func */
+      probe(ip, function (good, port) {
+        if (found) return;
+        found = true; active--;
+        done(good, port);
+      }, function () { active--; pump(); });
+    }
+  }
+  pump();
+}
+
+function host(done) {
+  var remembered = null;
+  try { remembered = localStorage.getItem(HOST_KEY); } catch (e) {}
+  if (remembered) {
+    say('Reconnecting to ' + remembered + '…');
+    return probe(remembered, done, function () { fromPackage(); });
+  }
+  fromPackage();
+
+  function fromPackage() {
+    readJson('host.json', function (j) {
+      if (j && j.host) return probe(j.host, done, function () { fromSweep(); });
+      fromSweep();
+    });
+  }
+  function fromSweep() {
+    ownAddress(function (ip) {
+      if (ip) return sweep(ip, function (h, port) { if (h) return done(h, port); commonSweep(0); });
+      commonSweep(0);
+    });
+  }
+  function commonSweep(i) {
+    if (i >= COMMON_SUBNETS.length) return done(null);
+    sweep(COMMON_SUBNETS[i] + '0', function (h, port) {
+      if (h) return done(h, port);
+      commonSweep(i + 1);
+    });
+  }
+}
+
+/* ---- Screens before a film plays: find the Mac, pair, pair again ---- */
+var RECEIVER_VERSION = null;      // read from appinfo.json at startup: one source of truth
+var retryTimer = null;
+var pairExpiresAt = 0, pairTimer = null, lastCodeRequestAt = 0;
+
+function requestPairingCode() {
+  lastCodeRequestAt = Date.now();
+  send('pair.request', { receiverId: RECEIVER_ID, name: NAME, platform: 'webos' });
+}
+function stopPairCountdown() {
+  if (pairTimer) { clearInterval(pairTimer); pairTimer = null; }
+  pairExpiresAt = 0;
+  var c = document.getElementById('paircount'); if (c) c.textContent = '';
+}
+function startPairCountdown(localExpiry) {
+  stopPairCountdown();
+  pairExpiresAt = localExpiry;
+  if (!pairExpiresAt) return;
+  var total = Math.max(1, pairExpiresAt - Date.now());
+  var tick = function () {
+    var now = Date.now();
+    try { var f = document.getElementById('barfill'); if (f) f.style.width = Math.max(0, Math.min(100, (pairExpiresAt - now) / total * 100)) + '%'; } catch (e) {}
+    if (SpritzHomeFlow.refreshDue(pairExpiresAt, now)) {
+      /* The code on screen no longer works. Ask for another rather than leave a dead number up. */
+      if (SpritzHomeFlow.canRequestCode(lastCodeRequestAt, now)) { el('paircount').textContent = 'Getting a new code\u2026'; requestPairingCode(); }
+      return;
+    }
+    el('paircount').textContent = 'Code expires in ' + SpritzHomeFlow.formatCountdown(SpritzHomeFlow.secondsLeft(pairExpiresAt, now));
+  };
+  tick();
+  pairTimer = setInterval(tick, 1000);
+}
+
+function showFind(message) {
+  el('pairbox').style.display = 'none';
+  el('statusbox').style.display = 'none';
+  el('findbox').hidden = false;
+  el('addr-msg').textContent = message || '';
+}
+function hideFind() {
+  el('findbox').hidden = true;
+  el('statusbox').style.display = 'block';
+}
+function refreshIdleActions() {
+  el('statusactions').hidden = !(authed && !media.id);
+}
+/* Typed address -> probe it -> remember it -> connect. A refused or silent address keeps the person
+ * on this screen with the reason; it must NOT fall back to the network sweep, which would hide the
+ * fact that what they typed was wrong. */
+function connectToTyped() {
+  var r = SpritzHomeFlow.parseHost(el('addr').value);
+  if (r.error) { el('addr-msg').textContent = r.error; return; }
+  el('addr-msg').textContent = 'Looking for Spritz at ' + r.host + '\u2026';
+  probe(r.host, function (h, port) {
+    rememberHost(h);
+    if (port) PORT = port;
+    clearTimeout(retryTimer);
+    backoff = RECONNECT_MIN;
+    connect();
+  }, function () {
+    el('addr-msg').textContent = 'Nothing answered at ' + r.host + '. Is Spritz open on that Mac?';
+  });
+}
+function searchAgain() {
+  try { localStorage.removeItem(HOST_KEY); } catch (e) {}
+  showFind('Searching\u2026');
+  clearTimeout(retryTimer);
+  backoff = RECONNECT_MIN;
+  connect();
+}
+/* "Pair again": a fresh credential. The Mac declines a pairing request from a socket it has already
+ * authenticated, so drop the stored credential and reconnect; the new socket arrives without one and
+ * asks for a code the normal way. Playback is not touched. */
+function pairAgain() {
+  clearToken();
+  authed = false;
+  refreshIdleActions();
+  showPairing('Requesting a pairing code\u2026');
+  try { if (ws) ws.close(); } catch (e) {}
+}
+function changeMac() {
+  try { localStorage.removeItem(HOST_KEY); } catch (e) {}
+  authed = false;
+  refreshIdleActions();
+  showFind();
+  try { if (ws) ws.close(); } catch (e) {}
+}
+
+el('addr-go').addEventListener('click', connectToTyped);
+el('find-again').addEventListener('click', searchAgain);
+el('new-code').addEventListener('click', function () { if (SpritzHomeFlow.canRequestCode(lastCodeRequestAt, Date.now())) { el('paircount').textContent = 'Getting a new code\u2026'; requestPairingCode(); } });
+el('pair-again').addEventListener('click', pairAgain);
+el('change-mac').addEventListener('click', changeMac);
+el('addr').addEventListener('keydown', function (e) { if (e.keyCode === 13) { e.preventDefault(); connectToTyped(); } });
+
+/* Remote navigation on these screens: arrows move between the visible controls, OK activates (a
+ * focused button already turns Enter into a click). Not active while a film is up. */
+function idleControls() {
+  var ids = ['addr', 'addr-go', 'find-again', 'new-code', 'pair-again', 'change-mac'], out = [];
+  for (var i = 0; i < ids.length; i++) {
+    var n = el(ids[i]), box = n.parentNode;
+    var hidden = false;
+    while (n && n !== document.body) { if (n.hidden || (n.style && n.style.display === 'none')) { hidden = true; break; } n = n.parentNode; }
+    if (!hidden) out.push(el(ids[i]));
+  }
+  return out;
+}
+function idleNav(e) {
+  var k = e.keyCode, list = idleControls();
+  if (!list.length) return false;
+  var at = list.indexOf(document.activeElement);
+  if (k === KEY.BACK) return false;
+  if (k === KEY.LEFT || k === KEY.RIGHT || k === KEY.UP || k === KEY.DOWN) {
+    /* Inside the address field, Left/Right belong to the text caret. */
+    if (document.activeElement === el('addr') && (k === KEY.LEFT || k === KEY.RIGHT)) return false;
+    var step = (k === KEY.RIGHT || k === KEY.DOWN) ? 1 : -1;
+    list[Math.max(0, Math.min(list.length - 1, (at === -1 ? (step > 0 ? 0 : list.length - 1) : at + step)))].focus();
+    e.preventDefault();
+    return true;
+  }
+  return false;
+}
+
+function rememberHost(h) { try { localStorage.setItem(HOST_KEY, h); } catch (e) {} }
+
+/* Only the NEWEST attempt may proceed. A search can take a minute, and a person can type an address
+ * (or the retry timer can fire) while one is running; without this both finished and both opened a
+ * socket, and the Mac showed two pairing prompts for one television. */
+var connectAttempt = 0;
+/* The greeting carries the receiver's version, which comes from appinfo.json (one source of truth). That
+ * file loads asynchronously, and a TV reconnecting to a remembered Mac can connect before it arrives —
+ * found on hardware as a greeting with version null. So the first connection waits for it, but never for
+ * long: a missing file must not stop the TV from connecting at all. */
+var versionReady = false, versionWaiting = false;
+function applyVersion(j) {
+  RECEIVER_VERSION = j && j.version ? String(j.version) : null;
+  versionReady = true;
+  if (versionWaiting) { versionWaiting = false; connect(); }
+}
+function connect() {
+  if (!versionReady) {
+    if (!versionWaiting) {
+      versionWaiting = true;
+      setTimeout(function () { if (versionWaiting) applyVersion(null); }, 1500);
+    }
+    return;
+  }
+  var attempt = ++connectAttempt;
+  host(function (h, controlPort) {
+    if (attempt !== connectAttempt) return;
+    if (controlPort) PORT = controlPort;
+    if (!h) {
+      /* Nothing answered. Say so plainly rather than sitting on "connecting" forever — a television
+       * that cannot find Spritz should tell the person in the room what is wrong. */
+      setConn(false, 'No Spritz found on this network');
+      showFind();
+      return retry();
+    }
+    rememberHost(h);
+    var url = 'ws://' + h + ':' + PORT + '/receiver';
+    setConn(false, 'Connecting to ' + h + '…');
+    if (ws) { var old = ws; ws = null; try { old.close(); } catch (e) {} }
+    var sock;
+    try { sock = ws = new WebSocket(url); } catch (e) { return retry(); }
+
+    sock.onopen = function () {
+      backoff = RECONNECT_MIN;
+      authed = false;          // a new socket starts untrusted, whatever the last one achieved
+      hideFind();
+      setConn(true, h);
+    };
+    sock.onmessage = function (ev) {
+      var m = null;
+      try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (!m || m.v !== PROTOCOL_VERSION) return;
+      onMessage(m);
+    };
+    /* The video is NOT touched here. That is the whole point: a control-channel outage during a
+     * film must not interrupt the film. */
+    sock.onclose = function () { if (ws !== sock) return; setConn(false, 'Reconnecting…'); retry(); };
+    sock.onerror = function () { try { sock.close(); } catch (e) {} };
+  });
+}
+
+function retry() {
+  ws = null;
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(connect, backoff);
+  backoff = Math.min(Math.round(backoff * 1.7), RECONNECT_MAX);
+}
+
+/* Progress while hunting for Spritz. The sweep takes a second or two and a blank screen in that
+ * time looks like a hang. */
+function say(msg) { try { el('conn').textContent = msg; } catch (e) {} }
+
+function setConn(on, text) {
+  el('dot').className = 'dot' + (on ? ' on' : '');
+  el('conn').textContent = on ? 'Connected' : (text || 'Disconnected');
+  el('badge').textContent = on ? '' : 'Spritz disconnected — playback continues';
+  if (on) el('hint').textContent = media.id ? 'Playing' : 'Ready to play';
+}
+
+function onMessage(m) {
+  if (m.type === 'hello') {
+    sid = m.sid;
+    NONCE = m.nonce || null;
+    /* Announce identity, and — if a film is already running — where we are. This is what lets the
+     * Mac rebuild its picture after its own restart or a network blip, instead of assuming the TV
+     * is idle. */
+    /* `role` is REQUIRED, not decoration. The Mac distinguishes a receiver's greeting from its own
+     * by this field, and omitting it meant the first hardware round connected, identified itself,
+     * reported READY — and was never sent a film, because the controller filtered the hello out.
+     * Found on hardware, not in the unit tests, because the tests built the message with
+     * receiver-protocol.helloFrom() while this app hand-rolled it. */
+    /* `playing` rides ALONG WITH the greeting rather than following it. Measured: after a socket
+     * drop the controller sent LOAD on the greeting before our LOADED/STATE could arrive, and the
+     * film restarted from 5905.4s to 7.8s. A follow-up message cannot win that race; a field can. */
+    send('hello', { role: 'receiver', receiverId: RECEIVER_ID, name: NAME, platform: 'webos', version: RECEIVER_VERSION,
+      playing: media.id ? {
+        mediaId: media.id,
+        epoch: media.epoch,
+        currentTime: filmTime(video.currentTime),
+        state: video.ended ? 'ended' : (video.paused ? 'paused' : lastState)
+      } : null });
+    /* Authenticate BEFORE saying anything else. The Mac refuses playback traffic from an
+     * unauthenticated socket, so reporting state here would simply be dropped — and asking to pair
+     * when we already hold a credential would put a working television back on the pairing screen. */
+    var token = readToken();
+    if (token && NONCE) {
+      send('auth', { receiverId: RECEIVER_ID, proof: window.SpritzHmac.hmacSha256Hex(token, NONCE) });
+    } else {
+      showPairing('Requesting a pairing code…');
+      send('pair.request', { receiverId: RECEIVER_ID, name: NAME, platform: 'webos' });
+    }
+    return;
+  }
+
+  if (m.type === 'auth.ok') {
+    authed = true;
+    hidePairing();
+    refreshIdleActions();
+    setConn(true, null);
+    announce();
+    return;
+  }
+  if (m.type === 'auth.failed') {
+    /* The credential is stale or revoked, so drop it and start again — but DO NOT touch the video.
+     * A television that loses authority mid-film keeps playing; losing the right to be commanded is
+     * not a reason to blank the screen on the viewer. */
+    authed = false;
+    clearToken();
+    showPairing('Pairing needed (' + (m.reason || 'not authorised') + ')');
+    send('pair.request', { receiverId: RECEIVER_ID, name: NAME, platform: 'webos' });
+    return;
+  }
+  if (m.type === 'pair.challenge') {
+    showPairing(null, m.code);
+    /* Remaining time = the Mac's expiry minus the Mac's own "now" in the same message, applied to OUR
+     * clock. Comparing the Mac's timestamp with this TV's wall clock would misfire whenever the two
+     * disagree, and a TV with a wrong clock would request a fresh code every few seconds. */
+    var ttl = Number(m.expiresAt) - Number(m.t);
+    startPairCountdown(isFinite(ttl) && ttl > 0 ? Date.now() + ttl : 0);
+    return;
+  }
+  if (m.type === 'pair.accepted') {
+    writeToken(m.token);
+    authed = true;
+    hidePairing();
+    refreshIdleActions();
+    setConn(true, null);
+    announce();
+    return;
+  }
+  if (m.type === 'pair.declined') {
+    showPairing('Pairing declined: ' + (m.reason || 'unknown'));
+    return;
+  }
+
+  if (m.type === 'ping') return void send('pong', { nonce: m.nonce || null });
+  if (m.type === 'select-track') {
+    if (m.mediaId !== media.id || (m.epoch || null) !== (media.epoch || null)) return;
+    selectMediaTrack(m.kind, m.trackId, false); return;
+  }
+  if (m.type === 'load') return void load(m);
+  if (m.type === 'play') return void requestPlayback(true);
+  if (m.type === 'pause') return void requestPlayback(false);
+  if (m.type === 'seek') { seekTo(Number(m.toSec) || 0); return; }
+  if (m.type === 'stop') return void stop();
+}
+
+/* What the TV CLAIMS. device-profile.js ranks this below `observed`, and the Mac must keep it
+ * there — only media that actually played is evidence. canPlayType is notoriously optimistic. */
+var receiverUhd = null, deviceInfoBridge = null;
+function queryReceiverUhd() {
+  try {
+    if (!window.PalmServiceBridge) return;
+    deviceInfoBridge = new PalmServiceBridge();
+    deviceInfoBridge.onservicecallback = function (raw) {
+      try {
+        var info = JSON.parse(raw);
+        if (info.returnValue !== true) return;
+        receiverUhd = info.UHD === true || info.UHD === "true";
+        if (authed) send("capabilities", { reported: reportedCapabilities() });
+      } catch (e) {}
+    };
+    deviceInfoBridge.call("luna://com.webos.service.tv.systemproperty/getSystemInfo", JSON.stringify({ keys: ["UHD"] }));
+  } catch (e) {}
+}
+queryReceiverUhd();
+function reportedCapabilities() {
+  function can(t) { try { return video.canPlayType(t) || 'no'; } catch (e) { return 'no'; } }
+  return {
+    logicalTimeline: 1,
+    uhd: receiverUhd,
+    hls: can('application/vnd.apple.mpegurl'),
+    hevc: can('video/mp4; codecs="hvc1.1.6.L93.B0"'),
+    h264: can('video/mp4; codecs="avc1.42E01E"'),
+    eac3: can('audio/mp4; codecs="ec-3"'),
+    ac3: can('audio/mp4; codecs="ac-3"'),
+    aac: can('audio/mp4; codecs="mp4a.40.2"'),
+    screen: (window.screen && screen.width) ? (screen.width + 'x' + screen.height) : null
+  };
+}
+
+var subtitleLoader = window.SpritzSubtitleLoader ? SpritzSubtitleLoader.create({
+  position: function () { return Math.max(0, filmTime(video.currentTime) || 0); },
+  prepare: function (binding, position, owner, callback) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', binding.url + (binding.url.indexOf('?') === -1 ? '?' : '&') + 'spritzSubPrepare=1&spritzSubPosition=' + position + '&spritzSubOwner=' + encodeURIComponent(owner));
+    xhr.timeout = 10000;
+    xhr.onload = function () { var value; try { value = JSON.parse(xhr.responseText); } catch (e) {} callback(xhr.status === 200 ? null : new Error('prepare'), value); };
+    xhr.onerror = xhr.ontimeout = function () { callback(new Error('network')); };
+    xhr.send(); return function () { xhr.onload = xhr.onerror = xhr.ontimeout = null; xhr.abort(); };
+  },
+  cancel: function (binding, owner) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', binding.url + (binding.url.indexOf('?') === -1 ? '?' : '&') + 'spritzSubCancel=1&spritzSubOwner=' + encodeURIComponent(owner));
+    xhr.timeout = 3000; xhr.send();
+  },
+  load: function (binding, url, callback) {
+    var node = document.createElement('track'), done = false, origin = timelineOrigin();
+    node.setAttribute('data-spritz', '1'); node.kind = 'subtitles'; node.label = binding.title; node.srclang = binding.lang;
+    function finish(error) { if (done) return; done = true; clearTimeout(deadline); if (binding.loadingNode === node) binding.loadingNode = null; callback(error, error ? null : node); if (error) node.remove(); }
+    node.addEventListener('load', function () { shiftSubtitleCues(node, origin); finish(null); });
+    node.addEventListener('error', function () { finish(new Error('subtitle load')); });
+    var deadline = setTimeout(function () { finish(new Error('subtitle timeout')); }, 10000);
+    binding.loadingNode = node; node.src = url; video.appendChild(node); if (node.track) node.track.mode = 'hidden';
+    return function () { done = true; clearTimeout(deadline); if (binding.loadingNode === node) binding.loadingNode = null; node.remove(); };
+  },
+  preserve: function (oldNode, newNode) { SpritzMediaTracks.carryActiveCues(video, oldNode, newNode, window.VTTCue); },
+  remove: function (node) { node.remove(); },
+  commit: function () { SpritzMediaTracks.selectBoundSubtitle(video, media.subtitleBindings || [], media.subtitleTrackId); },
+  state: function (binding, state) {
+    if (!media.id || media.subtitleTrackId !== binding.id) return;
+    el('err').textContent = state === 'loading' ? 'Preparing subtitles…' : state === 'retrying' ? 'Subtitles waiting for download — retrying…' : state === 'unavailable' ? 'Subtitles unavailable. Select the track again to retry.' : '';
+    lastTrackSnapshot = null; reportMediaTracks();
+  }
+}) : null;
+video.addEventListener('timeupdate', function () { if (subtitleLoader && media.id) subtitleLoader.tick(Math.max(0, filmTime(video.currentTime) || 0), false); });
+var lastTrackSnapshot = null;
+function reportMediaTracks() {
+  if (!media.id || !window.SpritzMediaTracks) return;
+  var wantedSubtitle = media.subtitleTrackId || 'off';
+  var bindings = media.subtitleBindings || [];
+  if (bindings.length) SpritzMediaTracks.selectBoundSubtitle(video, bindings, wantedSubtitle);
+  else {
+    var availableSubs = SpritzMediaTracks.snapshot(video).subtitles;
+    SpritzMediaTracks.select(video, 'subtitle', availableSubs.some(function (t) { return t.id === wantedSubtitle; }) ? wantedSubtitle : 'off');
+  }
+  var tracks = SpritzMediaTracks.snapshot(video);
+  if (media.audioCatalog) tracks.audio = media.audioCatalog;
+  if (bindings.length) tracks.subtitles = SpritzMediaTracks.boundSubtitles(bindings);
+  var serialized = JSON.stringify(tracks);
+  if (serialized === lastTrackSnapshot) return;
+  lastTrackSnapshot = serialized;
+  send('tracks', { mediaId: media.id, epoch: media.epoch, tracks: tracks });
+  trackInventory = tracks;
+  [['audio-value', tracks.audio, 'Audio'], ['subtitle-value', tracks.subtitles, 'Subtitles']].forEach(function (entry) {
+    var selected = entry[1].find(function (t) { return t.selected; });
+    el(entry[0]).textContent = selected ? SpritzTrackMenu.label(selected) : entry[2] === 'Subtitles' ? 'Off' : 'Default';
+  });
+  if (trackMenu) {
+    trackMenu = SpritzTrackMenu.refresh(trackMenu, trackMenu.kind === 'audio' ? tracks.audio : tracks.subtitles);
+    paintTrackMenu(true);
+  }
+}
+var trackInventory = { audio: [], subtitles: [] }, trackMenu = null;
+function closeTrackMenu() {
+  var kind = trackMenu && trackMenu.kind;
+  trackMenu = null; el('track-panel').hidden = true;
+  if (kind) el(kind === 'audio' ? 'audio-choice' : 'subtitle-choice').focus();
+  showUi();
+}
+function paintTrackMenu(preserveFocus) {
+  var active = document.activeElement;
+  var keepHeader = preserveFocus && active && ['track-close', 'track-audio-tab', 'track-subtitle-tab'].indexOf(active.id) !== -1;
+  var menu = trackMenu, list = el('track-options'), scroll = list.scrollTop; list.innerHTML = '';
+  if (!menu.items.length) { list.textContent = 'No audio tracks available'; return; }
+  menu.items.forEach(function (item, index) {
+    var button = document.createElement('button'); button.type = 'button';
+    button.className = item.selected ? 'selected' : '';
+    button.setAttribute('aria-pressed', item.selected ? 'true' : 'false');
+    button.onfocus = function () { if (trackMenu === menu) menu.index = index; };
+    var name = document.createElement('span'); name.className = 'track-name';
+    name.textContent = (item.selected ? '✓  ' : '') + SpritzTrackMenu.label(item);
+    var detail = document.createElement('span'); detail.className = 'track-detail';
+    detail.textContent = SpritzTrackMenu.detail(item, menu.kind);
+    button.appendChild(name); button.appendChild(detail);
+    button.onclick = function () {
+      if (trackMenu !== menu) return;
+      selectMediaTrack(menu.kind, item.id); closeTrackMenu();
+    };
+    list.appendChild(button);
+  });
+  var focused = list.children[menu.index];
+  if (keepHeader) { list.scrollTop = scroll; return; }
+  if (focused) { focused.focus(); if (focused.scrollIntoView) focused.scrollIntoView({ block: 'nearest' }); }
+}
+
+function openTrackMenu(kind) {
+  trackMenu = SpritzTrackMenu.open(kind, kind === 'audio' ? trackInventory.audio : trackInventory.subtitles);
+  el('track-heading').textContent = 'Audio & subtitles';
+  el('track-audio-tab').className = kind === 'audio' ? 'active' : '';
+  el('track-subtitle-tab').className = kind === 'subtitle' ? 'active' : '';
+  el('track-panel').hidden = false; showUi(); paintTrackMenu();
+}
+function backFromTrackControls() {
+  if (trackMenu) { closeTrackMenu(); return true; }
+  var active = document.activeElement;
+  if (active && controlIds.indexOf(active.id) !== -1) {
+    active.blur(); clearTimeout(uiTimer); el('ui').className = ''; return true;
+  }
+  return false;
+}
+
+function selectMediaTrack(kind, id, localIntent) {
+  if (kind === 'audio' && media.audioCatalog) {
+    if (!media.audioCatalog.some(function (t) { return t.id === id; })) return;
+    send('select-track', { mediaId: media.id, epoch: media.epoch, kind: kind, trackId: id });
+    showUi(); return;
+  }
+  if (kind === 'subtitle') {
+    var bindings = media.subtitleBindings || [];
+    var choices = bindings.length ? SpritzMediaTracks.boundSubtitles(bindings) : SpritzMediaTracks.snapshot(video).subtitles;
+    if (id !== 'off' && !choices.some(function (t) { return t.id === id; })) return;
+    if (localIntent !== false) send('select-track', { mediaId: media.id, epoch: media.epoch, kind: kind, trackId: id });
+    var previouslySelected = media.subtitleTrackId;
+    media.subtitleTrackId = id;
+    var binding = bindings.find(function (entry) { return entry.id === id; });
+    var node = binding && binding.node;
+    if (id === 'off' || binding && binding.prepare) {
+      if (subtitleLoader) subtitleLoader.select(id === 'off' ? null : binding, Math.max(0, filmTime(video.currentTime) || 0));
+      if (id === 'off') el('err').textContent = '';
+    } else if (id !== 'off' && node && node.getAttribute('data-source-url')) {
+      if (subtitleLoader) subtitleLoader.stop();
+      if (previouslySelected === id && (node.readyState === 1 || node.readyState === 2)) return;
+      el('err').textContent = 'Loading subtitles…';
+      var sourceUrl = node.getAttribute('data-source-url');
+      node.spritzTimelineShifted = false;
+      node.src = sourceUrl + (sourceUrl.indexOf('?') === -1 ? '?' : '&') + 'spritzSubPosition=' + Math.max(0, filmTime(video.currentTime) || 0) + '&selection=' + Date.now();
+    } else if (id === 'off') el('err').textContent = '';
+  }
+  if (kind === 'subtitle' && media.subtitleBindings && media.subtitleBindings.length) {
+    if (!SpritzMediaTracks.selectBoundSubtitle(video, media.subtitleBindings, id)) return;
+  } else if (!window.SpritzMediaTracks || !SpritzMediaTracks.select(video, kind, id)) return;
+  lastTrackSnapshot = null; reportMediaTracks(); showUi();
+}
+el('audio-choice').onclick = function () { openTrackMenu('audio'); };
+el('subtitle-choice').onclick = function () { openTrackMenu('subtitle'); };
+el('track-audio-tab').onclick = function () { openTrackMenu('audio'); };
+el('track-subtitle-tab').onclick = function () { openTrackMenu('subtitle'); };
+el('track-close').onclick = closeTrackMenu;
+el('play-pause').onclick = function () { togglePlayback(); };
+el('seek-back').onclick = function () { seekTo(relativeSeekBase() - 30); };
+el('seek-forward').onclick = function () { seekTo(relativeSeekBase() + 30); };
+video.addEventListener('click', function () { showUi(); el('play-pause').focus(); });
+function togglePlayback() {
+  var playing = pendingMetadataLoad ? media.autoplay : !video.paused;
+  requestPlayback(!playing); showUi();
+}
+/* ---- playback ------------------------------------------------------------------------------- */
+
+/* A compact transition record in the receiver's existing console. It deliberately names only the
+ * epoch and clock facts — never the token-bearing URL or pairing material. Repeated unusable timer
+ * samples are coalesced; attempts and terminal transitions are always recorded. */
+function startRanges() {
+  var out = [];
+  try {
+    for (var i = 0; i < video.buffered.length && i < 8; i++) out.push([video.buffered.start(i), video.buffered.end(i)]);
+  } catch (e) {}
+  return out;
+}
+
+function startDiagnostic(action, current, reason) {
+  if (action === 'wait' && startLastAction === 'wait') return;
+  startLastAction = action;
+  try {
+    console.log('[spritz] startup ' + JSON.stringify({
+      epoch: media.epoch || null,
+      requestedNativeSec: startWanted,
+      currentTime: isFinite(current) ? current : null,
+      clockValid: isFinite(current) && current >= 0,
+      readyState: video.readyState,
+      seeking: !!video.seeking,
+      ranges: startRanges(),
+      attempts: startAttempts,
+      action: action,
+      reason: reason
+    }));
+  } catch (e) {}
+}
+
+function cancelPendingStart(reason) {
+  startResumeCheck = null;
+  if (startWanted !== null) startDiagnostic('cancelled', video.currentTime, reason);
+  startWanted = null;
+  startSawPlaying = false;
+  startLastAction = null;
+}
+
+function beginPendingStart(start) {
+  startResumeCheck = null;
+  if (startWanted !== null) cancelPendingStart('replacement load');
+  startWanted = start;
+  startAttempts = 0;
+  startCheckSince = null;
+  startSawPlaying = false;
+  startLastAction = null;
+  startDiagnostic('pending', video.currentTime, 'load');
+}
+
+/* Called by media events AND the existing one-second position check. An unusable clock remains
+ * pending without spending an attempt. Assigning currentTime is only an attempt; a later observed
+ * sample inside tolerance is what settles it. */
+function checkPendingStart() {
+  if (startWanted === null) return;
+  if (media.autoplay === false && video.readyState < 2) return;
+  var current = video.currentTime;
+  if (startCheckSince === null) startCheckSince = Date.now();
+  var seekable = [];
+  try { for (var i = 0; i < video.seekable.length; i++) seekable.push([video.seekable.start(i), video.seekable.end(i)]); } catch (e) {}
+  /* currentTime may expose the requested value before the asynchronous seeking algorithm has made
+   * that position playable. Every caller comes through here, so neither a timer nor an event can
+   * spend another attempt, settle, or exhaust while the correction is still in flight. */
+  if (video.seeking) { startDiagnostic('wait', current, 'correction still seeking'); return; }
+  var plan = SpritzStartSeek.startSeekPlan({ requested: startWanted, current: current, attempts: startAttempts, seekable: seekable,
+    pausedStartup: media.autoplay === false && video.paused, readyState: video.readyState,
+    waitedMs: Date.now() - startCheckSince });
+  if (plan.action === 'wait') { startDiagnostic('wait', current, plan.why); return; }
+  if (plan.action === 'seek') {
+    startAttempts++;
+    startDiagnostic('seek', current, plan.why);
+    try { video.currentTime = plan.to; } catch (e) {}
+    return;
+  }
+  if (plan.action === 'settled') {
+    startDiagnostic('settled', current, plan.why);
+    if (media.autoplay === false && !startSawPlaying) startResumeCheck = startWanted;
+    startWanted = null;
+    return;
+  }
+  startDiagnostic(plan.action === 'exhausted' ? 'exhausted' : 'cancelled', current, plan.why);
+  startWanted = null;
+  send('error', { mediaId: media.id, epoch: media.epoch, code: 'startup-position', message: 'Could not restore playback position', fatal: false });
+}
+
+function requestPlayback(autoplay) {
+  if (autoplay && startResumeCheck !== null) {
+    var resumeStart = startResumeCheck; startResumeCheck = null; beginPendingStart(resumeStart);
+  }
+  media.autoplay = autoplay;
+  try {
+    if (autoplay) video.play().catch(function () {});
+    else video.pause();
+  } catch (e) {}
+}
+var pendingMetadataLoad = null;
+function clearMetadataLoad() {
+  if (pendingMetadataLoad) video.removeEventListener('loadedmetadata', pendingMetadataLoad);
+  pendingMetadataLoad = null;
+}
+function load(m) {
+  if (subtitleLoader) subtitleLoader.stop();
+  clearMetadataLoad();
+  lastTrackSnapshot = null;
+  trackMenu = null; trackInventory = { audio: [], subtitles: [] }; el('track-panel').hidden = true;
+  /* `epoch` is WHICH transport of this film the URL is (see the Mac's transport-epoch.js). It is
+   * echoed back beside mediaId in every report, so the Mac can tell a reconnect within the same
+   * transport (adopt) from a receiver still holding an older one after a far seek (reload). */
+  media = { id: m.mediaId || null, epoch: m.epoch || null, url: m.url || '', title: m.title || '' };
+  if (typeof m.timelineOrigin === 'number' && isFinite(m.timelineOrigin) && m.timelineOrigin >= 0 && typeof m.sourceDuration === 'number' && isFinite(m.sourceDuration) && m.sourceDuration > m.timelineOrigin && !m.epoch) { media.timelineOrigin = m.timelineOrigin; media.sourceDuration = m.sourceDuration; }
+  media.subtitleTrackId = m.subtitleTrackId || 'off';
+  media.subtitleBindings = [];
+  media.audioCatalog = m.audioCatalog || null;
+  media.autoplay = m.autoplay !== false;
+  var owner = media;
+  flags = {};
+  el('home').style.display = 'none';
+  el('stage').style.display = 'block';
+  el('title').textContent = media.title || '';
+  el('err').textContent = '';
+  report('loading');
+  video.querySelectorAll('track[data-spritz]').forEach(function (track) { track.remove(); });
+  video.src = media.url;
+  (m.subtitles || []).slice(0, 128).forEach(function (sub, index) {
+    if (!sub || typeof sub.url !== 'string') return;
+    var id = sub.id || 'sideload-subtitle-' + index;
+    if (sub.prepare === true) {
+      media.subtitleBindings.push({ id: id, node: null, prepare: true, url: sub.url, title: sub.name || sub.lang || 'Subtitle', lang: sub.lang || 'und', selected: media.subtitleTrackId === id });
+      return;
+    }
+    var track = document.createElement('track'); track.setAttribute('data-spritz', '1');
+    track.kind = 'subtitles'; track.label = sub.name || sub.lang || 'Subtitle';
+    track.srclang = sub.lang || 'und'; track.setAttribute('data-source-url', sub.url);
+    track.src = sub.url + (sub.url.indexOf('?') === -1 ? '?' : '&') + 'spritzSubPosition=' + Math.max(0, Number(m.startSec) || 0);
+    track.addEventListener('load', function () {
+      if (media !== owner) return;
+      shiftSubtitleCues(track, Number(owner.timelineOrigin) || 0);
+      if (media.subtitleTrackId !== id) return;
+      el('err').textContent = track.track && track.track.cues && track.track.cues.length ? '' : 'No subtitle cues available';
+    });
+    track.addEventListener('error', function () {
+      if (media !== owner || media.subtitleTrackId !== id) return;
+      el('err').textContent = 'Subtitles unavailable. Select the track again to retry.';
+    });
+    media.subtitleBindings.push({ id: id, node: track, title: sub.name || sub.lang || 'Subtitle', lang: sub.lang || 'und' });
+    video.appendChild(track);
+    if (track.track) track.track.mode = media.subtitleTrackId === id ? 'showing' : 'disabled';
+  });
+  var preparedSelected = media.subtitleBindings.find(function (binding) { return binding.prepare && binding.id === media.subtitleTrackId; });
+  if (preparedSelected && subtitleLoader) subtitleLoader.select(preparedSelected, Math.max(0, Number(m.startSec) || 0));
+  var rawStart = Number(m.startSec);
+  var start = isFinite(rawStart) && rawStart >= 0 ? rawStart : 0;
+  /* Re-asserted once the player exposes a usable position — see start-seek.js for the live-edge
+   * measurement that made this necessary. Per load, so a later LOAD replaces the pending check. */
+  owner.startSec = start;
+  beginPendingStart(nativeTime(start));
+  var go = function () {
+    video.removeEventListener('loadedmetadata', go);
+    if (pendingMetadataLoad === go) pendingMetadataLoad = null;
+    if (media !== owner) return;
+    if (isFinite(video.currentTime) && video.currentTime >= 0) { try { video.currentTime = nativeTime(owner.startSec); } catch (e) {} }
+    if (owner.autoplay) video.play().catch(function (e) {
+      if (media !== owner) return;
+      /* Autoplay refusal is a real state, not an error to hide: the Mac has to know the film is
+       * sitting there waiting for a key press rather than playing. */
+      report('paused', {});
+      send('error', { mediaId: media.id, epoch: media.epoch, code: 'autoplay-blocked', message: String(e && e.message || e), fatal: false });
+    });
+  };
+  pendingMetadataLoad = go;
+  video.addEventListener('loadedmetadata', go);
+  showUi();
+}
+
+function stop() {
+  if (subtitleLoader) subtitleLoader.stop();
+  clearMetadataLoad();
+  cancelPendingStart('stop');
+  try { video.pause(); } catch (e) {}
+  try { video.removeAttribute('src'); video.load(); } catch (e) {}
+  media = { id: null, url: null, title: null };
+  el('stage').style.display = 'none';
+  el('home').style.display = 'flex';
+  el('hint').textContent = 'Ready to play';
+  report('idle');
+}
+
+function relativeSeekBase() {
+  var pending = media.startSec;
+  if (pendingMetadataLoad && typeof pending === 'number' && isFinite(pending) && pending >= 0) return pending;
+  var current = filmTime(video.currentTime);
+  if (typeof current === 'number' && isFinite(current) && current >= 0) return current;
+  return typeof pending === 'number' && isFinite(pending) && pending >= 0 ? pending : 0;
+}
+function seekTo(t) {
+  if (typeof t !== 'number' || !isFinite(t)) return;
+  /* A user/controller seek supersedes LOAD's startup target. The correction path writes the video
+   * clock directly, so it does not cancel itself here. */
+  var d = filmDuration();
+  t = Math.max(0, d > 0 ? Math.min(t, Math.max(0, d - 1)) : t);
+  var outside = timelineOrigin() > 0 && t < timelineOrigin();
+  if (media.timelineOrigin !== undefined && video.seekable && video.seekable.length) {
+    var end = video.seekable.end(video.seekable.length - 1);
+    if (isFinite(end) && end > 0 && nativeTime(t) > end) outside = true;
+  }
+  if (outside) {
+    send('error', { mediaId: media.id, epoch: media.epoch, code: 'seek-outside-transport', requestedTime: Math.max(0, t), message: 'This position needs a new stream', fatal: false });
+    return;
+  }
+  cancelPendingStart('explicit seek');
+  var to = Math.max(0, d ? Math.min(t, d - 1) : t);
+  media.startSec = to;
+  try { video.currentTime = nativeTime(to); } catch (e) {}
+  showUi();
+}
+
+/* Every media event the first hardware round needs, wired once. The list is deliberately complete
+ * rather than curated — the VOD work showed that the interesting signal was in which events fired
+ * in which ORDER, and a filtered log could not answer that. */
+[['loadstart', 'loading'], ['loadedmetadata', null], ['loadeddata', null], ['canplay', null], ['playing', 'playing'],
+ ['pause', 'paused'], ['ended', 'ended'], ['seeking', null], ['seeked', null],
+ ['waiting', null], ['stalled', null], ['error', null]].forEach(function (pair) {
+  var name = pair[0], st = pair[1];
+  video.addEventListener(name, function () {
+    /* Nothing loaded, nothing to report. After a fatal error (or a stop) the media is cleared but
+     * the dead element still fires a trailing `pause`, which was reported as "paused" with no
+     * media. The error itself is still reported, and clears the media below. */
+    if (!media.id && name !== 'error') return;
+    /* Flags, NOT states. Measured on this hardware: `stalled` fires at every segment transition
+     * while the clock keeps moving at 100% of realtime. A receiver that reported it as a fault
+     * would have the Mac chasing a stutter that is not there. */
+    if (name === 'waiting' || name === 'stalled') { flags[name] = true; report(lastState); return; }
+    // webOS may start playback as a side effect of seeking. Explicit pause intent
+    // survives seek completion and takes priority over that native transition.
+    if ((name === 'playing' || name === 'seeked') && media.autoplay === false && !video.paused) {
+      try { video.pause(); } catch (e) {}
+      if (name === 'playing') return;
+    }
+    if (name === 'playing' || name === 'seeked') { flags.waiting = false; flags.stalled = false; }
+    /* An initial currentTime assignment can complete before playback and then be overridden by the
+     * EVENT live edge at `playing`. Do not accept that pre-play `seeked` as arrival. Once playback
+     * has started, either a corrective seek completion or the recurring clock can settle it. */
+    if (name === 'playing') { startSawPlaying = true; checkPendingStart(); }
+    else if (name === 'seeked' && (startSawPlaying || media.autoplay === false)) checkPendingStart();
+    else if ((name === 'loadeddata' || name === 'canplay') && media.autoplay === false) checkPendingStart();
+    if (name === 'loadedmetadata') {
+      send('loaded', { mediaId: media.id, epoch: media.epoch, durationSec: filmDuration() });
+      return;
+    }
+    if (name === 'error') {
+      var e = video.error || {};
+      el('err').textContent = 'Playback error ' + (e.code || '?') + ' — ' + (e.message || '');
+      send('error', { mediaId: media.id, epoch: media.epoch, code: String(e.code || ''), message: String(e.message || ''), fatal: true });
+      /* STOP CLAIMING TO HOLD IT.
+       *
+       * A fatal media error means this television cannot play that film any more — most often
+       * because Spritz quit and took the media server with it. Until this, `media.id` survived the
+       * error, so on the next connection the receiver announced "I am holding m1" while holding a
+       * dead video element. The Mac's shouldLoad() was told a falsehood and correctly declined to
+       * reload, so choosing the film in the UI did nothing at all and neither side looked wrong.
+       *
+       * Measured: after quitting Spritz mid-playback, the reconnect logged "loaded media, duration
+       * unknown" and then "already holds this film — not reloading", twice, while the screen showed
+       * nothing.
+       *
+       * The state is cleared but the STAGE is left alone: the error text stays on screen, and a
+       * viewer who is looking at a broken film should not have it silently replaced by the home
+       * screen. */
+      clearMetadataLoad();
+      cancelPendingStart('media error');
+      if (subtitleLoader) subtitleLoader.stop();
+      media = { id: null, url: null, title: null };
+      report('idle');
+      return;
+    }
+    if (name === 'seeked' && subtitleLoader) subtitleLoader.tick(Math.max(0, filmTime(video.currentTime) || 0), true);
+    if (name === 'seeking' || name === 'seeked') { sendPosition(); showUi(); }
+    var reportedState = st === 'playing' && media.autoplay === false ? 'paused' : st;
+    if (reportedState) report(reportedState);
+    if (st === 'playing' || st === 'paused' || st === 'ended') { sendPosition(); paint(); }
+  });
+});
+
+/* One second while playing. Immediate reports on pause/seek/stop/ended come from the handlers
+ * above, so the interval is for the steady state only and does not need to be faster: the Mac's
+ * view is then within one tick of the television, which is the stated acceptance target. */
+posTimer = setInterval(function () {
+  reportMediaTracks();
+  if (media.id && startWanted !== null && (startSawPlaying || media.autoplay === false)) checkPendingStart();
+  if (media.id && !video.paused) {
+    sendPosition(); paint();
+  }
+}, 1000);
+
+/* ---- overlay -------------------------------------------------------------------------------- */
+
+function hhmmss(s) {
+  if (!isFinite(s) || s < 0) return '00:00';
+  s = Math.floor(s);
+  var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+  var p = function (n) { return (n < 10 ? '0' : '') + n; };
+  return (h ? h + ':' : '') + p(m) + ':' + p(x);
+}
+
+function paint() {
+  var d = filmDuration() || 0;
+  el('cur').textContent = hhmmss(filmTime(video.currentTime));
+  el('dur').textContent = d ? hhmmss(d) : '—';
+  el('play-pause').textContent = video.ended ? 'Replay' : (pendingMetadataLoad ? media.autoplay : !video.paused) ? 'Pause' : '▶ Play';
+  var b = bufferedUntil();
+  el('pos').style.width = d ? (100 * filmTime(video.currentTime) / d) + '%' : '0';
+  el('buf').style.width = (d && b) ? (100 * b / d) + '%' : '0';
+}
+
+function showUi() {
+  paint();
+  el('ui').className = 'show';
+  clearTimeout(uiTimer);
+  uiTimer = setTimeout(function () { if (!trackMenu && (!document.activeElement || controlIds.indexOf(document.activeElement.id) === -1)) { el('ui').className = ''; } }, 4000);
+}
+
+/* ---- remote --------------------------------------------------------------------------------- */
+
+/* Ordinary 5-way navigation only. No pointer, no motion gestures: the application has to be
+ * completely usable with the buttons every LG remote has. */
+var controlIds = ['seek-back', 'play-pause', 'seek-forward', 'audio-choice', 'subtitle-choice'];
+var KEY = { OK: 13, LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40, BACK: 461,
+  PLAY: 415, PAUSE: 19, PLAYPAUSE: 179, STOP: 413, FF: 417, RW: 412 };
+
+document.addEventListener('keydown', function (e) {
+  var k = e.keyCode;
+  if (!media.id) {
+    if (idleNav(e)) return;
+    if (k === KEY.BACK) {
+      if (window.webOS && typeof window.webOS.platformBack === 'function') window.webOS.platformBack();
+      else window.close();
+      e.preventDefault();
+    }
+    return;
+  }
+  // Dedicated media keys always work, including inside a track drawer.
+  if (k === KEY.PLAY || k === KEY.PAUSE || k === KEY.PLAYPAUSE || k === KEY.STOP || k === KEY.FF || k === KEY.RW) {
+    if (k === KEY.PLAYPAUSE) togglePlayback();
+    else if (k === KEY.PLAY || k === KEY.PAUSE) requestPlayback(k === KEY.PLAY);
+    else if (k === KEY.STOP) stop();
+    else seekTo(relativeSeekBase() + (k === KEY.FF ? 30 : -30));
+    showUi(); e.preventDefault(); return;
+  }
+  if (trackMenu) {
+    if (k === KEY.UP || k === KEY.DOWN) { SpritzTrackMenu.move(trackMenu, k === KEY.UP ? -1 : 1); paintTrackMenu(); }
+    else if (k === KEY.LEFT || k === KEY.RIGHT) openTrackMenu(k === KEY.LEFT ? 'audio' : 'subtitle');
+    else if (k === KEY.OK) {
+      if (e.target && ['track-close', 'track-audio-tab', 'track-subtitle-tab'].indexOf(e.target.id) !== -1) e.target.click();
+      else { var item = SpritzTrackMenu.choice(trackMenu); if (item) selectMediaTrack(trackMenu.kind, item.id); closeTrackMenu(); }
+    }
+    else if (k === KEY.BACK || k === 27) closeTrackMenu();
+    else return;
+    showUi(); e.preventDefault(); e.stopPropagation(); return;
+  }
+  var control = e.target ? controlIds.indexOf(e.target.id) : -1;
+  if (control !== -1) {
+    if (k === KEY.LEFT || k === KEY.RIGHT) el(controlIds[Math.max(0, Math.min(controlIds.length - 1, control + (k === KEY.LEFT ? -1 : 1)))]).focus();
+    else if (k === KEY.OK) e.target.click();
+    else if (k === KEY.BACK || k === 27 || k === KEY.UP) { backFromTrackControls(); e.preventDefault(); return; }
+    else if (k !== KEY.DOWN) return;
+    showUi(); e.preventDefault(); e.stopPropagation(); return;
+  }
+  if (k === KEY.OK) { togglePlayback(); e.preventDefault(); return; }
+  if (k === KEY.LEFT || k === KEY.RIGHT) { seekTo(relativeSeekBase() + (k === KEY.RIGHT ? 30 : -30)); e.preventDefault(); return; }
+  if (k === KEY.UP || k === KEY.DOWN) { showUi(); el('play-pause').focus(); e.preventDefault(); return; }
+  if (k === KEY.BACK || k === 27) {
+    if (el('ui').className === 'show') { el('ui').className = ''; clearTimeout(uiTimer); }
+    else stop();
+    e.preventDefault(); return;
+  }
+});
+
+/* appinfo disables platform Back history; key 461 follows the explicit menu/control stack. */
+
+/* The version comes from appinfo.json (one source of truth). Best effort: if it cannot be read the
+ * receiver still starts and simply announces no version, which the Mac shows as "unknown". */
+try {
+  readJson('appinfo.json', applyVersion);
+} catch (e) { applyVersion(null); }
+
+connect();
+</script>

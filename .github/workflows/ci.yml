@@ -44,6 +44,21 @@ jobs:
       - name: Test
         run: npm test
 
+  # Production dependencies must have no advisory we have not looked at. Separate from `check` so a newly
+  # published advisory shows up as its own red job rather than blocking unrelated work; exceptions live in
+  # .audit-accepted.json with a reason and a review date.
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run audit:gate
+
   # Compile the addons and check what a package would actually contain. Slower and needs Homebrew's
   # mpv for libmpv and its headers, so it does not gate the fast feedback above — but it is the only
   # thing that can catch a build that succeeds and produces something unusable.
@@ -81,9 +96,20 @@ jobs:
             echo "built $f"
           done
 
+      # The Mac app ships the Spritz Receiver installer (.ipk). Package it here so the verifier can
+      # check it is present and at the receiver's current version.
+      - name: Package the TV receiver
+        run: |
+          npm i -g @webos-tools/cli
+          node build/package-receiver.js
+
       # What a package would contain, without building a 200 MB disk image on every push. The staged
       # app is the same tree the .dmg is made from, so the verification is the same one.
       - name: Stage the app and verify its contents
+        # electron-builder skips signing on pull requests unless told otherwise, and verify-package requires a
+        # valid signature. The identity is ad hoc ("-"): there is no certificate or secret involved.
+        env:
+          CSC_FOR_PULL_REQUEST: 'true'
         run: |
           set -e
           npm i -D electron-builder --ignore-scripts
@@ -102,6 +128,10 @@ jobs:
           cp -R /tmp/ffstage/ bin/
           ./build/bundle-dylibs.sh /tmp/mpvstage native/mpv/build/Release/mpv_render.node
           cp -R /tmp/mpvstage/ native/mpv/build/Release/
+          # `npm ci --ignore-scripts` skips Electron's download; the licence collector reads the Electron and
+          # Chromium licence files from the distribution it unpacks into node_modules/electron/dist.
+          node node_modules/electron/install.js
+          node build/collect-licenses.js
           node build/preflight-dist.js
           npx electron-builder --mac --dir --arm64
           node build/verify-package.js

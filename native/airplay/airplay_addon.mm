@@ -45,6 +45,9 @@ static void EmitToJs(Napi::Env env, Napi::Function fn, ApEv* e) {
     else if (e->type == "status")   o.Set("value", Napi::Number::New(env, e->ival));
     else if (e->type == "time") { o.Set("cur", Napi::Number::New(env, e->cur)); o.Set("dur", Napi::Number::New(env, e->dur)); }
     else if (e->type == "error") { o.Set("code", Napi::Number::New(env, e->ival)); o.Set("message", Napi::String::New(env, e->msg)); }
+    // Same shape as "error" so the existing diagnostic logger prints the payload rather than a bare
+    // {"type":"errorlog"} — the whole value of this event is in the string.
+    else if (e->type == "errorlog") { o.Set("code", Napi::Number::New(env, e->ival)); o.Set("message", Napi::String::New(env, e->msg)); }
     try { fn.Call({ o }); } catch (const Napi::Error& err) { NSLog(@"[airplay] listener threw: %s", err.what()); }
   }
 }
@@ -64,6 +67,29 @@ static id                 gFailObs = nil;
 
 static void teardownPlayer();
 
+// Dump the item's HTTP-level error log. Must be callable from BOTH the status observer and the
+// FailedToPlayToEnd handler: -12312 arrives with status == readyToPlay, i.e. the item LOADED and then
+// playback died, so gating this on AVPlayerItemStatusFailed printed nothing at all.
+static void emitErrorLog(AVPlayerItem* item, const char* whenStr) {
+  if (!item) return;
+  AVPlayerItemErrorLog* log = [item errorLog];
+  NSUInteger n = log ? log.events.count : 0;
+  if (n == 0) {
+    ApEv* x = new ApEv(); x->type = "errorlog"; x->ival = 0;
+    x->msg = std::string(whenStr) + ": EMPTY error log (no failed HTTP request recorded)";
+    emit(x);
+    return;
+  }
+  for (AVPlayerItemErrorLogEvent* le in log.events) {
+    ApEv* x = new ApEv(); x->type = "errorlog"; x->ival = (int)le.errorStatusCode;
+    NSString* d = [NSString stringWithFormat:@"%s: uri=%@ status=%ld server=%@ domain=%@ comment=%@",
+      whenStr, le.URI ?: @"(none)", (long)le.errorStatusCode, le.serverAddress ?: @"(none)",
+      le.errorDomain ?: @"(none)", le.errorComment ?: @"(none)"];
+    x->msg = std::string([d UTF8String]);
+    emit(x);
+  }
+}
+
 @interface ApObserver : NSObject <AVRoutePickerViewDelegate>
 @end
 @implementation ApObserver
@@ -78,6 +104,7 @@ static void teardownPlayer();
     if (gPlayer.currentItem.status == AVPlayerItemStatusFailed && gPlayer.currentItem.error)
       e->msg = std::string([gPlayer.currentItem.error.localizedDescription UTF8String]);
     emit(e);
+    if (gPlayer.currentItem.status == AVPlayerItemStatusFailed) emitErrorLog(gPlayer.currentItem, "status=failed");
   } else if ([kp isEqualToString:@"multipleRoutesDetected"]) {
     ApEv* e = new ApEv(); e->type = "routes"; e->flag = gDetector.multipleRoutesDetected; emit(e);
   }
@@ -203,6 +230,9 @@ Napi::Value Prepare(const Napi::CallbackInfo& info) {
     gFailObs = [[NSNotificationCenter defaultCenter] addObserverForName:AVPlayerItemFailedToPlayToEndTimeNotification object:item queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* n) {
       NSError* err = n.userInfo[AVPlayerItemFailedToPlayToEndTimeErrorKey];
       ApEv* e = new ApEv(); e->type = "error"; e->ival = (int)err.code; e->msg = err.localizedDescription ? std::string([err.localizedDescription UTF8String]) : "playback failed"; emit(e);
+      // THIS is where -12312 actually arrives (status stays readyToPlay), so this is where the
+      // HTTP-level detail has to be read from.
+      emitErrorLog((AVPlayerItem*)n.object, "failed-to-play-to-end");
     }];
     if (startSec > 0) [gPlayer seekToTime:CMTimeMakeWithSeconds(startSec, 600) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
   });

@@ -20,6 +20,17 @@ const APP = path.join(ROOT, 'dist', 'mac-arm64', 'Spritz.app');
 
 const REQUIRED_ADDONS = ['mpv_render.node', 'airplay.node', 'nowplaying.node'];
 const REQUIRED_BINS = ['ffmpeg', 'ffprobe', 'yt-dlp'];
+const { libraryFamily, uncoveredLibraries } = require('./licenses');
+
+// Licence texts that must travel inside the app (build/collect-licenses.js makes them). What each must contain
+// guards against a file that is present but is not what it claims to be.
+const REQUIRED_LICENSES = [
+  ['LICENSE', /GNU GENERAL PUBLIC LICENSE/i, 'the GPL itself: Spritz is GPL-3.0-or-later and the app conveys GPL binaries'],
+  ['THIRD_PARTY_NOTICES.md', /Third-Party Notices/i, 'the list of bundled components, versions and licences'],
+  ['LICENSES.chromium.html', /./, 'Chromium and its dependencies, whose licences require reproduction'],
+  ['ELECTRON-LICENSE', /./, 'the Electron licence'],
+  ['npm-licenses.txt', /./, 'the licences of the bundled npm packages']
+];
 
 function walk(dir, out = []) {
   let entries;
@@ -84,6 +95,79 @@ function verify(app) {
     if (m && !fs.existsSync(path.join(path.dirname(mpv), 'lib', m[1]))) {
       problems.push({ what: `mpv_render.node expects lib/${m[1]} beside it and it was not packaged`, fix: 'include native/**/build/Release/lib/** in build.files and asarUnpack' });
     }
+  }
+  // The bundle must carry a valid signature of its own. Building with signing skipped leaves Electron's
+  // stock one (identifier "Electron", no sealed resources), which fails verification and makes macOS
+  // treat the app as a different one from the copy the user granted Local Network access. Checked only
+  // on a real bundle (one with an executable); the fixture packages in the unit tests have none.
+  if (fs.existsSync(path.join(app, 'Contents', 'MacOS'))) {
+    try { execFileSync('codesign', ['--verify', '--deep', '--strict', app], { stdio: 'pipe', timeout: 60000 }); }
+    catch (e) {
+      problems.push({ what: 'the app bundle signature does not verify: ' + String(e.stderr || e.message).split('\n')[0],
+        fix: 'build with build.mac.identity "-" (ad hoc) or a Developer ID; do not skip signing' });
+    }
+  }
+
+  // Electron fuses, read back from the real binary: config says what we asked for, the binary says what
+  // we got. A binary with RunAsNode on is a general Node interpreter that inherits the app's entitlements.
+  if (fs.existsSync(path.join(app, 'Contents', 'MacOS'))) {
+    const WANT = { RunAsNode: 'Disabled', EnableNodeOptionsEnvironmentVariable: 'Disabled', EnableNodeCliInspectArguments: 'Disabled',
+      EnableEmbeddedAsarIntegrityValidation: 'Enabled', OnlyLoadAppFromAsar: 'Enabled' };
+    let text = '';
+    try { text = execFileSync(path.join(ROOT, 'node_modules', '.bin', 'electron-fuses'), ['read', '--app', app], { encoding: 'utf8', timeout: 60000 }); }
+    catch (e) { problems.push({ what: 'the Electron fuses of the built app could not be read: ' + String(e.message).split('\n')[0], fix: 'check @electron/fuses is installed and the app is an Electron bundle' }); }
+    if (text) {
+      for (const [name, want] of Object.entries(WANT)) {
+        const m = new RegExp('\\b' + name + ' is (Enabled|Disabled)').exec(text);
+        if (!m || m[1] !== want) problems.push({ what: `Electron fuse ${name} is ${m ? m[1] : 'unreadable'}, expected ${want}`, fix: 'set build.electronFuses in package.json' });
+      }
+    }
+  }
+
+  // The Spritz Receiver installer rides inside the app so a person who has the Mac app has the TV app,
+  // at the version this Mac app was released with (see src/main/receiver-version.js).
+  const recDir = path.join(app, 'Contents', 'Resources', 'receiver');
+  let ipks = [];
+  try { ipks = fs.readdirSync(recDir).filter((f) => f.endsWith('.ipk')); } catch (e) {}
+  if (!ipks.length) {
+    problems.push({ what: 'the Spritz Receiver .ipk is not in the package (Contents/Resources/receiver)', fix: 'npm run package:receiver, and check build.extraResources maps dist-receiver' });
+  } else {
+    const want = require(path.join(ROOT, 'webos-receiver', 'appinfo.json')).version;
+    if (!ipks.some((f) => f.includes('_' + want + '_'))) {
+      problems.push({ what: `the packaged receiver .ipk (${ipks.join(', ')}) is not version ${want}`, fix: 'npm run package:receiver' });
+    }
+  }
+  // The licence texts. An app that conveys GPL binaries and BSD-licensed Chromium has to carry the licences
+  // with it; the first release candidates carried none at all, and a green build said nothing.
+  const licDir = path.join(app, 'Contents', 'Resources', 'licenses');
+  for (const [name, pattern, why] of REQUIRED_LICENSES) {
+    const f = path.join(licDir, name);
+    let text = null;
+    try { text = fs.readFileSync(f, 'utf8'); } catch (e) { /* missing */ }
+    if (text === null) problems.push({ what: `Contents/Resources/licenses/${name} is not in the package (${why})`, fix: 'node build/collect-licenses.js, and check build.extraResources maps dist-licenses → licenses' });
+    else if (!text.trim()) problems.push({ what: `Contents/Resources/licenses/${name} is empty`, fix: 'node build/collect-licenses.js' });
+    else if (!pattern.test(text.slice(0, 20000))) problems.push({ what: `Contents/Resources/licenses/${name} does not look like ${name === 'LICENSE' ? 'the GPL' : 'what it should be'}`, fix: 'node build/collect-licenses.js' });
+  }
+  // Every shared library the build bundles must be named in the notices. Skipped on CI, where Homebrew's
+  // ffmpeg stands in and brings dozens of libraries the release build does not contain.
+  if (!process.env.CI) {
+    let notices = null;
+    try { notices = fs.readFileSync(path.join(licDir, 'THIRD_PARTY_NOTICES.md'), 'utf8'); } catch (e) { /* reported above */ }
+    if (notices !== null) {
+      // Only the libraries WE bundle (under Contents/Resources). Electron's own (libEGL, libGLESv2, swiftshader, ...)
+      // are Chromium's, and Chromium's licence page covers them.
+      const resources = path.join(app, 'Contents', 'Resources') + path.sep;
+      const families = [...new Set(files.filter((f) => f.endsWith('.dylib') && f.startsWith(resources)).map((f) => libraryFamily(base(f))).filter(Boolean))];
+      for (const lib of uncoveredLibraries(families, notices)) {
+        problems.push({ what: `${lib} is bundled but THIRD_PARTY_NOTICES.md never names it`, fix: 'add it (version, licence, source) to THIRD_PARTY_NOTICES.md' });
+      }
+    }
+  }
+  // Files libmpv opens itself (Anime4K shaders) must be unpacked from app.asar — native code cannot
+  // read inside an archive, and the failure is silent (the UI still reports the mode as active).
+  const shader = path.join(app, 'Contents', 'Resources', 'app.asar.unpacked', 'vendor', 'shaders', 'anime4k', 'Anime4K_Clamp_Highlights.glsl');
+  if (!fs.existsSync(shader)) {
+    problems.push({ what: 'Anime4K shaders are not unpacked (vendor/shaders is missing from app.asar.unpacked) — libmpv cannot read them from the archive', fix: 'add vendor/shaders/** to build.asarUnpack' });
   }
   return problems;
 }

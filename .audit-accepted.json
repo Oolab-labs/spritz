@@ -1,0 +1,20 @@
+{
+  "accepted": {
+    "ip": {
+      "reason": "GHSA-2p57-rm9w-gvfp: ip.isPublic() misclassifies some addresses (SSRF). No patched 'ip' release exists. Spritz's only path to it is bittorrent-tracker's tracker SERVER code (lib/server/parse-udp.js), which Spritz never runs (it is a torrent client), and that file only calls ip.toString(), not isPublic(). Re-assess if webtorrent/bittorrent-tracker moves off 'ip', or if Spritz ever runs a tracker.",
+      "reviewBy": "2027-01-01"
+    },
+    "bittorrent-tracker": {
+      "reason": "Flagged only because it depends on 'ip' (see the 'ip' entry); no separate defect.",
+      "reviewBy": "2027-01-01"
+    },
+    "torrent-discovery": {
+      "reason": "Flagged only because it depends on 'ip' (see the 'ip' entry); no separate defect.",
+      "reviewBy": "2027-01-01"
+    },
+    "webtorrent": {
+      "reason": "Flagged only because it depends on 'ip' (see the 'ip' entry); no separate defect.",
+      "reviewBy": "2027-01-01"
+    }
+  }
+}

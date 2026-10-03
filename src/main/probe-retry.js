@@ -24,18 +24,44 @@ function probeWithRetries(probeOnce, cb, opts) {
   const timeouts = (opts && opts.timeouts) || ATTEMPT_TIMEOUTS;
   const delay = (opts && typeof opts.delayMs === 'number') ? opts.delayMs : RETRY_DELAY_MS;
   const schedule = (opts && opts.schedule) || setTimeout;
+  const unschedule = (opts && opts.unschedule) || clearTimeout;
+  let retryTimer = null, cancelProbe = null;
   const onAttempt = (opts && opts.onAttempt) || (() => {});
   let i = 0;
+  let finished = false;
   const attempt = () => {
+    if (finished) return;
+    const index = i;
+    let answered = false;
     onAttempt(i + 1, timeouts[i]);
-    probeOnce(timeouts[i], (result) => {
+    const dispose = probeOnce(timeouts[i], (result) => {
+      // Child processes can emit error followed by close. Each attempt owns one
+      // answer; an old attempt must not advance a newer attempt's retry counter.
+      if (answered || finished) return;
+      answered = true;
+      cancelProbe = null;
       // A result — even an unhelpful one — is an answer. Only nothing at all is worth retrying.
-      if (result || i >= timeouts.length - 1) return cb(result || null, i + 1);
-      i++;
-      schedule(attempt, delay);
+      if (result || index >= timeouts.length - 1) {
+        finished = true;
+        return cb(result || null, index + 1);
+      }
+      i = index + 1;
+      retryTimer = schedule(() => { retryTimer = null; attempt(); }, delay);
     });
+    // A synchronous completion must not replace a newer attempt's disposer.
+    if (!answered && !finished && typeof dispose === 'function') cancelProbe = dispose;
+  };
+  const cancel = () => {
+    if (finished) return;
+    finished = true; // guard callbacks before killing a child that may answer synchronously
+    if (retryTimer !== null) unschedule(retryTimer);
+    retryTimer = null;
+    const dispose = cancelProbe;
+    cancelProbe = null;
+    if (dispose) dispose();
   };
   attempt();
+  return cancel;
 }
 
 module.exports = { probeWithRetries, ATTEMPT_TIMEOUTS, RETRY_DELAY_MS };

@@ -76,8 +76,15 @@ module.exports = [
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: 'script',
-      globals: { ...globals.browser, soda: 'readonly' },
+      // SpritzCastRoutes comes from cast-routes.js, loaded before renderer.js.
+      globals: { ...globals.browser, soda: 'readonly', SpritzCastRoutes: 'readonly', SpritzRouteHints: 'readonly' },
     },
     rules,
+  },
+  {
+    // cast-routes.js is a UMD module: a browser global in the app, `module.exports` under node --test.
+    // The `typeof module` guard is the whole reason it may name `module`; nothing else in the renderer may.
+    files: ['src/renderer/cast-routes.js', 'src/renderer/route-hints.js'],
+    languageOptions: { globals: { module: 'writable', require: 'readonly' } },
   },
 ];

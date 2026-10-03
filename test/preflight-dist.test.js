@@ -12,7 +12,7 @@ const os = require('os');
 const path = require('path');
 const { check } = require('../build/preflight-dist');
 
-function fixture({ bins = ['ffmpeg', 'ffprobe'], addon = true, entitlements = true } = {}) {
+function fixture({ bins = ['ffmpeg', 'ffprobe', 'yt-dlp'], addon = true, entitlements = true } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'spritz-preflight-'));
   fs.mkdirSync(path.join(root, 'bin'), { recursive: true });
   for (const b of bins) fs.writeFileSync(path.join(root, 'bin', b), 'not a real binary');
@@ -45,6 +45,11 @@ test('a missing ffmpeg is refused, not shipped', () => {
   const problems = check(root);
   assert.ok(mentions(problems, /bin\/ffmpeg is missing/), JSON.stringify(problems));
   cleanup(root);
+});
+
+test('a missing yt-dlp is refused: the packaged app no longer falls back to Homebrew', () => {
+  const root = fixture({ bins: ['ffmpeg', 'ffprobe'] });
+  assert.ok(mentions(check(root), /bin\/yt-dlp is missing/));
 });
 
 test('a missing ffprobe is refused too', () => {
@@ -110,7 +115,7 @@ test('the real tree is checked without throwing', () => {
 // nothing, and nothing in the build said a word.
 const { verify } = require('../build/verify-package');
 
-function packagedApp({ addons = ['mpv_render.node', 'airplay.node', 'nowplaying.node'], bins = ['ffmpeg', 'ffprobe', 'yt-dlp'], ytdlpScript = false } = {}) {
+function packagedApp({ addons = ['mpv_render.node', 'airplay.node', 'nowplaying.node'], bins = ['ffmpeg', 'ffprobe', 'yt-dlp'], ytdlpScript = false, shaders = true, receiver = true , licenses = true} = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'spritz-pkg-'));
   const app = path.join(root, 'Spritz.app');
   const bin = path.join(app, 'Contents', 'Resources', 'bin');
@@ -119,6 +124,25 @@ function packagedApp({ addons = ['mpv_render.node', 'airplay.node', 'nowplaying.
   const unpacked = path.join(app, 'Contents', 'Resources', 'app.asar.unpacked', 'native', 'x', 'build', 'Release');
   fs.mkdirSync(unpacked, { recursive: true });
   for (const a of addons) fs.writeFileSync(path.join(unpacked, a), 'addon');
+  if (receiver) {
+    const rd = path.join(app, 'Contents', 'Resources', 'receiver');
+    fs.mkdirSync(rd, { recursive: true });
+    fs.writeFileSync(path.join(rd, 'com.spritz.receiver_' + require('../webos-receiver/appinfo.json').version + '_all.ipk'), 'ipk');
+  }
+  if (licenses) {
+    const ld = path.join(app, 'Contents', 'Resources', 'licenses');
+    fs.mkdirSync(ld, { recursive: true });
+    fs.writeFileSync(path.join(ld, 'LICENSE'), 'GNU GENERAL PUBLIC LICENSE\nVersion 3');
+    fs.writeFileSync(path.join(ld, 'THIRD_PARTY_NOTICES.md'), '# Third-Party Notices\nFFmpeg, x264, libass');
+    fs.writeFileSync(path.join(ld, 'LICENSES.chromium.html'), '<html>chromium</html>');
+    fs.writeFileSync(path.join(ld, 'ELECTRON-LICENSE'), 'MIT');
+    fs.writeFileSync(path.join(ld, 'npm-licenses.txt'), 'a@1.0.0 (MIT)');
+  }
+  if (shaders) {
+    const sh = path.join(app, 'Contents', 'Resources', 'app.asar.unpacked', 'vendor', 'shaders', 'anime4k');
+    fs.mkdirSync(sh, { recursive: true });
+    fs.writeFileSync(path.join(sh, 'Anime4K_Clamp_Highlights.glsl'), '// shader');
+  }
   return { root, app };
 }
 
@@ -141,6 +165,80 @@ test('a package carrying the Homebrew yt-dlp shim is refused', () => {
   cleanup(root);
 });
 
+// libmpv is native code and cannot read inside app.asar: shaders left in the archive fail with
+// "Not a directory" at runtime while the UI still toasts "Anime4K · Mode A".
+test('a package whose shaders are not unpacked is refused', () => {
+  const { root, app } = packagedApp({ shaders: false });
+  assert.ok(verify(app).some((p) => /shaders/.test(p.what)), JSON.stringify(verify(app)));
+  cleanup(root);
+});
+
+test('a package without the receiver installer, or with a stale one, is refused', () => {
+  const a = packagedApp({ receiver: false });
+  assert.ok(verify(a.app).some((p) => /receiver \.ipk is not in the package/i.test(p.what)));
+  cleanup(a.root);
+  const b = packagedApp();
+  const rd = path.join(b.app, 'Contents', 'Resources', 'receiver');
+  for (const f of fs.readdirSync(rd)) fs.renameSync(path.join(rd, f), path.join(rd, 'com.spritz.receiver_0.0.1_all.ipk'));
+  assert.ok(verify(b.app).some((p) => /is not version/.test(p.what)));
+  cleanup(b.root);
+});
+
+// rc.2 was built with signing disabled and came out with Electron's stock signature (identifier
+// "Electron", no sealed resources): codesign --verify fails, and macOS treats it as a different app
+// from the one the user granted Local Network access. A fake bundle is not a signed one.
+test('a package whose bundle signature does not verify is refused', () => {
+  const { root, app } = packagedApp();
+  fs.mkdirSync(path.join(app, 'Contents', 'MacOS'), { recursive: true });
+  fs.writeFileSync(path.join(app, 'Contents', 'MacOS', 'Spritz'), 'not a signed executable');
+  const problems = verify(app);
+  assert.ok(problems.some((p) => /signature/i.test(p.what)), JSON.stringify(problems));
+  cleanup(root);
+});
+
+// The shipped binary used to have every Electron fuse at its default: RunAsNode on (the app binary doubled
+// as a Node interpreter that inherits Spritz's entitlements and Local Network permission), the asar not
+// integrity-checked and the app loadable from an unpacked folder. Config alone is not proof; verify-package
+// reads the fuses back from the real binary (see the real-bundle check).
+test('the build flips the Electron fuses that make the binary a general Node runtime', () => {
+  const f = require('../package.json').build.electronFuses;
+  assert.ok(f, 'build.electronFuses is not set');
+  assert.strictEqual(f.runAsNode, false);
+  assert.strictEqual(f.enableNodeOptionsEnvironmentVariable, false);
+  assert.strictEqual(f.enableNodeCliInspectArguments, false);
+  assert.strictEqual(f.enableEmbeddedAsarIntegrityValidation, true);
+  assert.strictEqual(f.onlyLoadAppFromAsar, true);
+});
+
+// Each broad entitlement is a door for anything that can run code as the app. These stay because something
+// needs them (JIT for V8, unsigned executable memory for Electron, library validation off because the
+// bundled ffmpeg/mpv dylibs are ad hoc signed, network client/server for casting); DYLD environment
+// variables were never needed (libraries are relocated with @loader_path / @executable_path).
+test('the entitlements do not grant DYLD environment variable injection', () => {
+  const plist = fs.readFileSync(path.join(__dirname, '..', 'build', 'entitlements.mac.plist'), 'utf8');
+  assert.ok(!/allow-dyld-environment-variables/.test(plist));
+  for (const needed of ['allow-jit', 'allow-unsigned-executable-memory', 'disable-library-validation', 'network.client', 'network.server']) {
+    assert.ok(plist.includes(needed), needed + ' should still be granted');
+  }
+});
+
+test('a real-looking bundle whose fuses cannot be read or are not hardened is refused', () => {
+  const { root, app } = packagedApp();
+  fs.mkdirSync(path.join(app, 'Contents', 'MacOS'), { recursive: true });
+  fs.writeFileSync(path.join(app, 'Contents', 'MacOS', 'Spritz'), 'not an electron binary');
+  assert.ok(verify(app).some((p) => /fuse/i.test(p.what)), JSON.stringify(verify(app)));
+  cleanup(root);
+});
+
+test('the build is configured to sign in-build (ad hoc identity) rather than skip signing', () => {
+  const mac = require('../package.json').build.mac;
+  assert.strictEqual(mac.identity, '-');
+});
+
+test('asarUnpack covers vendor/shaders', () => {
+  assert.ok(require('../package.json').build.asarUnpack.includes('vendor/shaders/**'));
+});
+
 test('a complete package passes', () => {
   const { root, app } = packagedApp();
   assert.deepEqual(verify(app), []);
@@ -152,4 +250,65 @@ test('a missing build is reported rather than passing vacuously', () => {
   const problems = verify(path.join(os.tmpdir(), 'spritz-does-not-exist-' + Date.now(), 'Spritz.app'));
   assert.equal(problems.length, 1);
   assert.match(problems[0].what, /no packaged app/);
+});
+
+// The shipped app carried no licence text at all: not the GPL, not the notices, not Chromium's. They ride
+// inside the app (Contents/Resources/licenses) and a build without them is refused.
+test('a package without its licence files is refused, naming each missing one', () => {
+  const { root, app } = packagedApp({ licenses: false });
+  const problems = verify(app);
+  for (const f of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'LICENSES.chromium.html', 'ELECTRON-LICENSE', 'npm-licenses.txt']) {
+    assert.ok(problems.some((p) => p.what.includes(f)), f + ' ' + JSON.stringify(problems.map((q) => q.what)));
+  }
+  cleanup(root);
+});
+
+test('an empty licence file, or a LICENSE that is not the GPL, is refused', () => {
+  const { root, app } = packagedApp();
+  const ld = path.join(app, 'Contents', 'Resources', 'licenses');
+  fs.writeFileSync(path.join(ld, 'npm-licenses.txt'), '');
+  fs.writeFileSync(path.join(ld, 'LICENSE'), 'All rights reserved');
+  const problems = verify(app);
+  assert.ok(problems.some((p) => /npm-licenses\.txt/.test(p.what) && /empty/.test(p.what)), JSON.stringify(problems));
+  assert.ok(problems.some((p) => /LICENSE/.test(p.what) && /GPL/.test(p.what)), JSON.stringify(problems));
+  cleanup(root);
+});
+
+test('a bundled library the notices never name is refused outside CI', () => {
+  const { root, app } = packagedApp();
+  const lib = path.join(app, 'Contents', 'Resources', 'bin', 'lib');
+  fs.mkdirSync(lib, { recursive: true });
+  fs.writeFileSync(path.join(lib, 'libx264.165.dylib'), 'x');       // named in the fixture's notices
+  fs.writeFileSync(path.join(lib, 'libharfbuzz.0.dylib'), 'x');     // not named
+  const saved = process.env.CI; delete process.env.CI;
+  try {
+    const problems = verify(app);
+    assert.ok(problems.some((p) => /libharfbuzz/.test(p.what) && /THIRD_PARTY_NOTICES/.test(p.what)), JSON.stringify(problems));
+    assert.ok(!problems.some((p) => /libx264/.test(p.what)));
+  } finally { if (saved !== undefined) process.env.CI = saved; }
+  cleanup(root);
+});
+
+test('CI builds with Homebrew\'s own libraries are not held to the notices', () => {
+  // The CI package job stands Homebrew's ffmpeg in, which pulls in dozens of libraries the release build does not.
+  const { root, app } = packagedApp();
+  const lib = path.join(app, 'Contents', 'Resources', 'bin', 'lib');
+  fs.mkdirSync(lib, { recursive: true });
+  fs.writeFileSync(path.join(lib, 'libharfbuzz.0.dylib'), 'x');
+  const saved = process.env.CI; process.env.CI = 'true';
+  try { assert.ok(!verify(app).some((p) => /libharfbuzz/.test(p.what))); }
+  finally { if (saved === undefined) delete process.env.CI; else process.env.CI = saved; }
+  cleanup(root);
+});
+
+test('Electron\'s own libraries (Chromium, covered by its licence page) are not held to the notices', () => {
+  const { root, app } = packagedApp();
+  const fw = path.join(app, 'Contents', 'Frameworks', 'Electron Framework.framework', 'Libraries');
+  fs.mkdirSync(fw, { recursive: true });
+  fs.writeFileSync(path.join(fw, 'libEGL.dylib'), 'x');
+  fs.writeFileSync(path.join(fw, 'libvk_swiftshader.dylib'), 'x');
+  const saved = process.env.CI; delete process.env.CI;
+  try { assert.deepStrictEqual(verify(app).filter((p) => /never names it/.test(p.what)), []); }
+  finally { if (saved !== undefined) process.env.CI = saved; }
+  cleanup(root);
 });

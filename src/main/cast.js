@@ -45,6 +45,7 @@ function lanSubnets() {
   return out;
 }
 
+const { pollStatus } = require('./cast-poll');
 module.exports = function createCast() {
   const ev = new EventEmitter();
   const devices = new Map(); // host → { host, name }
@@ -268,12 +269,29 @@ module.exports = function createCast() {
   // castv2-client's LOAD_FAILED path calls back with a bare Error and NO status object, so reading
   // detailedErrorCode off the load callback yields null every time. The code does arrive, just
   // separately: the receiver broadcasts an error MEDIA_STATUS frame. Capture it there.
-  let lastErrCode = null;
+  let lastErrCode = null, activeContentId = null;
   function noteTracks(s) { if (s && s.media && Array.isArray(s.media.tracks) && s.media.tracks.length) lastTracks = s.media.tracks; }
+  // A receiver reports its position only when something CHANGES, so a long uninterrupted stretch of
+  // playback is silent: measured on an LG, status frames stopped 16 s into a 60 s film while it kept
+  // playing, which froze the progress bar and left recovery and the resume marker with a stale
+  // position. Ask for it. The reply arrives as an ordinary status frame, through the same handler.
+  const STATUS_POLL_MS = 3000;
+  let statusTimer = null;
+  function stopStatusPoll() { if (statusTimer) { clearInterval(statusTimer); statusTimer = null; } }
+  function startStatusPoll(p) {
+    stopStatusPoll();
+    statusTimer = setInterval(() => {
+      if (p !== player) return stopStatusPoll(); // superseded: this timer belongs to a retired session
+      pollStatus(p); // never throws, never leaves a listener behind (see cast-poll.js)
+    }, STATUS_POLL_MS);
+    if (statusTimer.unref) statusTimer.unref();
+  }
   function teardownClient() {
-    try { if (player) player.removeAllListeners(); } catch (e) {}
-    try { if (client) { client.removeAllListeners(); client.close(); } } catch (e) {} // detach so a closed client's late events can't fire
-    client = null; player = null; connectedHost = null; lastStatus = null; lastTracks = [];
+    stopStatusPoll();
+    const retiredPlayer = player, retiredClient = client;
+    client = null; player = null; connectedHost = null; lastStatus = null; lastTracks = []; activeContentId = null;
+    try { if (retiredPlayer) retiredPlayer.removeAllListeners(); } catch (e) {}
+    try { if (retiredClient) { retiredClient.removeAllListeners(); retiredClient.close(); } } catch (e) {}
   }
 
   // load(host, media, cb) — media = { url, title, contentType, currentTime, subs:[{url,lang,name}] }
@@ -317,10 +335,17 @@ module.exports = function createCast() {
     // Issue the LOAD on a media player. onStale (fast path only) lets a reused-but-dead session
     // fall back to a full handshake instead of surfacing the failure to the user.
     const sendLoad = (p, onStale) => {
+      activeContentId = media.url;
+      lastStatus = null; lastTracks = [];
       endedEmitted = false; // a new item on a reused session must be able to report FINISHED again
       lastErrCode = null;   // this item's code only
-      p.load(mediaInfo(), { autoplay: true, currentTime: hls ? 0 : (media.currentTime || 0) }, (e2, status) => {
-        if (myGen !== castGen) return; // superseded during load → don't emit/settle for a dead session
+      let loadCompleted = false;
+      // A live pipe starts AT the position the viewer asked for (the server seeks before it streams), so
+      // the receiver's own clock starts at zero. Asking it to seek to the film time as well sent the LG
+      // looking for a point the stream does not have yet. The app adds the stream's origin back.
+      p.load(mediaInfo(), { autoplay: true, currentTime: (hls || media.livePipe) ? 0 : (media.currentTime || 0) }, (e2, status) => {
+        if (myGen !== castGen || loadCompleted) return; // superseded or duplicate completion
+        loadCompleted = true;
         if (e2 && onStale) return onStale(e2);
         if (e2) {
           // Surface the CAF detailedErrorCode so the orchestrator can branch: 104 MEDIA_SRC_NOT_SUPPORTED
@@ -332,10 +357,12 @@ module.exports = function createCast() {
             const code = (status && status.detailedErrorCode) || lastErrCode || null;
             if (code != null) e2.detailedErrorCode = code;
             ev.emit('error', { message: e2.message, code });
+            if (myGen !== castGen) return;
             done(e2, status);
           }, 500);
         }
         if (status) { lastStatus = status; noteTracks(status); reconnectTries = 0; ev.emit('status', status); } // fresh session → reset retries
+        if (myGen !== castGen) return;
         done(e2, status);
       });
     };
@@ -357,8 +384,18 @@ module.exports = function createCast() {
     }
     fullConnect();
 
+    function failConnection(error) {
+      teardownClient();
+      if (myGen !== castGen) return;
+      ev.emit('error', { message: String(error && error.message || error) });
+      if (myGen !== castGen) return;
+      done(error);
+    }
+
     function fullConnect() {
+    if (myGen !== castGen) return;
     teardownClient();
+    if (myGen !== castGen) return;
     const { Client } = castLib();
     const c = client = new Client();
     // Connect timeout: castv2's connect callback never fires for an unreachable TV — without
@@ -371,9 +408,10 @@ module.exports = function createCast() {
       if (!_wokeOnce) {
         _wokeOnce = true;
         teardownClient();
+        if (myGen !== castGen) return;
         return wake(host, () => setTimeout(() => { if (myGen === castGen) fullConnect(); }, 4000));
       }
-      ev.emit('error', { message: 'Chromecast connect timed out' }); teardownClient(); done(new Error('connect timeout'));
+      failConnection(new Error('Chromecast connect timed out'));
     }, 12000);
     c.on('error', (e) => {
       if (myGen !== castGen) { clearTimeout(to); try { c.removeAllListeners(); c.close(); } catch (x) {} return; } // superseded client — ignore
@@ -383,6 +421,7 @@ module.exports = function createCast() {
         reconnectTries++;
         const at = (lastStatus && lastStatus.currentTime) || media.currentTime || 0;
         teardownClient();
+        if (myGen !== castGen) return;
         // A non-seekable MKV pipe can't be resumed by re-GETting the same URL — that restarts the ffmpeg
         // from the ORIGINAL start (the receiver can't seek a live pipe) and 404s if the token was
         // superseded. Ask the orchestrator to re-cast a fresh stream from the live position; seekable
@@ -396,7 +435,7 @@ module.exports = function createCast() {
         setTimeout(() => { if (myGen === castGen) load(host, Object.assign({}, media, { currentTime: at }), () => {}, true); }, 1500); // skip if superseded/stopped
         return;
       }
-      ev.emit('error', { message: String(e && e.message || e) }); teardownClient(); done(e);
+      failConnection(e);
     });
     c.connect(host, () => {
       if (myGen !== castGen) { clearTimeout(to); try { c.removeAllListeners(); c.close(); } catch (x) {} return; } // a newer load/stop won — abandon
@@ -405,14 +444,18 @@ module.exports = function createCast() {
         if (myGen !== castGen) { clearTimeout(to); try { c.removeAllListeners(); c.close(); } catch (x) {} return; }
         if (err) { ev.emit('error', { message: err.message }); return done(err); }
         player = p;
+        startStatusPoll(p);
         p.on('status', (s) => {
           // Guard on identity, NOT on the generation this closure was created with: a reused
           // session (fast path) outlives its original load, so a captured myGen would go stale
           // and silently drop every status frame. teardownClient() detaches superseded players.
           if (p !== player) return;
+          if (s && s.media && s.media.contentId != null && activeContentId != null && s.media.contentId !== activeContentId) return;
           if (s && s.detailedErrorCode != null) lastErrCode = s.detailedErrorCode;
           if (s) { lastStatus = s; noteTracks(s); }
+          const statusGeneration = castGen;
           ev.emit('status', s);
+          if (p !== player || statusGeneration !== castGen) return;
           // Media played to the end: the receiver reports IDLE with idleReason FINISHED. Surface it once
           // so the app can clear the resume marker + leave the wedged last frame. (Audit M5)
           if (s && s.playerState === 'IDLE' && s.idleReason === 'FINISHED' && !endedEmitted) { endedEmitted = true; ev.emit('ended'); }
@@ -436,7 +479,7 @@ module.exports = function createCast() {
   }
   // setTrack('audio'|'subs', trackId) — trackId -1 = subtitles off
   function setTrack(kind, id) {
-    if (!player) return;
+    if (!player || (kind !== 'audio' && kind !== 'subs') || !Number.isSafeInteger(id) || id < -1 || (kind === 'audio' && id < 0)) return;
     const all = lastTracks || [];
     if (!all.length) {
       // Receiver never echoed a track list (sideloaded-only — e.g. the single-MKV transport's subs).
@@ -448,6 +491,7 @@ module.exports = function createCast() {
     }
     const groupType = kind === 'subs' ? 'TEXT' : 'AUDIO';
     const groupIds = all.filter((t) => t.type === groupType).map((t) => t.trackId);
+    if (id >= 0 && !groupIds.includes(id)) return;
     let next = ((lastStatus && lastStatus.activeTrackIds) || []).filter((x) => groupIds.indexOf(x) < 0);
     if (id >= 0) next.push(id);
     try { player.media.sessionRequest({ type: 'EDIT_TRACKS_INFO', activeTrackIds: next }, () => {}); } catch (e) {}
