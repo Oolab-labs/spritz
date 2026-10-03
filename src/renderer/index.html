@@ -34,6 +34,20 @@
       </div>
       <p class="drop-hint">or drop a video here</p>
     </div>
+    <!-- Devices. Only appears when there is something to say: a television asking to pair, or one
+         already paired. Pairing has to be reachable with NO media open — found on hardware, where
+         the cast menu lives in the player controls and is therefore unreachable from this screen. -->
+    <div id="devices">
+      <div class="cw-title">Devices</div>
+      <div id="devices-list"></div>
+      <div class="device-meta" id="devices-empty">Open Spritz Receiver on your LG TV, then type its code here. <a href="#" id="devices-installer">Show the TV installer in Finder</a></div>
+      <div class="device-meta" id="devices-address"></div>
+      <div id="home-pair" class="hidden">
+        <label class="pair-name" id="home-pair-name" for="home-code">Spritz Receiver</label>
+        <input id="home-code" aria-label="Pairing code shown on your television" class="pair-input" inputmode="numeric" maxlength="4" placeholder="Code" autocomplete="off">
+        <div class="pair-error hidden" id="home-pair-error" role="alert"></div>
+      </div>
+    </div>
     <div id="continue-watching" class="hidden">
       <div class="cw-title">Continue Watching</div>
       <div class="cw-row" id="cw-row"></div>
@@ -49,61 +63,62 @@
       <div id="thumb-preview" class="hidden"><img id="thumb-img" alt="" /><span id="thumb-time">0:00</span></div>
       <div class="progressbar">
         <div class="buffered" id="seek-buffered"></div>
-        <input type="range" class="slider" id="seek" min="0" max="100" value="0" step="0.01" disabled />
+        <input type="range" class="slider" id="seek" aria-label="Seek" min="0" max="100" value="0" step="0.01" disabled />
       </div>
       <div class="controlbar">
-        <div class="button prev-button hidden" id="btn-prev" title="Previous">
+        <button type="button" class="button prev-button hidden" id="btn-prev" title="Previous" aria-label="Previous">
           <svg class="ic" viewBox="0 0 24 24"><path d="M7 6h2v12H7V6zm3.5 6 8.5 6V6l-8.5 6z"/></svg>
-        </div>
-        <div class="button play-pause-button" id="playpause" title="Play/Pause">
+        </button>
+        <button type="button" class="button play-pause-button" id="playpause" title="Play/Pause" aria-label="Play/Pause">
           <svg class="ic pause" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
           <svg class="ic play hidden" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
           <svg class="ic replay hidden" viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg>
-        </div>
-        <div class="button next-button hidden" id="btn-next" title="Next">
+        </button>
+        <button type="button" class="button next-button hidden" id="btn-next" title="Next" aria-label="Next">
           <svg class="ic" viewBox="0 0 24 24"><path d="M17 6h-2v12h2V6zM5 18l8.5-6L5 6v12z"/></svg>
-        </div>
-        <div class="button stop-button" id="stop" title="Stop">
+        </button>
+        <button type="button" class="button stop-button" id="stop" title="Stop" aria-label="Stop">
           <svg class="ic" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>
-        </div>
+        </button>
         <div class="timestamp"><span class="current">0:00</span><span class="sep">/</span><span class="total">0:00</span></div>
         <div class="quality hidden" id="quality"></div>
 
         <div class="spacer title" id="player-title"></div>
 
         <div class="volume-group" id="volgroup">
-          <div class="button volume-button" id="mute" title="Mute">
+          <button type="button" class="button volume-button" id="mute" title="Mute" aria-label="Mute">
             <svg class="ic vol-on" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>
             <svg class="ic vol-off hidden" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3z"/><path d="M16 8l5 5m0-5l-5 5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
-          </div>
-          <div class="volume-control"><input type="range" class="volume-slider" id="vol" min="0" max="100" value="100" /></div>
+          </button>
+          <div class="volume-control"><input type="range" class="volume-slider" id="vol" aria-label="Volume" min="0" max="100" value="100" /></div>
         </div>
 
-        <div class="button playback-button" id="btn-tune" data-menu="menu-playback" title="Speed & aspect">
+        <button type="button" class="button playback-button" id="btn-tune" data-menu="menu-playback" title="Speed & aspect" aria-label="Speed and aspect ratio" aria-haspopup="menu" aria-expanded="false">
           <svg class="ic" viewBox="0 0 24 24"><path d="M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0-2a2 2 0 1 1 0-4 2 2 0 0 1 0 4zM3 13h4v-2H3v2zm14 0h4v-2h-4v2zM11 3v4h2V3h-2zm0 14v4h2v-4h-2z"/></svg>
-        </div>
-        <div class="button playlist-button hidden" id="btn-playlist" data-menu="menu-playlist" title="Playlist">
+        </button>
+        <button type="button" class="button playlist-button hidden" id="btn-playlist" data-menu="menu-playlist" title="Playlist" aria-label="Playlist" aria-haspopup="menu" aria-expanded="false">
           <svg class="ic" viewBox="0 0 24 24"><path d="M3 6h12v2H3V6zm0 4h12v2H3v-2zm0 4h8v2H3v-2zm12 .5v6l5-3-5-3z"/></svg>
-        </div>
-        <div class="button audio-tracks-button hidden" id="btn-audio" data-menu="menu-audio" title="Audio track">
+        </button>
+        <button type="button" class="button audio-tracks-button hidden" id="btn-audio" data-menu="menu-audio" title="Audio track" aria-label="Audio track" aria-haspopup="menu" aria-expanded="false">
           <svg class="ic" viewBox="0 0 24 24"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zm7 9a7 7 0 0 1-6 6.92V21h-2v-2.08A7 7 0 0 1 5 12h2a5 5 0 0 0 10 0h2z"/></svg>
-        </div>
-        <div class="button subtitles-button hidden" id="btn-subs" data-menu="menu-subs" title="Subtitles">
+        </button>
+        <button type="button" class="button subtitles-button hidden" id="btn-subs" data-menu="menu-subs" title="Subtitles" aria-label="Subtitles" aria-haspopup="menu" aria-expanded="false">
           <svg class="ic" viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM6 13v2h6v-2H6zm8 0v2h4v-2h-4zM6 9v2h4V9H6zm6 0v2h6V9h-6z"/></svg>
-        </div>
-        <div class="button cast-button hidden" id="cast" data-menu="menu-cast" title="Cast / AirPlay">
+        </button>
+        <button type="button" class="button cast-button hidden" id="cast" data-menu="menu-cast" title="Cast / AirPlay" aria-label="Cast or AirPlay" aria-haspopup="menu" aria-expanded="false">
           <svg class="ic" viewBox="0 0 24 24"><path d="M1 18v3h3a3 3 0 0 0-3-3zm0-4v2a5 5 0 0 1 5 5h2a7 7 0 0 0-7-7zm0-4v2a9 9 0 0 1 9 9h2A11 11 0 0 0 1 10zm20-7H3a2 2 0 0 0-2 2v3h2V5h18v14h-7v2h7a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/></svg>
-        </div>
-        <div class="button fullscreen-button" id="fullscreen" title="Fullscreen">
+        </button>
+        <button type="button" class="button fullscreen-button" id="fullscreen" title="Fullscreen" aria-label="Fullscreen">
           <svg class="ic fs-enter" viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
           <svg class="ic fs-leave hidden" viewBox="0 0 24 24"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>
-        </div>
+        </button>
       </div>
     </div>
 
-    <div class="menu hidden" id="menu-audio">
+    <div class="menu hidden" id="menu-audio" role="group" aria-label="Audio track">
       <div class="menu-title">Audio</div>
       <ul class="list"></ul>
+      <div class="menu-note hidden" role="note"></div>
       <div class="menu-sep"></div>
       <div class="delay-row"><span>Audio delay</span>
         <button class="delay-btn" data-delay="audio" data-step="-0.1">−</button>
@@ -111,9 +126,10 @@
         <button class="delay-btn" data-delay="audio" data-step="0.1">+</button>
       </div>
     </div>
-    <div class="menu hidden" id="menu-subs">
+    <div class="menu hidden" id="menu-subs" role="group" aria-label="Subtitles">
       <div class="menu-title">Subtitles</div>
       <ul class="list"><li data-sid="off" class="active">Off</li></ul>
+      <div class="menu-note hidden" role="note"></div>
       <div class="menu-sep"></div>
       <div class="delay-row"><span>Subtitle delay</span>
         <button class="delay-btn" data-delay="sub" data-step="-0.1">−</button>
@@ -128,16 +144,31 @@
            SPRITZ_EXPERIMENTAL=1 to put this back in the menu. -->
       <div class="menu-action hidden" id="sub-generate">Generate Subtitles (Whisper)</div>
     </div>
-    <div class="menu hidden" id="menu-cast">
+    <div class="menu hidden" id="menu-cast" role="group" aria-label="Cast and AirPlay">
       <div class="menu-title">Cast / AirPlay</div>
       <ul class="list">
         <!-- AirPlay is always available; the native AVRoutePickerView overlays this row and draws
              its own glyph at the left (padding clears space for it). Text-only to avoid a 2nd glyph. -->
-        <li class="cast-airplay" id="cast-airplay-row">AirPlay</li>
+        <li class="cast-airplay" id="cast-airplay-row"><div class="cast-name">AirPlay</div><div class="cast-detail" id="cast-airplay-detail"></div></li>
         <!-- discovered Chromecast / DLNA devices are appended below -->
       </ul>
+      <!-- Spritz Receivers: televisions running Spritz's own receiver, rather than someone else's
+           protocol. Same menu as every other target, because to the viewer it is the same choice. -->
+      <div id="receiver-section" class="hidden">
+        <div class="menu-sep"></div>
+        <div class="menu-title">Spritz Receivers</div>
+        <ul class="list" id="receiver-list"></ul>
+      </div>
+      <div id="receiver-pair" class="hidden">
+        <div class="menu-sep"></div>
+        <div class="pair-row">
+          <label class="pair-name" id="receiver-pair-name" for="receiver-code">Spritz Receiver</label>
+          <input id="receiver-code" aria-label="Pairing code shown on your television" class="pair-input" inputmode="numeric" maxlength="4" placeholder="Code" autocomplete="off">
+          <div class="pair-error hidden" id="receiver-pair-error" role="alert"></div>
+        </div>
+      </div>
     </div>
-    <div class="menu hidden" id="menu-playback">
+    <div class="menu hidden" id="menu-playback" role="group" aria-label="Speed and aspect ratio">
       <div class="menu-title">Speed</div>
       <ul class="list" id="speed-list"></ul>
       <div class="menu-sep"></div>
@@ -150,7 +181,7 @@
         <button class="delay-btn" data-zoom="0.1">+</button>
       </div>
     </div>
-    <div class="menu hidden" id="menu-playlist">
+    <div class="menu hidden" id="menu-playlist" role="group" aria-label="Playlist">
       <div class="menu-title">Playlist</div>
       <ul class="list" id="playlist-list"></ul>
       <div class="menu-sep"></div>
@@ -161,7 +192,7 @@
       <div class="menu-action" id="pl-add">Add files…</div>
     </div>
 
-    <div id="torrent-status" class="hidden"></div>
+    <div id="torrent-status" class="hidden" role="status" aria-live="polite"></div>
     <div id="stats-panel" class="hidden"></div>
 
     <button id="resume-btn" class="hidden" title="Resume playback">
@@ -178,11 +209,11 @@
     <div class="debug hidden" id="debug"></div>
   </section>
 
-  <div class="modal hidden" id="url-modal">
+  <div class="modal hidden" id="url-modal" role="dialog" aria-modal="true" aria-label="Open URL">
     <div class="modal-box">
       <div class="modal-title">Open URL</div>
-      <input type="text" id="url-input" placeholder="https://…  (HLS / direct video / stream)" spellcheck="false" />
-      <input type="text" id="url-referer" class="url-extra" placeholder="Referer (optional — for hotlink-protected links)" spellcheck="false" />
+      <input type="text" id="url-input" aria-label="Media URL" placeholder="https://…  (HLS / direct video / stream)" spellcheck="false" />
+      <input type="text" id="url-referer" aria-label="Referer (optional)" class="url-extra" placeholder="Referer (optional — for hotlink-protected links)" spellcheck="false" />
       <div class="modal-actions">
         <button class="btn" id="url-cancel">Cancel</button>
         <button class="btn primary" id="url-open">Open</button>
@@ -190,18 +221,18 @@
     </div>
   </div>
 
-  <div class="modal hidden" id="settings-modal">
+  <div class="modal hidden" id="settings-modal" role="dialog" aria-modal="true" aria-label="Settings">
     <div class="modal-box">
       <div class="modal-title">Settings</div>
       <div class="setting-row">
         <div class="setting-text"><div class="setting-name">Motion interpolation</div>
           <div class="setting-desc">Smooth judder by resampling frames to the display rate. GPU-heavier; off by default.</div></div>
-        <label class="switch"><input type="checkbox" id="set-interp" /><span class="switch-track"></span></label>
+        <label class="switch"><input type="checkbox" id="set-interp" aria-label="Motion interpolation" /><span class="switch-track"></span></label>
       </div>
       <div class="setting-row">
         <div class="setting-text"><div class="setting-name">Anime4K upscaling</div>
           <div class="setting-desc">Real-time shader upscaling, tuned for anime.</div></div>
-        <select id="set-anime4k">
+        <select id="set-anime4k" aria-label="Anime4K upscaling">
           <option value="">Off</option><option value="A">Mode A · 1080p</option>
           <option value="B">Mode B · 720p</option><option value="C">Mode C · 480p</option>
         </select>
@@ -209,17 +240,17 @@
       <div class="setting-row">
         <div class="setting-text"><div class="setting-name">TV addresses (manual)</div>
           <div class="setting-desc">Comma-separated IPs to probe directly, for when a TV never shows up on its own. Discovery still runs normally.</div></div>
-        <input type="text" id="set-cast-hosts" class="setting-input" placeholder="192.168.1.8, 192.168.1.20" spellcheck="false" />
+        <input type="text" id="set-cast-hosts" aria-label="Manual TV addresses" class="setting-input" placeholder="192.168.1.8, 192.168.1.20" spellcheck="false" />
       </div>
       <div class="setting-row">
         <div class="setting-text"><div class="setting-name">Skip sponsors (YouTube)</div>
           <div class="setting-desc">Auto-skip sponsor / intro / outro segments via SponsorBlock.</div></div>
-        <label class="switch"><input type="checkbox" id="set-sponsors" /><span class="switch-track"></span></label>
+        <label class="switch"><input type="checkbox" id="set-sponsors" aria-label="Skip sponsors" /><span class="switch-track"></span></label>
       </div>
       <div class="setting-row">
         <div class="setting-text"><div class="setting-name">Subtitle size</div>
           <div class="setting-desc">On-screen subtitle text size.</div></div>
-        <select id="set-subsize">
+        <select id="set-subsize" aria-label="Subtitle size">
           <option value="36">Small</option><option value="46" selected>Medium</option>
           <option value="58">Large</option><option value="72">Huge</option>
         </select>
@@ -227,18 +258,18 @@
       <div class="setting-row">
         <div class="setting-text"><div class="setting-name">Subtitle background</div>
           <div class="setting-desc">Draw a translucent box behind subtitles for readability.</div></div>
-        <label class="switch"><input type="checkbox" id="set-subbg" /><span class="switch-track"></span></label>
+        <label class="switch"><input type="checkbox" id="set-subbg" aria-label="Subtitle background" /><span class="switch-track"></span></label>
       </div>
       <div class="setting-row">
         <div class="setting-text"><div class="setting-name">Only torrent over VPN</div>
           <div class="setting-desc">Block torrents unless a VPN tunnel is active. <span id="vpn-state">VPN: checking…</span></div></div>
-        <label class="switch"><input type="checkbox" id="set-requirevpn" /><span class="switch-track"></span></label>
+        <label class="switch"><input type="checkbox" id="set-requirevpn" aria-label="Only torrent over VPN" /><span class="switch-track"></span></label>
       </div>
       <div class="modal-actions"><button class="btn primary" id="settings-close">Done</button></div>
     </div>
   </div>
 
-  <div class="modal hidden" id="torrent-modal">
+  <div class="modal hidden" id="torrent-modal" role="dialog" aria-modal="true" aria-label="Choose files to stream">
     <div class="modal-box">
       <div class="modal-title">Choose a file</div>
       <ul class="list" id="torrent-file-list"></ul>
@@ -246,6 +277,8 @@
     </div>
   </div>
 
+  <script src="./route-hints.js"></script>
+  <script src="./cast-routes.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

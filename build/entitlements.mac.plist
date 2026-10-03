@@ -10,8 +10,6 @@
   <!-- Load the native .node addons and the bundled libmpv / ffmpeg binaries (signed separately). -->
   <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
-  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
-  <true/>
   <!-- Torrent peers + the LAN HTTP server used for AirPlay/Chromecast/DLNA casting. -->
   <key>com.apple.security.network.client</key>
   <true/>

@@ -77,6 +77,9 @@ test('the transitional zeros are not believed', () => {
 test('a missing or nonsense clock is not believed', () => {
   assert.equal(trustPosition('PLAYING', undefined), false);
   assert.equal(trustPosition('PLAYING', NaN), false);
+  assert.equal(trustPosition('PLAYING', Infinity), false);
+  assert.equal(trustPosition('PAUSED', Infinity), false);
+  assert.equal(trustPosition('PLAYING', '100'), false);
   assert.equal(trustPosition('PLAYING', -5), false);
   assert.equal(trustPosition(undefined, 100), false);
 });

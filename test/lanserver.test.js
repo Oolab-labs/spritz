@@ -61,7 +61,11 @@ test('the token is required, and unguessable', async (t) => {
   assert.match(token, /^[0-9a-f]{32}$/, '128 bits of hex — the only thing gating LAN access');
 
   for (const bad of ['/file/', '/file/0000000000000000000000000000000/x.mp4',
-    '/file/' + token.slice(0, -1) + '0/x.mp4', '/']) {
+    // A near-miss token: the real one with its LAST character changed. Flipped conditionally,
+    // because hardcoding '0' reconstructs the real token whenever it happens to end in '0' — a
+    // 1-in-16 flake that made this test intermittently claim the server leaked a file it had every
+    // right to serve.
+    '/file/' + token.slice(0, -1) + (token.endsWith('0') ? '1' : '0') + '/x.mp4', '/']) {
     const res = await get(base + bad);
     assert.notStrictEqual(res.status, 200, bad + ' must not serve content');
     assert.ok(!res.body.includes('PRETEND-MP4-BYTES'), bad + ' must not leak the file');
@@ -81,6 +85,55 @@ test('a token grants one file, not the directory around it', async (t) => {
     const res = await get(base + '/file/' + token + tail);
     assert.ok(!res.body.includes('TOP SECRET'), tail + ' must not reach a sibling file');
   }
+});
+
+test('suffix, open and ignored ranges retain correct HTTP bodies', async (t) => {
+  const url = await served;
+  if (!url) return t.skip('no LAN address');
+  for (const [range, status, body] of [
+    ['bytes=-5', 206, 'BYTES'], ['bytes=12-', 206, 'BYTES'],
+    ['bytes=-999999999999999999999999', 206, 'PRETEND-MP4-BYTES'],
+    ['items=0-1', 200, 'PRETEND-MP4-BYTES'],
+    ['bytes=0-1,4-5', 200, 'PRETEND-MP4-BYTES'],
+    ['junk bytes=0-1', 200, 'PRETEND-MP4-BYTES'],
+    ['bytes=-0', 416, ''], ['bytes=999999999999999999999-', 416, '']
+  ]) {
+    const result = await get(url, { Range: range });
+    assert.strictEqual(result.status, status, range);
+    assert.strictEqual(result.body, body, range);
+  }
+});
+
+test('abandoned full and partial requests destroy their file readers', async (t) => {
+  const url = await served;
+  if (!url) return t.skip('no LAN address');
+  const original = fs.createReadStream;
+  const { PassThrough } = require('stream');
+  try {
+    for (const headers of [{}, { Range: 'bytes=0-6' }]) {
+      let source;
+      const closed = new Promise((resolve) => {
+        fs.createReadStream = () => {
+          source = new PassThrough();
+          source.once('close', resolve);
+          source.write('P');
+          return source;
+        };
+      });
+      await new Promise((resolve, reject) => {
+        const request = http.get(url, { headers }, (response) => {
+          response.once('data', () => { response.destroy(); resolve(); });
+        });
+        request.on('error', reject);
+        request.setTimeout(2000, () => request.destroy(new Error('timeout')));
+      });
+      await Promise.race([closed, new Promise((_, reject) => {
+        const timer = setTimeout(() => reject(new Error('reader remained open')), 2000);
+        closed.then(() => clearTimeout(timer));
+      })]);
+      assert.ok(source.destroyed);
+    }
+  } finally { fs.createReadStream = original; }
 });
 
 test('range requests are answered with 206 and the right slice', async (t) => {
@@ -131,4 +184,44 @@ test('the cast route publishes the container it actually serves', () => {
   assert.equal(typeof lan.castMime, 'function', 'call sites need to read the type, not restate it');
   assert.match(lan.castMime(), /^video\//, 'should be a video MIME type');
   lan.teardown();
+});
+
+test('repeated aborted file responses close actual owned descriptors', { timeout: 10000 }, async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'spritz-abort-fd-'));
+  const lan = createLan({});
+  t.after(() => { lan.teardown(); fs.rmSync(tmp, { recursive: true, force: true }); });
+  const small = path.join(tmp, 'small.mp4'); fs.writeFileSync(small, 'PRETEND-MP4-BYTES');
+  const served = new Promise(resolve => lan.serve(small, resolve));
+  const file = path.join(tmp, 'abort-large.mp4');
+  fs.writeFileSync(file, 'P'); fs.truncateSync(file, 64 * 1024 * 1024);
+  const url = await new Promise(resolve => lan.serve(file, resolve));
+  assert.ok(url, 'a media endpoint is required for descriptor-drain verification');
+  const original = fs.createReadStream;
+  let reader, closed;
+  t.mock.method(fs, 'createReadStream', (input, options) => {
+    const stream = original.call(fs, input, options);
+    if (input === file) {
+      reader = stream;
+      closed = new Promise(resolve => stream.once('close', resolve));
+    }
+    return stream;
+  });
+  for (let i = 0; i < 6; i++) {
+    await new Promise((resolve, reject) => {
+      const request = http.get(url, { headers: i % 2 ? { Range: 'bytes=0-33554431' } : {} }, response => {
+        response.once('data', () => {
+          try { assert.ok(Number.isInteger(reader.fd), 'abort must happen with a real open descriptor'); }
+          catch (error) { response.destroy(); reject(error); return; }
+          response.destroy(); resolve();
+        });
+      });
+      request.on('error', reject);
+      request.setTimeout(2000, () => request.destroy(new Error('response timeout')));
+    });
+    await closed;
+    assert.equal(reader.fd, null);
+    assert.equal(reader.closed, true);
+  }
+  const other = await get(await served);
+  assert.equal(other.status, 200); assert.equal(other.body, 'PRETEND-MP4-BYTES');
 });

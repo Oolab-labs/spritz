@@ -1,7 +1,7 @@
 {
   "name": "spritz",
   "productName": "Spritz",
-  "version": "2.0.0-alpha.0",
+  "version": "2.0.0-rc.15",
   "description": "Spritz \u2014 a modern, arm64-native macOS media player that plays anything (libmpv), streams torrents, and casts to AirPlay, Chromecast, and DLNA. Inspired by classic streaming media players.",
   "main": "src/main/main.js",
   "author": "Spritz contributors",
@@ -9,11 +9,14 @@
   "scripts": {
     "test": "SPRITZ_SOAP_TIMEOUT_SCALE=0.02 node --test \"test/**/*.test.js\"",
     "start": "electron .",
+    "check:torrent": "node build/check-torrent-runtime.js",
     "start:trace": "electron . --enable-logging",
     "rebuild": "for d in native/*/; do (cd \"$d\" && npx node-gyp rebuild --target=$(node -p \"require('electron/package.json').version\") --arch=arm64 --dist-url=https://electronjs.org/headers) || exit 1; done",
-    "dist": "node build/preflight-dist.js && electron-builder --mac --arm64 && node build/verify-package.js",
+    "package:receiver": "node build/package-receiver.js",
+    "dist": "node build/package-receiver.js && node build/collect-licenses.js && node build/preflight-dist.js && node build/check-torrent-runtime.js && electron-builder --mac --arm64 && node build/verify-package.js",
     "postinstall": "electron-builder install-app-deps || true",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "audit:gate": "node build/audit-gate.js"
   },
   "build": {
     "appId": "app.spritz.player",
@@ -21,7 +24,8 @@
     "asar": true,
     "asarUnpack": [
       "native/**/build/Release/**",
-      "vendor/mpv/**"
+      "vendor/mpv/**",
+      "vendor/shaders/**"
     ],
     "files": [
       "src/**",
@@ -36,9 +40,26 @@
       {
         "from": "bin",
         "to": "bin"
+      },
+      {
+        "from": "dist-receiver",
+        "to": "receiver"
+      },
+      {
+        "from": "dist-licenses",
+        "to": "licenses"
       }
     ],
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true
+    },
     "mac": {
+      "icon": "build/icon.icns",
+      "identity": "-",
       "category": "public.app-category.video",
       "target": [
         {
@@ -126,5 +147,9 @@
     "dns-txt": "^2.0.2",
     "multicast-dns": "^7.2.5",
     "webtorrent": "^3.0.16"
+  },
+  "overrides": {
+    "protobufjs": "^7.6.6",
+    "ip-address": "^10.7.3"
   }
 }

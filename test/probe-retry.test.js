@@ -73,3 +73,47 @@ test('retries are spaced, not immediate', () => {
   assert.ok(delays.length >= 2);
   for (const d of delays) assert.ok(d > 0, 'each retry should wait before trying again');
 });
+
+test('error followed by close cannot schedule two retries or accept an old result', () => {
+  const callbacks = [], pending = [], completed = [];
+  probeWithRetries((ms, cb) => callbacks.push(cb), (r, n) => completed.push([r, n]),
+    { schedule: (fn) => pending.push(fn) });
+  callbacks[0](null); callbacks[0](null);
+  assert.equal(pending.length, 1);
+  pending.shift()();
+  callbacks[0]({ vcodec: 'stale' });
+  assert.equal(completed.length, 0);
+  callbacks[1]({ vcodec: 'hevc' }); callbacks[1](null);
+  assert.deepEqual(completed, [[{ vcodec: 'hevc' }, 2]]);
+  assert.equal(pending.length, 0);
+});
+
+test('duplicate failures still exhaust exactly three attempts and finish once', () => {
+  let attempts = 0, completions = 0;
+  probeWithRetries((ms, cb) => { attempts++; cb(null); cb(null); }, () => completions++, { schedule: now });
+  assert.equal(attempts, 3); assert.equal(completions, 1);
+});
+
+test('cancelling a retry delay removes its timer and ignores late answers', () => {
+  let callback, scheduled, cleared, calls = 0, completed = 0;
+  const cancel = probeWithRetries((_, cb) => { calls++; callback = cb; }, () => completed++, {
+    schedule: (fn) => { scheduled = fn; return 42; }, unschedule: (id) => { cleared = id; }
+  });
+  callback(null);
+  cancel();
+  assert.equal(cleared, 42);
+  scheduled(); callback({ vcodec: 'h264' });
+  assert.equal(calls, 1);
+  assert.equal(completed, 0);
+});
+
+test('cancellation disposes the active attempt once before accepting any child response', () => {
+  let callback, disposed = 0, completed = 0;
+  const cancel = probeWithRetries((_, cb) => {
+    callback = cb;
+    return () => { disposed++; cb(null); };
+  }, () => completed++);
+  cancel(); cancel(); callback({ vcodec: 'h264' });
+  assert.equal(disposed, 1);
+  assert.equal(completed, 0);
+});

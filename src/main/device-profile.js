@@ -119,3 +119,10 @@ module.exports = {
   defaultProfile, fromMdns, fromEureka, normalise, outranks, canCopyAudio, isTvLike,
   AUDIO_BASIC, AUDIO_PASSTHROUGH, SOURCES
 };
+
+// UHD is a platform fact, not the web application's 1920x1080 graphics viewport.
+module.exports.fromReceiver = function (reported, id) {
+  const p = defaultProfile();
+  if (!reported || reported.uhd !== true || !['probably', 'maybe'].includes(reported.hevc)) return p;
+  return { ...p, hevc4k: true, maxHeight: 2160, source: 'reported', id: id || null };
+};

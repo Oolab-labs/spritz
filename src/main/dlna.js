@@ -15,6 +15,7 @@ const http = require('http');
 const os = require('os');
 const fs = require('fs');
 const { URL } = require('url');
+const { flagsFor } = require('./dlna-flags'); // shared with lanserver.js: these strings must match byte for byte
 
 // Opt-in plain-file diagnostic log (set SPRITZ_DEBUG=1 to enable; open /tmp/spritz-dlna.log in Finder).
 // Off by default so a public build never writes device names / media URLs to world-readable /tmp.
@@ -324,13 +325,9 @@ module.exports = function createDlna() {
   function didl(url, title, contentType, subUrl, size, duration) {
     // 4th protocolInfo field carries DLNA flags — MUST be byte-identical to the HTTP
     // contentFeatures.dlna.org header lanserver.js sends for the SAME url, or strict webOS rejects.
-    //   • /dlna/ proxy URL = a still-downloading torrent (growing source): OP=00 (no byte-seek, so the
-    //     LG reads linearly and never seeks onto undownloaded pieces) + S0/SN_INCREASE + CONNECTION_STALL.
-    //   • everything else = a complete, fully-seekable file: OP=01 byte-range seek. CI=0 = not transcoded.
-    const isLive = /\/dlna\//.test(String(url));
-    const dlnaFlags = isLive
-      ? 'DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0D500000000000000000000000000000'
-      : 'DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000';
+    // Both sites now read the SAME function rather than each spelling the string out, so they cannot
+    // drift apart. See dlna-flags.js for what the profiles mean and when the proxy becomes seekable.
+    const dlnaFlags = flagsFor(url);
     // External-subtitle sidecar (webOS/Samsung): a text/srt <res> the TV fetches alongside the video,
     // plus the sec:CaptionInfoEx / pv:subtitleFileUri vendor extensions (different firmwares honour
     // different ones — all harmless if ignored). Embedded subs need none of this (TV reads them).

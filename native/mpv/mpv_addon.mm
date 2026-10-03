@@ -113,7 +113,7 @@ static std::atomic<bool>        gHasTsfn{false};
 // Value snapshot copied out of mpv_event_property BEFORE the next wait_event
 // (mpv frees the data after that), then marshaled to JS on the main thread.
 struct JsEv {
-  std::string type;     // 'property-change' | 'file-loaded' | 'end-file'
+  std::string type;     // 'property-change' | 'file-loaded' | 'end-file' | 'log'
   std::string name;
   int    valKind = 0;   // 0 null, 1 number, 2 bool, 3 string
   double num = 0;
@@ -436,6 +436,14 @@ static void EventPumpLoop() {
         }
         default: e->valKind = 0; break; // MPV_FORMAT_NONE → unavailable
       }
+    } else if (ev->event_id == MPV_EVENT_LOG_MESSAGE) {
+      // Error-level only (requested after init). Copied here: the event data dies at the next wait.
+      auto* lm = static_cast<mpv_event_log_message*>(ev->data);
+      if (lm && lm->text) {
+        e = new JsEv(); e->type = "log";
+        e->name = lm->prefix ? lm->prefix : "";
+        e->valKind = 3; e->str = lm->text;
+      }
     } else if (ev->event_id == MPV_EVENT_FILE_LOADED) {
       e = new JsEv(); e->type = "file-loaded";
     } else if (ev->event_id == MPV_EVENT_END_FILE) {
@@ -484,6 +492,15 @@ Napi::Value StartPlayer(const Napi::CallbackInfo& info) {
   // High-quality GPU rendering — this libmpv links libplacebo, so the high-quality
   // profile (ewa_lanczossharp up/cscale, mitchell downscale, sigmoid, debanding,
   // auto dithering) is available through the render API.
+  // Audio output: AVFoundation first. mpv 0.41.0's CoreAudio output registers a device-hotplug
+  // listener BEFORE it finishes initialising and, when that init fails, leaves the listener pointing at
+  // freed memory; the next audio device change then crashes the whole app in hotplug_cb. The init fails
+  // with -50 ("unable to set the input channel layout") on some outputs — reproduced with standalone mpv
+  // on Bluetooth headphones (Sony WH-1000XM5), not on the built-in speakers — and the crash was
+  // reproduced on demand by creating and removing a CoreAudio device. mpv already fell back to
+  // AVFoundation after the failure, so trying it first changes nothing a listener could hear and never
+  // creates the dangling listener. CoreAudio stays as the fallback.
+  mpv_set_option_string(gMpv, "ao", "avfoundation,coreaudio");
   mpv_set_option_string(gMpv, "profile", "high-quality");
   // HDR handling. The half-float EDR GL surface + `target-colorspace-hint` let mpv pass
   // HDR10/HLG THROUGH to an EDR-capable display (extended-range output); on an SDR display
@@ -495,6 +512,7 @@ Napi::Value StartPlayer(const Napi::CallbackInfo& info) {
   int rc = mpv_initialize(gMpv);
   if (rc < 0) { mpv_terminate_destroy(gMpv); gMpv = nullptr; Napi::Error::New(env, "mpv_initialize failed").ThrowAsJavaScriptException(); return env.Null(); }
 
+  mpv_request_log_messages(gMpv, "error"); // delivered as 'log' events; see src/main/mpv-log.js
   // Observe the properties the ported player UI needs (M2 maps these 1:1 to the
   // old handlePropertyChange events).
   mpv_observe_property(gMpv, 0, "duration",        MPV_FORMAT_DOUBLE);
@@ -580,6 +598,9 @@ Napi::Value PlayerStat(const Napi::CallbackInfo& info) {
     char* sid = mpv_get_property_string(gMpv, "sid");
     out.Set("aid", Napi::String::New(env, aid ? aid : ""));
     out.Set("sid", Napi::String::New(env, sid ? sid : ""));
+    char* ao = mpv_get_property_string(gMpv, "current-ao"); // which audio output actually started
+    out.Set("currentAo", Napi::String::New(env, ao ? ao : ""));
+    if (ao) mpv_free(ao);
     if (aid) mpv_free(aid);
     if (sid) mpv_free(sid);
     out.Set("timePos", Napi::Number::New(env, tp));

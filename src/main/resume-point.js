@@ -57,7 +57,7 @@ function resumePosition({ first, startSec, livePos, durationSec, rewind } = {}) 
 // relaunched at 3391s, minutes behind, because a transitional zero had overwritten the position it
 // read.
 function trustPosition(playerState, currentTime) {
-  if (typeof currentTime !== 'number' || !(currentTime > 0)) return false;
+  if (typeof currentTime !== 'number' || !Number.isFinite(currentTime) || !(currentTime > 0)) return false;
   return playerState === 'PLAYING' || playerState === 'PAUSED';
 }
 

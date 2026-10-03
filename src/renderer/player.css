@@ -35,31 +35,34 @@ html, body {
 body:has(.controls.idle) #winctl { opacity: 0; pointer-events: none; transition: opacity .2s; }
 
 /* ---------- welcome ---------- */
+/* A scrolling column, not a centred grid with a fixed footer: the hero, Devices and Continue Watching are
+   stacked in normal flow, so they can never be drawn on top of one another, and when the window is too
+   short the whole screen scrolls instead of cutting something off. `margin: auto` on the first and last
+   children centres the group when there is room (and collapses to nothing when there is not). */
 #home {
   position: fixed; inset: 0; z-index: 10; background: #0b0b0f;
-  display: grid; place-items: center;
+  display: flex; flex-direction: column; align-items: center;
+  overflow-y: auto; padding: 48px 0 28px; box-sizing: border-box;
 }
+#home > :first-child { margin-top: auto; }
+#home > :last-child { margin-bottom: auto; }
 .home-inner { text-align: center; }
 .home-actions { display: flex; gap: 12px; justify-content: center; margin-top: 20px; }
-/* When the Continue-Watching row is present, center the hero in the space ABOVE it (not the whole
-   viewport) so the logo/title/buttons sit balanced instead of floating low with a big void up top and
-   the row crammed against the bottom. Falls back to full-viewport centering when there's no history. */
-#home:has(#continue-watching:not(.hidden)) { padding-bottom: 176px; }
 .logo { font-size: 56px; line-height: 1; }
 #home h1 { margin: 6px 0 2px; font-size: 26px; font-weight: 650; }
 .tagline { margin: 0 0 22px; color: #8b8b96; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; }
-.drop-hint { margin-top: 16px; color: #6a6a76; }
+.drop-hint { margin-top: 16px; color: #9a9aa6; }
 .btn {
   font: inherit; border: 0; border-radius: 9px; padding: 10px 22px; cursor: pointer;
   background: rgba(255,255,255,.08); color: #e7e7ea; transition: background .15s;
 }
 .btn:hover { background: rgba(255,255,255,.14); }
-.btn.primary { background: var(--accent); color: #fff; font-weight: 600; }
-.btn.primary:hover { background: #2a93ff; }
+.btn.primary { background: #0a66d6; color: #fff; font-weight: 600; }   /* white on this is 5.3:1; the lighter accent was 3.7:1 */
+.btn.primary:hover { background: #1a78ec; }
 body.dragging #home { outline: 2px dashed var(--accent); outline-offset: -10px; }
 
 /* Continue Watching wall (home screen, built from watch history) */
-#continue-watching { position: fixed; left: 0; right: 0; bottom: 34px; z-index: 11; padding: 0 40px; }
+#continue-watching { width: 100%; box-sizing: border-box; margin-top: 26px; padding: 0 40px; flex: none; }
 .cw-title { font-size: 13px; font-weight: 650; color: #cfcfd6; margin-bottom: 10px; }
 .cw-row { display: flex; gap: 14px; overflow-x: auto; padding-bottom: 8px; }
 .cw-card { flex: 0 0 auto; width: 168px; cursor: pointer; }
@@ -109,6 +112,9 @@ input[type=range]:disabled::-webkit-slider-thumb { background: rgba(255,255,255,
 .controlbar { display: flex; align-items: center; gap: 12px; padding: 0 4px; }
 .button { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px;
   color: #d9d9e2; cursor: pointer; transition: background .12s, color .12s; }
+button.button { appearance: none; border: 0; padding: 0; background: transparent; }
+button.button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.button .ic { pointer-events: none; }
 .button:hover { background: rgba(255,255,255,.12); color: #fff; }
 .ic { width: 22px; height: 22px; fill: currentColor; }
 
@@ -131,7 +137,7 @@ input[type=range]:disabled::-webkit-slider-thumb { background: rgba(255,255,255,
 
 /* track/subtitle popups */
 .menu { position: fixed; bottom: 64px; right: 16px; z-index: 15; min-width: 180px;
-  max-height: 50vh; overflow-y: auto; padding: 6px; border-radius: 10px;
+  max-height: min(70vh, calc(100vh - 96px)); overflow-y: auto; padding: 6px; border-radius: 10px;
   background: rgba(22,22,28,.97); border: 1px solid rgba(255,255,255,.1);
   box-shadow: 0 10px 30px rgba(0,0,0,.5); backdrop-filter: blur(10px); }
 #menu-audio { right: 56px; }
@@ -142,7 +148,7 @@ input[type=range]:disabled::-webkit-slider-thumb { background: rgba(255,255,255,
 .menu li:hover { background: rgba(255,255,255,.08); }
 /* AirPlay row: the native AVRoutePickerView is overlaid here and draws its glyph at the left;
    pad to leave room for it so the "AirPlay" label sits to its right. */
-.cast-airplay { padding-left: 32px !important; position: relative; }
+.cast-airplay { padding-left: 44px !important; position: relative; }
 .menu li.active { color: #fff; }
 .menu li.active::after { content: '✓'; float: right; color: var(--accent); }
 .menu-sep { height: 1px; margin: 6px 4px; background: rgba(255,255,255,.08); }
@@ -170,14 +176,17 @@ input[type=range]:disabled::-webkit-slider-thumb { background: rgba(255,255,255,
 
 /* Open URL modal */
 .modal { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: rgba(0,0,0,.5); }
-.modal-box { width: 460px; max-width: 90vw; padding: 18px; border-radius: 12px;
+.modal-box { width: 460px; max-width: 90vw; padding: 18px; border-radius: 12px; box-sizing: border-box;
+  max-height: calc(100vh - 32px); overflow-y: auto;
   background: #16161c; border: 1px solid rgba(255,255,255,.1); box-shadow: 0 20px 60px rgba(0,0,0,.6); }
 .modal-title { font-size: 15px; font-weight: 650; margin-bottom: 12px; }
 #url-input, .url-extra { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,.14);
   background: rgba(255,255,255,.04); color: #e7e7ea; font: inherit; outline: none; }
 #url-input:focus, .url-extra:focus { border-color: var(--accent); }
 .url-extra { margin-top: 8px; font-size: 12px; }
-.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
+/* Sticky: in a short window the box scrolls, but Done / Cancel stay on screen. */
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin: 14px -18px -18px; padding: 12px 18px 18px;
+  position: sticky; bottom: -18px; background: #16161c; border-radius: 0 0 12px 12px; }
 
 /* Settings panel */
 #settings-modal .modal-box { width: 480px; }
@@ -203,7 +212,10 @@ input[type=range]:disabled::-webkit-slider-thumb { background: rgba(255,255,255,
 body.casting .quality { display: none; }
 
 #casting-overlay { position: fixed; inset: 0; z-index: 12; display: grid; place-items: center;
+  pointer-events: none;
   background: radial-gradient(120% 120% at 50% 42%, #16161f 0%, #0a0a0e 78%); }
+#casting-overlay button { pointer-events: auto; }
+body.casting .controls { opacity: 1; pointer-events: auto; }
 #casting-overlay .cast-glyph { width: 74px; height: 74px; fill: var(--accent);
   filter: drop-shadow(0 0 20px rgba(5,131,255,.45)); animation: castPulse 2.6s ease-in-out infinite; }
 @keyframes castPulse { 0%, 100% { opacity: .88; transform: scale(1); } 50% { opacity: 1; transform: scale(1.045); } }
@@ -238,7 +250,7 @@ body.casting .quality { display: none; }
 .cast-empty-warn { color: #f0b429; white-space: normal; line-height: 1.35; }
 .cast-empty-hint { margin-top: 3px; font-size: 11px; color: #9aa3b0; max-width: 260px; white-space: normal; }
 
-body.casting #torrent-status { display: none; }  /* never overlay the cast remote */
+body.casting #torrent-status { opacity: 1; } /* download also supplies the TV */
 #torrent-file-list { max-height: 46vh; overflow-y: auto; }
 
 /* scrubber thumbnail preview */
@@ -256,3 +268,70 @@ body.casting #torrent-status { display: none; }  /* never overlay the cast remot
 .debug { position: fixed; top: 10px; left: 10px; z-index: 20; padding: 8px 12px;
   background: rgba(0,0,0,.6); border: 1px solid rgba(255,255,255,.1); border-radius: 8px;
   font: 11px ui-monospace, monospace; color: #9ad; white-space: pre; pointer-events: none; }
+
+/* Spritz Receiver rows in the cast menu, and the pairing prompt.
+   Deliberately the same visual language as the existing device rows: a receiver is another place to
+   send a film, not a separate feature with its own styling. */
+.cast-dev.receiver-dev { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 10px; }
+.receiver-detail { flex-basis: 100%; }
+.receiver-status { font-size: 11px; opacity: .55; }
+.receiver-status.online { opacity: .8; }
+.receiver-forget { font-size: 12px; color: #9a9aa6; margin-left: 8px; cursor: pointer; }
+.receiver-forget:hover { color: #fff; text-decoration: underline; }
+/* Pairing: one quiet line — the TV's name, then a four-digit field that submits itself. */
+.pair-row, #home-pair { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.pair-row { padding: 6px 12px 10px; }
+.pair-name { font-size: 12px; color: #9a9aa6; }
+/* Wide letter-spacing and a tabular face: this is read off a television across a room and typed
+   here, so the digits must not run together. */
+.pair-input { width: 76px; padding: 3px 0; border: 0; border-bottom: 1px solid rgba(255,255,255,.3); border-radius: 0;
+  background: transparent; color: inherit; font: inherit; font-size: 16px; text-align: center;
+  letter-spacing: .3em; text-indent: .3em; font-variant-numeric: tabular-nums; }
+.pair-input::placeholder { letter-spacing: 0; text-indent: 0; font-size: 12px; color: #6f6f7a; }
+.pair-input:focus { outline: none; border-bottom-color: #fff; }
+.pair-input:focus-visible { outline: 2px solid #8ab4ff; outline-offset: 2px; }
+.pair-error { flex-basis: 100%; font-size: 11px; color: #ff8f8a; }
+
+/* Home-screen Devices block. Same restraint as Continue Watching: it is information the viewer may
+   act on, not a settings panel. */
+#devices { width: min(900px, 92vw); margin: 26px auto 0; }
+#devices-list { display: flex; flex-direction: column; gap: 6px; }
+.device-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  padding: 9px 12px; border-radius: 8px; background: rgba(255,255,255,.04); font-size: 13px; }
+.device-name { font-weight: 500; }
+.device-meta { font-size: 12px; color: #9a9aa6; }
+#home-pair { margin-top: 10px; justify-content: center; }
+
+/* Devices with nothing paired and nothing asking: two quiet lines, not a card. */
+#devices.compact { margin-top: 18px; text-align: center; }
+#devices.compact .cw-title { display: none; }
+#devices.compact .device-meta { font-size: 12px; opacity: 1; color: #9a9aa6; }
+
+/* Cards and buttons made keyboard-operable need a visible focus ring. */
+.cw-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 8px; }
+.cw-name { font-size: 12px; }
+
+/* People who ask the OS to cut motion get none from us. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+
+/* Cast menu rows: the TV's name, then what the route is. A route that just failed is quieter. */
+.cast-dev .cast-detail, .cast-airplay .cast-detail { font-size: 12px; color: #9a9aa6; margin-top: 1px; }
+.cast-dev.failed .cast-name { opacity: .7; }
+
+/* A line under a track menu saying who changes the choice and what a change costs. */
+.menu-note { max-width: 260px; padding: 6px 10px 4px; font-size: 12px; line-height: 1.35; color: #9a9aa6; white-space: normal; }
+/* DLNA: the TV owns the choice, so the Mac's own list is hidden and the note is all there is. */
+.menu.note-only .list, .menu.note-only .menu-sep, .menu.note-only .delay-row, .menu.note-only .menu-action { display: none; }
+
+/* The cast menu is a short list of TVs, narrow like a list of names. Soda Player keeps one line per device;
+   the full explanation of a route is its tooltip, and the audio and subtitle menus carry their own note. */
+#menu-cast { width: max-content; min-width: 220px; max-width: 300px; max-height: min(400px, calc(100vh - 84px)); overflow-y: auto; overscroll-behavior: contain; }
+#menu-cast:not(.hidden) { display: flex; flex-direction: column; }
+#menu-cast > .menu-title { order: -2; }
+#menu-cast.receiver-first > #receiver-section { order: -1; }
+#menu-cast > #receiver-pair { order: 1; }
+#menu-cast .cast-name, #menu-cast .cast-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#menu-cast .cast-airplay { padding-top: 6px; padding-bottom: 6px; }
+#menu-cast #receiver-section > .menu-title, #menu-cast #receiver-section > .menu-sep { display: none; } /* the row already says Spritz Receiver */

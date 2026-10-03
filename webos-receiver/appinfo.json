@@ -1,0 +1,18 @@
+{
+  "id": "com.spritz.receiver",
+  "version": "0.3.2",
+  "vendor": "Spritz",
+  "type": "web",
+  "main": "index.html",
+  "title": "Spritz Receiver",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "bgColor": "#0b0b0d",
+  "supportPortrait": false,
+  "requiredPermissions": [
+    "internet.access",
+    "deviceinfo.query"
+  ],
+  "disableBackHistoryAPI": true,
+  "bgImage": "splash.png"
+}

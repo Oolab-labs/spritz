@@ -53,6 +53,14 @@ function check(root) {
 
   // The media binaries. build.extraResources copies bin/ to Contents/Resources/bin, which is where
   // binPath() looks at runtime; without it the app has no ffmpeg, ffprobe or yt-dlp at all.
+  // yt-dlp is required too: the packaged app resolves helpers from Resources/bin only (bin-path.js),
+  // so a missing one is a dead feature, not a quiet fallback to Homebrew.
+  if (!exists(at('bin', 'yt-dlp'))) {
+    problems.push({
+      what: 'bin/yt-dlp is missing — the package would ship without link playback',
+      fix: 'Place the standalone yt-dlp_macos release binary at bin/yt-dlp (verify its SHA2-256SUMS entry)'
+    });
+  }
   for (const name of ['ffmpeg', 'ffprobe']) {
     const p = at('bin', name);
     if (!exists(p)) {

@@ -3,7 +3,7 @@
 // Preload bridge (contextIsolation:true). The renderer reaches the main-process
 // libmpv addon and window/dialog services only through window.soda.*
 
-const { contextBridge, ipcRenderer, webUtils, clipboard } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron'); // all available to a sandboxed preload
 
 contextBridge.exposeInMainWorld('soda', {
   // Shelved or half-finished features stay in the tree but out of the menu. A boolean, resolved
@@ -107,7 +107,7 @@ contextBridge.exposeInMainWorld('soda', {
   // "open with Spritz" / magnet / CLI → renderer
   onOpenSource: (cb) => { ipcRenderer.on('open-source', (_e, p) => cb(p.src)); ipcRenderer.send('renderer:ready'); },
   fsSiblings: (path) => ipcRenderer.invoke('fs:siblings', { path }), // play-next-episode
-  thumbAt: (src, time) => ipcRenderer.invoke('thumb:at', { src, time }), // scrubber thumbnail
+  thumbAt: (src, time, consumer = 'preview') => ipcRenderer.invoke('thumb:at', { src, time, consumer }), // scrubber thumbnail
   sponsorSegments: (videoId) => ipcRenderer.invoke('sponsorblock:get', { videoId }), // SponsorBlock
   parsePlaylist: (path) => ipcRenderer.invoke('playlist:parse', { path }), // .m3u/.pls/IPTV
   history: { // resume positions / recents (keyed by original source)
@@ -146,8 +146,33 @@ contextBridge.exposeInMainWorld('soda', {
     unblock: () => ipcRenderer.send('power:unblock')
   },
 
+  // Spritz Receiver — a television running Spritz's own receiver, rather than someone else's.
+  //
+  // The renderer deals in receiver IDS and user actions only. It is never handed a credential, never
+  // handed a pairing code, and cannot reach the trust store: every call below is a request to the
+  // main process, which stays the sole holder of authority. UI visibility is not access control.
+  receiver: {
+    list: () => ipcRenderer.invoke('receiver:list'),          // [{id, name, status, playback}]
+    revealInstaller: () => ipcRenderer.invoke('receiver:revealInstaller'), // {ok, name|why}
+    macAddress: () => ipcRenderer.invoke('receiver:macAddress'), // this Mac's LAN address, or null
+    pending: () => ipcRenderer.invoke('receiver:pending'),    // televisions waiting to be paired
+    // The code the human is reading off their television. Not a secret, and it authenticates
+    // nothing — it only proves the person can see both screens. See receiver-registry.
+    pair: (code) => ipcRenderer.invoke('receiver:pair', { code }),
+    forget: (receiverId) => ipcRenderer.invoke('receiver:forget', { receiverId }),
+    play: (receiverId) => ipcRenderer.invoke('receiver:play', { receiverId }),
+    command: (receiverId, command, arg) => ipcRenderer.invoke('receiver:command', { receiverId, command, arg }),
+    // targets | pairing | position | error
+    onEvent: (cb) => {
+      const h = (_e, ev) => cb(ev);
+      ipcRenderer.on('receiver-event', h);
+      return () => ipcRenderer.removeListener('receiver-event', h);
+    }
+  },
+
   pathForFile: (file) => webUtils.getPathForFile(file), // drag-drop → absolute path
   getVersions: () => ipcRenderer.invoke('app:getVersions'),
-  readClipboard: () => { try { return clipboard.readText(); } catch (e) { return ''; } }, // magnet auto-paste
+  // Magnet/link auto-paste. The clipboard is read in the main process: a sandboxed preload cannot touch it.
+  readClipboard: () => { try { return String(ipcRenderer.sendSync('clipboard:readText') || ''); } catch (e) { return ''; } },
   vpnStatus: () => ipcRenderer.invoke('vpn:status') // {active, name} — kill-switch check
 });
