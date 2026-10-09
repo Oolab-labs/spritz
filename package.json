@@ -22,6 +22,7 @@
     "appId": "app.spritz.player",
     "productName": "Spritz",
     "asar": true,
+    "afterPack": "./build/app-uuid.js",
     "asarUnpack": [
       "native/**/build/Release/**",
       "vendor/mpv/**",

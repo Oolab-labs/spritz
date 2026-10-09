@@ -53,6 +53,9 @@ function homebrewRefs(file) {
 function verify(app) {
   const problems = [];
   if (!fs.existsSync(app)) return [{ what: `no packaged app at ${app}`, fix: 'npm run dist' }];
+  try {
+    for (const file of require('./app-uuid').verifyUuids(app)) problems.push({ what: `executable UUID is not isolated: ${file}`, fix: 'run the afterPack UUID hook before signing' });
+  } catch (error) { problems.push({ what: `cannot verify executable UUIDs: ${error.message}`, fix: 'rebuild the macOS package' }); }
   const files = walk(app);
   const base = (p) => path.basename(p);
 
