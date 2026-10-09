@@ -36,6 +36,11 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      # The torrent-door tests load the real WebTorrent, which imports node-datachannel's native
+      # binding. --ignore-scripts skipped its install step; run just that one (an N-API prebuild).
+      - name: Build node-datachannel
+        run: npm rebuild node-datachannel
+
       - name: Lint
         run: npm run lint
 
