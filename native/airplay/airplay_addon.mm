@@ -67,6 +67,38 @@ static id                 gFailObs = nil;
 
 static void teardownPlayer();
 
+static void RouteAfter(double sec, dispatch_block_t block) {
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(sec * NSEC_PER_SEC)), dispatch_get_main_queue(), block);
+}
+// ROUTE-GRACE-BEGIN — compiled unchanged by test/airplay-route-grace.test.js against a mock player.
+// AVKit's didEnd callback only says the picker sheet closed, not that the user cancelled. A slow
+// (webOS AirPlay-2) handshake can take seconds to set externalPlaybackActive; revoking 0.9s after
+// close killed it. So: poll for a bounded grace, and only on behalf of the player AND picker session
+// that scheduled it — a stale close used to read the global and pause a newly prepared player.
+static const double kRouteGraceSec = 10.0, kRoutePollSec = 0.5;
+static uint64_t gRouteGen = 0;  // bumped by prepare/stop (teardownPlayer) and by every picker open
+static void retireRouteWork(void) { gRouteGen++; }
+static void routeCheck(AVPlayer* owner, uint64_t gen, double waited) {
+  if (!owner || gen != gRouteGen || owner != gPlayer) return;  // superseded player or picker session
+  if (owner.externalPlaybackActive) return;                    // connected: main.js owns route loss now
+  if (waited < kRouteGraceSec) {
+    __weak AVPlayer* weakOwner = owner;
+    RouteAfter(kRoutePollSec, ^{ routeCheck(weakOwner, gen, waited + kRoutePollSec); });
+    return;
+  }
+  owner.allowsExternalPlayback = NO; [owner pause];            // nothing connected: treat as cancelled
+}
+static void routePickerWillBegin(void) {
+  retireRouteWork();  // a reopened picker must not be revoked by the previous close
+  if (gPlayer) { gPlayer.allowsExternalPlayback = YES; [gPlayer play]; }
+}
+static void routePickerDidEnd(void) {
+  if (!gPlayer) return;
+  __weak AVPlayer* weakOwner = gPlayer; uint64_t gen = gRouteGen;
+  RouteAfter(kRoutePollSec, ^{ routeCheck(weakOwner, gen, kRoutePollSec); });
+}
+// ROUTE-GRACE-END
+
 // Dump the item's HTTP-level error log. Must be callable from BOTH the status observer and the
 // FailedToPlayToEnd handler: -12312 arrives with status == readyToPlay, i.e. the item LOADED and then
 // playback died, so gating this on AVPlayerItemStatusFailed printed nothing at all.
@@ -111,15 +143,9 @@ static void emitErrorLog(AVPlayerItem* item, const char* whenStr) {
 }
 // the picker opened → only NOW allow external playback (so a prepared player never
 // auto-grabs a still-selected/sticky route) and play so route-select engages external
-- (void)routePickerViewWillBeginPresentingRoutes:(AVRoutePickerView*)v {
-  if (gPlayer) { gPlayer.allowsExternalPlayback = YES; [gPlayer play]; }
-}
-// the sheet closed → if no route was taken, revoke external again and pause (user cancelled)
-- (void)routePickerViewDidEndPresentingRoutes:(AVRoutePickerView*)v {
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-    if (gPlayer && !gPlayer.externalPlaybackActive) { gPlayer.allowsExternalPlayback = NO; [gPlayer pause]; }
-  });
-}
+- (void)routePickerViewWillBeginPresentingRoutes:(AVRoutePickerView*)v { routePickerWillBegin(); }
+// the sheet closed → if no route connects within the grace, revoke external again and pause
+- (void)routePickerViewDidEndPresentingRoutes:(AVRoutePickerView*)v { routePickerDidEnd(); }
 @end
 static ApObserver* gObserver = nil;
 
@@ -127,6 +153,7 @@ static void RunOnMain(void (^block)(void)) {
   if ([NSThread isMainThread]) block(); else dispatch_sync(dispatch_get_main_queue(), block);
 }
 static void teardownPlayer() {
+  retireRouteWork();  // prepare() and stop() both come through here
   if (gTimeObs) { [gPlayer removeTimeObserver:gTimeObs]; gTimeObs = nil; }
   if (gEndObs)  { [[NSNotificationCenter defaultCenter] removeObserver:gEndObs]; gEndObs = nil; }
   if (gFailObs) { [[NSNotificationCenter defaultCenter] removeObserver:gFailObs]; gFailObs = nil; }

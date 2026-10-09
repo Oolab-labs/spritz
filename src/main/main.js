@@ -1445,7 +1445,16 @@ if (!gotLock) {
                 ' externalActive=' + apExternalActive + (apTimeSeen > 5 ? ' advanced=' + moved.toFixed(1) + 's' + (moved < 0.5 ? ' STALLED' : '') : ''));
               apLastLoggedTime = ev.cur;
             }
-            lastAvTime = ev.cur; avItemFailed = false; if (castEngine === 'airplay') cancelDrop();
+            // Only playback that ADVANCES on an ACTIVE external route proves the cast is healthy. The
+            // prepared AVPlayer keeps ticking locally after a route loss or item failure; letting those
+            // ticks clear the failure and cancel the drop left engine=airplay forever with nothing on
+            // the TV. Off-route ticks also must not move the playhead recovery resumes from.
+            if (castEngine !== 'airplay') lastAvTime = ev.cur;
+            else if (apExternalActive) {
+              const advanced = ev.cur > lastAvTime + 0.05;
+              lastAvTime = ev.cur;
+              if (advanced) { avItemFailed = false; cancelDrop(); }
+            }
             // Tell the LAN server where the player is, so a subtitle extractor started from the remote
             // seeks to the play head instead of reading the file from the beginning.
             try { lan.noteAirplayPosition(ev.cur); } catch (e) {}
