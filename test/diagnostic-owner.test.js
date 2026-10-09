@@ -7,6 +7,7 @@ test('diagnostic owner reflects current intent without copying held media URL', 
   const ctx = { loadGen: 4, receiverIntent: 8, pendingReceiverOperation: { receiverId: 'new-tv' },
     receiverPlan: { receiverId: 'old-tv', mediaId: 'film', epoch: 'epoch-owned', autoplay: false, url: 'http://secret/token' },
     castEngine: 'mpv', runtimeIdentity: () => ({}), app: {}, lan: { lanAddress: () => null },
+    cast: { discoveryState: () => ({ phase: 'idle' }) }, dlna: { discoveryState: () => ({ phase: 'idle' }) },
     diagCast: [], diagDlna: [], diagTorrent: null, mpvLastUrl: null, engineLog: [], diagErrors: [] };
   vm.createContext(ctx);
   vm.runInContext(source.slice(source.indexOf('  function diagSnapshot()'), source.indexOf("  ipcMain.handle('diag:get'")) + '\nthis.snapshot = diagSnapshot;', ctx);

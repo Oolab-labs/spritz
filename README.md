@@ -440,6 +440,11 @@ Built on the shoulders of [mpv](https://github.com/mpv-player/mpv),
 [Electron](https://electronjs.org), and [Anime4K](https://github.com/bloc97/Anime4K).
 See [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) for the full list.
 
+If TV discovery stays empty after changing Local Network permission, use **Retry discovery**
+on the welcome screen or in the Cast / AirPlay menu. Cast and DLNA report their search
+results separately. AirPlay devices appear in the macOS picker; Spritz Receiver must
+be open on the TV.
+
 Torrent errors remain visible until dismissed. The stream status reports the selected
 file's download progress and an approximate buffer runway. Spritz warns when the
 selected file will not fit and stops torrent downloads below a 1 GiB free-space

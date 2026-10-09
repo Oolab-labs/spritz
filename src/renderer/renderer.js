@@ -1279,6 +1279,12 @@ torrentCancel.addEventListener('click', () => { torrentModal.classList.add('hidd
 $('#cast-airplay-detail').textContent = SpritzRouteHints.routeDetail('airplay');
 $('#cast-airplay-row').title = SpritzRouteHints.routeTooltip('airplay');
 const airRow = $('#cast-airplay-row'), castOverlay = $('#casting-overlay'), castStop = $('#cast-stop');
+// The native icon remains in its left strip; the label and keyboard use the same native control.
+airRow.addEventListener('click', (e) => { e.stopPropagation(); soda.airplay.openPicker(); });
+airRow.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  e.preventDefault(); e.stopPropagation(); soda.airplay.openPicker();
+});
 // The native picker centres its glyph in the rectangle it is given, so give it only the strip the row pads for it.
 const PICKER_STRIP = 44;
 function airRect() { const r = airRow.getBoundingClientRect(); return { x: r.left, y: r.top, w: Math.min(r.width, PICKER_STRIP), h: r.height }; }
@@ -1415,18 +1421,22 @@ if (typeof ResizeObserver === 'function') {
 menuCast.addEventListener('scroll', () => { if (pickerShown) requestAnimationFrame(placePicker); }, { passive: true });
 
 let castDevices = [], dlnaDevices = [], castDiscovering = false;
-// Discovery can fail for reasons the app cannot see — most painfully, macOS silently denying the
-// Local Network grant, which makes every LAN probe fail instantly with EHOSTUNREACH. The menu used
-// to say "Searching for TVs…" forever in that case, giving the user nothing to act on. After a
-// grace period with nothing found, say what to check instead.
-let castSearchTimedOut = false, castSearchTimer = null;
-function armCastSearchTimeout() {
-  clearTimeout(castSearchTimer);
-  castSearchTimedOut = false;
-  castSearchTimer = setTimeout(() => {
-    if (!allDevices().length) { castSearchTimedOut = true; renderCastMenu(); }
-  }, 20000);
+let castDiscovery = { phase: 'idle' }, dlnaDiscovery = { phase: 'idle' };
+function renderDiscoveryStatus() {
+  const text = SpritzDiscoveryStatus.describe(castDiscovery, 'cast') + '\n' + SpritzDiscoveryStatus.describe(dlnaDiscovery, 'dlna');
+  ['home-discovery', 'cast-discovery'].forEach(id => { $('#' + id).textContent = text; });
+  const busy = castDiscovery.phase === 'searching' || dlnaDiscovery.phase === 'searching';
+  ['home-discovery-retry', 'cast-discovery-retry'].forEach(id => { $('#' + id).disabled = busy; });
 }
+function retryTvDiscovery() {
+  castDiscovery = dlnaDiscovery = { phase: 'searching', found: 0 };
+  castDiscovering = true;
+  renderDiscoveryStatus();
+  soda.cast.discover(true); soda.dlna.discover(true);
+}
+$('#home-discovery-retry').addEventListener('click', retryTvDiscovery);
+$('#cast-discovery-retry').addEventListener('click', retryTvDiscovery);
+renderDiscoveryStatus();
 let castHost = null;        // host of the active Chromecast session (for auto-next re-cast)
 let castAdvanceHost = null; // set when a cast finished and we're routing the next item to re-cast to this host
 // Eligibility: a TV-fetchable source + at least one discovered device (Chromecast OR DLNA).
@@ -1444,7 +1454,7 @@ function refreshCast() {
   // (the only way LG webOS is found) then runs concurrently with the slow HLS probe+remux, so
   // devices are already warm when castable flips, instead of starting a fresh sweep only after.
   const loaded = engine === 'mpv' && st.loaded;
-  if (loaded && !castDiscovering) { castDiscovering = true; soda.cast.discover(); soda.dlna.discover(); armCastSearchTimeout(); }
+  if (loaded && !castDiscovering) { castDiscovering = true; soda.cast.discover(); soda.dlna.discover(); }
   // ONE Cast/AirPlay button: show whenever the source is castable + playing. AirPlay is ALWAYS
   // offered (first menu row, backed by the native picker); Chromecast/DLNA rows are added as
   // discovery finds them — so the button no longer waits on a device being discovered first.
@@ -1821,14 +1831,8 @@ function renderCastMenu() {
   });
   if (!allDevices().length) {
     const li = document.createElement('li'); li.className = 'cast-empty';
-    if (castSearchTimedOut) {
-      li.classList.add('cast-empty-warn');
-      li.textContent = 'No TVs found';
-      const hint = document.createElement('div'); hint.className = 'cast-empty-hint';
-      hint.textContent = 'Check the TV is on, and that Spritz is enabled under System Settings → Privacy & Security → Local Network.';
-      li.appendChild(hint);
-      li.title = 'Spritz probes the local network directly. If macOS has denied Local Network access, every probe fails instantly and no device can ever be found.';
-    } else li.textContent = 'Searching for TVs…';
+    li.textContent = castDiscovery.phase === 'searching' || dlnaDiscovery.phase === 'searching'
+      ? 'Searching for TVs…' : 'No video receivers found';
     castList.appendChild(li);
   }
   if (pickerShown) requestAnimationFrame(placePicker); // keep the picker over the AirPlay row after a rebuild
@@ -1969,6 +1973,7 @@ castBtn.addEventListener('click', (e) => {
 });
 soda.cast.onEvent((ev) => {
   switch (ev.type) {
+    case 'discovery': castDiscovery = ev.state; renderDiscoveryStatus(); renderCastMenu(); break;
     case 'devices': castDevices = ev.devices || []; renderCastMenu(); refreshCast(); break;
     case 'started':
       castHost = ev.host || castHost; // remember the TV so a finished item can auto-advance to it
@@ -2027,6 +2032,7 @@ soda.cast.onEvent((ev) => {
 });
 soda.dlna.onEvent((ev) => {
   switch (ev.type) {
+    case 'discovery': dlnaDiscovery = ev.state; renderDiscoveryStatus(); renderCastMenu(); break;
     case 'devices': dlnaDevices = ev.devices || []; renderCastMenu(); refreshCast(); break;
     case 'started':
       enterChromecast('dlna', (dlnaDevices.find((d) => d.location === ev.location) || {}).name);
@@ -2077,7 +2083,7 @@ paint(volSlider, 100); updateVolIcon(); armIdle(); renderContinueWatching(); app
 // Pre-warm device discovery at launch (AirPlay route detection is already always-on natively) so
 // Chromecast/DLNA devices are already found by the time a file/torrent loads — the cast button
 // then appears the instant the source becomes castable instead of waiting on a cold /24 sweep.
-soda.cast.discover(); soda.dlna.discover(); castDiscovering = true; armCastSearchTimeout();
+soda.cast.discover(); soda.dlna.discover(); castDiscovering = true;
 // Spritz Receivers are not discovered from here: the television connects OUT to us, so the list is
 // whatever has paired and is currently authenticated. This just subscribes and paints what arrives.
 initReceivers();

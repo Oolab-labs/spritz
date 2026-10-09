@@ -533,8 +533,8 @@ if (!gotLock) {
         } : null
       },
       lan: { address: lanAddr, port: lanPort },
-      cast: { count: diagCast.length, names: diagCast.map((d) => d.name).slice(0, 6) },
-      dlna: { count: diagDlna.length, names: diagDlna.map((d) => d.name).slice(0, 6) },
+      cast: { count: diagCast.length, names: diagCast.map((d) => d.name).slice(0, 6), discovery: cast.discoveryState() },
+      dlna: { count: diagDlna.length, names: diagDlna.map((d) => d.name).slice(0, 6), discovery: dlna.discoveryState() },
       torrent: diagTorrent,
       source: mpvLastUrl ? String(mpvLastUrl).slice(0, 120) : null,
       engineLog: engineLog.slice(-4).reverse(),
@@ -568,6 +568,7 @@ if (!gotLock) {
   // ---- DLNA / UPnP casting (parallel to Chromecast) ----
   let dlnaPoll = null;
   dlna.on('devices', (devices) => { diagDlna = devices || []; send('dlna-event', { type: 'devices', devices }); });
+  dlna.on('discovery', state => send('dlna-event', { type: 'discovery', state }));
   dlna.on('error', (e) => { recordErr('dlna', e.message); send('dlna-event', { type: 'error', message: e.message }); });
   function stopDlnaPoll() { if (dlnaPoll) { clearInterval(dlnaPoll); dlnaPoll = null; } }
   // Poll GetPositionInfo + GetTransportInfo so the remote scrubber advances and a stop-on-TV
@@ -667,7 +668,7 @@ if (!gotLock) {
     } catch (e) { return { ok: false, why: e.message }; }
   });
 
-  ipcMain.on('dlna:discover', () => { try { dlna.startDiscovery(); } catch (e) {} });
+  ipcMain.on('dlna:discover', (_e, opts) => { try { dlna.startDiscovery({ retry: !!(opts && opts.retry === true) }); } catch (e) { recordErr('dlna-discovery', e.message); } });
   ipcMain.on('dlna:load', (_e, { location } = {}) => {
     if (!location) { send('dlna-event', { type: 'error', message: 'No DLNA device selected.' }); return; }
     // DLNA renderers (LG/Samsung/Sony webOS etc.) play direct seekable files, NOT HLS. For a local
@@ -1025,6 +1026,7 @@ if (!gotLock) {
   // bulletproof stream; switching = a fresh stream at the same position). null for direct-MP4 casts.
   let castMkv = null; // { input, caps, audioTracks:[{idx,name,lang}], dur, audioTrack }
   cast.on('devices', (devices) => { diagCast = devices || []; send('cast-event', { type: 'devices', devices }); });
+  cast.on('discovery', state => send('cast-event', { type: 'discovery', state }));
   cast.on('error', (e) => { recordErr('cast', e.message); send('cast-event', { type: 'error', message: e.message }); });
   // A load that the receiver accepts is NOT proof it can play the stream. The grey-screen failures
   // all had a successful load: the receiver took the request, fetched a couple of seconds, and hung
@@ -2150,6 +2152,11 @@ if (!gotLock) {
     try { if (apAddon && rect) apAddon.updatePickerRect(rect.x, rect.y, rect.w, rect.h, true); }
     catch (e) { console.error('[airplay:showButton]', e.message); }
   });
+  ipcMain.on('airplay:openPicker', () => {
+    try { if (apAddon && apAddon.openPicker()) return; }
+    catch (e) { console.error('[airplay:openPicker]', e.message); }
+    send('toast', { message: 'AirPlay picker unavailable. Close and reopen the Cast menu, then try again.' });
+  });
   ipcMain.on('airplay:hideButton', () => { try { if (apAddon) apAddon.updatePickerRect(0, 0, 0, 0, false); } catch (e) {} });
   ipcMain.on('airplay:play', () => { try { if (apAddon) apAddon.play(); } catch (e) {} });
   ipcMain.on('airplay:pause', () => { try { if (apAddon) apAddon.pause(); } catch (e) {} });
@@ -2175,7 +2182,7 @@ if (!gotLock) {
   });
 
   // ---- Google Cast (Chromecast / LG webOS) ----
-  ipcMain.on('cast:discover', () => { try { cast.startDiscovery(); } catch (e) {} });
+  ipcMain.on('cast:discover', (_e, opts) => { try { cast.startDiscovery({ retry: !!(opts && opts.retry === true) }); } catch (e) { recordErr('cast-discovery', e.message); } });
   // User-entered TV addresses, probed in addition to normal discovery. Also handed to the DLNA
   // side, since a TV that hides from one discovery protocol usually hides from both.
   ipcMain.on('cast:manualHosts', (_e, { csv } = {}) => {
