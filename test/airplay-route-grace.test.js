@@ -30,7 +30,7 @@ test('grace behaviour against a mock player', { skip: process.platform !== 'darw
   const region = mm.slice(begin, end);
   const harness = `#import <Foundation/Foundation.h>
 @interface MockPlayer : NSObject
-@property BOOL externalPlaybackActive; @property BOOL allowsExternalPlayback; @property BOOL paused;
+@property BOOL externalPlaybackActive; @property BOOL allowsExternalPlayback; @property BOOL paused; @property (strong) id currentItem;
 - (void)pause; - (void)play;
 @end
 @implementation MockPlayer
@@ -50,7 +50,7 @@ static void runUntil(double t) {
   vnow = t;
 }
 ${region}
-static MockPlayer* fresh(void) { MockPlayer* p = [MockPlayer new]; p.paused = YES; return p; }
+static MockPlayer* fresh(void) { MockPlayer* p = [MockPlayer new]; p.paused = YES; p.currentItem = @1; return p; }
 static void reset(void) { q = [NSMutableArray new]; vnow = 0; retireRouteWork(); gPlayer = fresh(); }
 int main(void) { @autoreleasepool {
   NSMutableDictionary* r = [NSMutableDictionary new];

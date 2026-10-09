@@ -64,6 +64,7 @@ static NSView*            gContent = nil;
 static id                 gTimeObs = nil;
 static id                 gEndObs = nil;
 static id                 gFailObs = nil;
+static AVPlayerItem*      gItem = nil;   // the item whose status/end/fail observers are registered
 
 static void teardownPlayer();
 
@@ -90,10 +91,10 @@ static void routeCheck(AVPlayer* owner, uint64_t gen, double waited) {
 }
 static void routePickerWillBegin(void) {
   retireRouteWork();  // a reopened picker must not be revoked by the previous close
-  if (gPlayer) { gPlayer.allowsExternalPlayback = YES; [gPlayer play]; }
+  if (gPlayer && gPlayer.currentItem) { gPlayer.allowsExternalPlayback = YES; [gPlayer play]; }
 }
 static void routePickerDidEnd(void) {
-  if (!gPlayer) return;
+  if (!gPlayer || !gPlayer.currentItem) return;
   __weak AVPlayer* weakOwner = gPlayer; uint64_t gen = gRouteGen;
   RouteAfter(kRoutePollSec, ^{ routeCheck(weakOwner, gen, kRoutePollSec); });
 }
@@ -152,26 +153,42 @@ static ApObserver* gObserver = nil;
 static void RunOnMain(void (^block)(void)) {
   if ([NSThread isMainThread]) block(); else dispatch_sync(dispatch_get_main_queue(), block);
 }
+// Release the current item, NOT the player. AirPlay reached only the first AVPlayer a process
+// created: after a replacement player, macOS still activated the TV endpoint but the new player's
+// route stayed on "routing context [0x0]" and never saw the destination change (LG 55NANO80T6A,
+// system log, 2026-10-08/09). So one player lives for the process, bound to the picker once.
 static void teardownPlayer() {
   retireRouteWork();  // prepare() and stop() both come through here
-  if (gTimeObs) { [gPlayer removeTimeObserver:gTimeObs]; gTimeObs = nil; }
   if (gEndObs)  { [[NSNotificationCenter defaultCenter] removeObserver:gEndObs]; gEndObs = nil; }
   if (gFailObs) { [[NSNotificationCenter defaultCenter] removeObserver:gFailObs]; gFailObs = nil; }
+  if (gItem) { @try { [gItem removeObserver:gObserver forKeyPath:@"status"]; } @catch (...) {} gItem = nil; }
   if (gPlayer) {
-    @try { [gPlayer removeObserver:gObserver forKeyPath:@"externalPlaybackActive"]; } @catch (...) {}
-    if (gPlayer.currentItem) { @try { [gPlayer.currentItem removeObserver:gObserver forKeyPath:@"status"]; } @catch (...) {} }
-    // End the external (AirPlay) session, not just our player — otherwise the system
-    // route stays selected, the TV stays on the AirPlay screen, and the next prepare()
-    // binds to an already-connected route that never fires a fresh externalPlaybackActive
-    // transition (the "second cast shows already-connected but won't engage" bug).
-    // Order matters: revoke external + empty the player (nothing left to route), THEN
-    // unbind the picker, so the route actually drops instead of clinging to a live item.
+    // End the external (AirPlay) session, not just the item — otherwise the system route stays
+    // selected, the TV stays on the AirPlay screen, and the next prepare() binds to an
+    // already-connected route that never fires a fresh externalPlaybackActive transition.
+    // Revoke external and empty the player so the route has nothing left to hold.
     gPlayer.allowsExternalPlayback = NO;
     [gPlayer pause];
-    @try { [gPlayer replaceCurrentItemWithPlayerItem:nil]; } @catch (...) {} // empty player → route has nothing to hold
+    @try { [gPlayer replaceCurrentItemWithPlayerItem:nil]; } @catch (...) {}
   }
-  if (gPicker) gPicker.player = nil;
-  gPlayer = nil;
+}
+
+// The process's one AVPlayer: created on first use with its player-level observers, and bound to the
+// picker here (and in attachPicker if the picker is created later). Never replaced.
+static AVPlayer* ensurePlayer() {
+  if (gPlayer) return gPlayer;
+  gPlayer = [AVPlayer new];
+  gPlayer.allowsExternalPlayback = NO; // do NOT auto-grab a sticky route; enabled when the picker opens
+  gPlayer.muted = YES;
+  if (gPicker) gPicker.player = gPlayer;
+  [gPlayer addObserver:gObserver forKeyPath:@"externalPlaybackActive" options:NSKeyValueObservingOptionNew context:nil];
+  gTimeObs = [gPlayer addPeriodicTimeObserverForInterval:CMTimeMakeWithSeconds(0.5, 600) queue:dispatch_get_main_queue() usingBlock:^(CMTime t) {
+    if (!gPlayer.currentItem) return;  // an emptied player has no time worth reporting
+    ApEv* e = new ApEv(); e->type = "time"; e->cur = CMTimeGetSeconds(t);
+    CMTime d = gPlayer.currentItem.duration; e->dur = (CMTIME_IS_INDEFINITE(d) || CMTIME_IS_INVALID(d)) ? 0 : CMTimeGetSeconds(d);
+    emit(e);
+  }];
+  return gPlayer;
 }
 
 static NSView* viewFromHandle(const Napi::CallbackInfo& info, int idx) {
@@ -211,6 +228,7 @@ Napi::Value AttachPicker(const Napi::CallbackInfo& info) {
       gPicker.delegate = gObserver;
       [gPicker setRoutePickerButtonColor:[NSColor whiteColor] forState:AVRoutePickerViewButtonStateNormal];
       gPicker.hidden = YES; // shown via updatePickerRect when the control-bar button is visible
+      if (gPlayer) gPicker.player = gPlayer; // the one player, if prepare() ran first
       [content addSubview:gPicker positioned:NSWindowAbove relativeTo:nil];
     } else {
       gPicker.frame = flipRect(content, x, y, w, h);
@@ -253,7 +271,7 @@ Napi::Value OpenPicker(const Napi::CallbackInfo& info) {
   return Napi::Boolean::New(info.Env(), opened);
 }
 
-// prepare(url, startSec) — create the AVPlayer (paused, muted) bound to the picker.
+// prepare(url, startSec) — load url into the process's one AVPlayer (paused, muted), bound to the picker.
 Napi::Value Prepare(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   std::string urlStr = info[0].As<Napi::String>().Utf8Value();
@@ -263,17 +281,12 @@ Napi::Value Prepare(const Napi::CallbackInfo& info) {
   RunOnMain(^{
     teardownPlayer();
     AVPlayerItem* item = [AVPlayerItem playerItemWithURL:url];
-    gPlayer = [AVPlayer playerWithPlayerItem:item];
-    gPlayer.allowsExternalPlayback = NO; // do NOT auto-grab a sticky route; enabled when the picker opens
-    gPlayer.muted = YES; // silent until it's actually on the TV
-    if (gPicker) gPicker.player = gPlayer;
-    [gPlayer addObserver:gObserver forKeyPath:@"externalPlaybackActive" options:NSKeyValueObservingOptionNew context:nil];
+    AVPlayer* player = ensurePlayer();
+    player.allowsExternalPlayback = NO; // do NOT auto-grab a sticky route; enabled when the picker opens
+    player.muted = YES;                 // silent until it's actually on the TV
+    [player replaceCurrentItemWithPlayerItem:item];
+    gItem = item;
     [item addObserver:gObserver forKeyPath:@"status" options:NSKeyValueObservingOptionNew context:nil];
-    gTimeObs = [gPlayer addPeriodicTimeObserverForInterval:CMTimeMakeWithSeconds(0.5, 600) queue:dispatch_get_main_queue() usingBlock:^(CMTime t) {
-      ApEv* e = new ApEv(); e->type = "time"; e->cur = CMTimeGetSeconds(t);
-      CMTime d = gPlayer.currentItem.duration; e->dur = (CMTIME_IS_INDEFINITE(d) || CMTIME_IS_INVALID(d)) ? 0 : CMTimeGetSeconds(d);
-      emit(e);
-    }];
     gEndObs = [[NSNotificationCenter defaultCenter] addObserverForName:AVPlayerItemDidPlayToEndTimeNotification object:item queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* n) { ApEv* e = new ApEv(); e->type = "ended"; emit(e); }];
     gFailObs = [[NSNotificationCenter defaultCenter] addObserverForName:AVPlayerItemFailedToPlayToEndTimeNotification object:item queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* n) {
       NSError* err = n.userInfo[AVPlayerItemFailedToPlayToEndTimeErrorKey];
