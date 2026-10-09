@@ -7,7 +7,7 @@ const path = require('path');
 const vm = require('vm');
 const { createRequire } = require('module');
 const { EventEmitter } = require('events');
-const filename = path.join(__dirname, '../src/main/torrent.js');
+const filename = path.join(process.env.SPRITZ_TEST_APP_ROOT || path.join(__dirname, '..'), 'src/main/torrent.js');
 const localRequire = createRequire(filename);
 const source = fs.readFileSync(filename, 'utf8');
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
@@ -31,18 +31,18 @@ function fixture(t, options = {}) {
       const socket = new EventEmitter(); socket.listening = false;
       socket.listen = () => { socket.listening = !options.holdBind; };
       socket.address = () => ({ port: 23456 });
-      const server = { server: socket, close: () => { socket.closed = true; } };
+      const server = { server: socket, opts: {}, wrapRequest() {}, close: () => { socket.closed = true; } };
       this.server = server; return server;
     }
     destroy() { this.destroyed = true; }
   }
-  const context = { module: { exports: {} }, Buffer, process: { env: {} }, console: { log() {}, warn() {}, error() {} },
+  const context = { module: { exports: {} }, Date: options.clock || Date, Buffer, process: { env: {} }, console: { log() {}, warn() {}, error() {} },
     require: (n) => n === 'electron' ? { app: { getPath: () => temp } } : localRequire(n),
     setTimeout: (fn, ms) => { timers.set(++seq, { fn, ms }); return seq; }, clearTimeout: (id) => timers.delete(id),
     setInterval: (fn, ms) => { timers.set(++seq, { fn, ms, interval: true }); return seq; }, clearInterval: (id) => timers.delete(id) };
   vm.runInNewContext(source, context, { filename });
   const create = () => context.module.exports((type, payload) => events.push({ type, payload }),
-    { loadWebTorrent: options.loader || (async () => ({ default: Client })) });
+    { loadWebTorrent: options.loader || (async () => ({ default: Client })), diskFreeBytes: options.diskFreeBytes });
   const torrent = create();
   t.after(() => { torrent.teardown(); fs.rmSync(temp, { recursive: true, force: true }); });
   return { temp, torrent, create, Client, clients, events, timers };
@@ -191,4 +191,36 @@ test('disk-backed torrent disables duplicate whole-piece read cache', async t =>
   const f = fixture(t); await f.torrent.add('A');
   assert.equal(f.clients[0].torrents[0].opts.storeCacheSlots, 0);
   assert.equal(fs.existsSync(f.clients[0].torrents[0].opts.path), true);
+});
+
+test('low disk admission refuses a torrent before allocating a client', async t => {
+  const f = fixture(t, { diskFreeBytes: () => 100 * 1024 * 1024 }); await f.torrent.add('A');
+  assert.equal(f.clients.length, 0); assert.match(f.events.at(-1).payload.message, /disk space/i);
+});
+test('selected-file space warning uses that file, and falling space retires the stream', async t => {
+  let free = 3 * 1024 ** 3, now = Date.now();
+  class Clock extends Date { static now() { return now; } }
+  const f = fixture(t, { diskFreeBytes: () => free, clock: Clock }); await f.torrent.add('A'); const tor = f.clients[0].torrents[0];
+  tor.files[1].length = 10 * 1024 ** 3; tor.ready(); f.torrent.selectFile(0);
+  assert.equal(f.events.some(e => e.type === 'torrent:warning'), false, 'an unselected huge file must not warn');
+  f.torrent.selectFile(1); assert.ok(f.events.some(e => e.type === 'torrent:warning'));
+  free = 100 * 1024 ** 2; now += 6000;
+  for (const timer of [...f.timers.values()].filter(x => x.interval)) timer.fn();
+  assert.equal(tor.destroyed, true); assert.match(f.events.at(-1).payload.message, /disk space/i);
+});
+
+test('unknown disk statistics fail admission without claiming the disk is full', async t => {
+  const f = fixture(t, { diskFreeBytes: () => { throw Error('statfs unavailable'); } });
+  await f.torrent.add('A'); assert.equal(f.clients.length, 0);
+  assert.match(f.events.at(-1).payload.message, /Could not check/); assert.doesNotMatch(f.events.at(-1).payload.message, /low disk/);
+});
+
+test('low space does not interrupt an already downloaded selected file', async t => {
+  let free = 3 * 1024 ** 3, now = Date.now();
+  class Clock extends Date { static now() { return now; } }
+  const f = fixture(t, { diskFreeBytes: () => free, clock: Clock }); await f.torrent.add('A'); const tor = f.clients[0].torrents[0];
+  tor.files[0].progress = 1; tor.files[0].downloaded = tor.files[0].length;
+  tor.ready(); f.torrent.selectFile(0); free = 100 * 1024 ** 2; now += 6000;
+  for (const timer of [...f.timers.values()].filter(x => x.interval)) timer.fn();
+  assert.equal(tor.destroyed, undefined); assert.equal(f.events.some(e => e.type === 'torrent:error'), false);
 });

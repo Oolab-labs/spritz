@@ -1158,7 +1158,7 @@ if (!gotLock) {
 
   // Resolve the AirPlay-castable URL for a source the Apple TV can actually fetch:
   //   • https + AV container            → use as-is (ATS-safe, e.g. yt-dlp / direct MP4)
-  //   • torrent localhost URL + AV ext  → rewrite host to the Mac's LAN IP (TV can't reach loopback)
+  //   • torrent localhost URL + AV ext  → token-scoped LAN proxy (TV can't reach loopback)
   //   • local file + AV container       → serve it over the LAN file server
   //   • anything else (mkv/webm, http)  → null (no AirPlay; gated honestly in the UI)
   const ctypeFor = (u) => /\.m3u8(\?|#|$)/i.test(u || '') ? 'application/vnd.apple.mpegurl'
@@ -1196,16 +1196,13 @@ if (!gotLock) {
       : { ...(extra && extra.receiver && require('./receiver-preparation-policy').receiverFeatures(process.env).sourceAudio && Number.isFinite(extra.startSec) ? { receiverStartSec: () => extra.startSec } : {}), ...(extra && Number.isInteger(extra.audioHint) ? { audioHint: extra.audioHint } : {}), receiverSourceWaiting: () => receiverSourceWaiting(s, resolutionGen), sourceSelectedAudio: !!(extra && extra.receiver && require('./receiver-preparation-policy').receiverFeatures(process.env).sourceAudio), sideloadSubs: !!(extra && extra.receiver), receiverSubtitles: !!(extra && extra.receiverSubtitles), caps: caps || airplayCaps(AIRPLAY_CAPS), ...(caps && caps.hevc4k ? { capsFallback: require('./device-profile').defaultProfile() } : {}), extraSubs: externalSubs };
     // Remote https (yt-dlp / direct): no probe/remux — use as-is when it's an AV container.
     if (/^https:\/\//i.test(s)) return cb(mediaLan.avCompatible(s) ? s : null);
-    // Torrent localhost stream: rewrite host→LAN IP so the TV can fetch webtorrent's
-    // range-served stream directly. NO ffprobe/remux here — probing a torrent stream stalls
+    // Torrent localhost stream: expose only this file through the token-scoped LAN proxy.
+    // NO ffprobe/remux here — probing a torrent stream stalls
     // (moov may be at the tail / whole file not downloaded), which would block the cast button.
     // AVPlayer range-reads the moov itself. MKV/etc can't be cast (no AV container) → null.
     const tor = s.match(/^http:\/\/(?:localhost|127\.0\.0\.1)(:\d+)(\/webtorrent\/.*)$/i);
     if (tor) {
-      if (mediaLan.avCompatible(s)) { // mp4/mov/m4v → AVPlayer fetches webtorrent's stream directly
-        const ip = mediaLan.lanAddress();
-        return cb(ip ? 'http://' + ip + tor[1] + tor[2] : null);
-      }
+      if (mediaLan.avCompatible(s)) return mediaLan.serveDlna(s, ctypeFor(s), cb);
       // mkv/avi/ts/etc (H.264/HEVC) → live HLS remux so AVPlayer/Chromecast can play it as it streams
       if (/\.(mkv|avi|ts|m2ts|webm|wmv|flv|mpg|mpeg|ogv)(\?|#|$)/i.test(s)) return mediaLan.serveHls(s, cb, hlsOpts());
       return cb(null);

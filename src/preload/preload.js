@@ -63,6 +63,7 @@ contextBridge.exposeInMainWorld('soda', {
     onMetadata: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('torrent:metadata', h); return () => ipcRenderer.removeListener('torrent:metadata', h); },
     onProgress: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('torrent:progress', h); return () => ipcRenderer.removeListener('torrent:progress', h); },
     onReady: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('torrent:ready', h); return () => ipcRenderer.removeListener('torrent:ready', h); },
+    onWarning: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('torrent:warning', h); return () => ipcRenderer.removeListener('torrent:warning', h); },
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('torrent:error', h); return () => ipcRenderer.removeListener('torrent:error', h); }
   },
   airplay: {

@@ -12,6 +12,8 @@ const { bufferHealth } = require('./buffer-plan');                 // runway, in
 const { findMoov, isMp4Name } = require('./mp4-index');             // where the MP4 index actually lives
 const { seekWindow, seekReadiness } = require('./seek-window');       // serving a range that has not arrived yet
 const { createCriticalAim } = require('./critical-aim');              // who the critical window follows
+const storage = require('./torrent-storage');
+const { guardTorrentServer } = require('./torrent-http-guard');
 
 // Opt-in plain-file diagnostic log (set SPRITZ_DEBUG=1 to enable; open /tmp/spritz-torrent.log in Finder).
 // Off by default so a public build never writes magnet links / filenames to world-readable /tmp.
@@ -77,16 +79,33 @@ module.exports = function createTorrent(send, opts = {}) {
   const sessionPaths = new WeakMap(), retiring = new Set();
   const pendingReads = new Set();
   const pollTimers = new Set();
-  let cleanupFailed = false;
+  let cleanupFailed = false, lastDiskCheck = 0, spaceWarningFile = null;
+  const availableBytes = opts.diskFreeBytes || storage.diskFreeBytes;
 
   // Never sweep a shared root: another instance or a retiring store may still own it.
   const root = path.join(app.getPath('temp'), 'spritz', 'torrents');
   let instanceDir = null;
   function ensureInstance() {
     if (instanceDir) return instanceDir;
-    fs.mkdirSync(root, { recursive: true });
-    instanceDir = fs.mkdtempSync(path.join(root, 'instance-'));
+    instanceDir = storage.createInstance(root);
     return instanceDir;
+  }
+  function checkSpace(file, force = false) {
+    if (force && file) spaceWarningFile = null;
+    if (!force && Date.now() - lastDiskCheck < 5000) return true;
+    lastDiskCheck = Date.now();
+    let free;
+    try { free = availableBytes(ensureInstance()); if (!Number.isFinite(free) || free < 0) throw Error('invalid disk statistics'); }
+    catch (e) { cancel(); send('torrent:error', { message: 'Could not check torrent disk space. ' + msg(e) }); return false; }
+    if (free < storage.RESERVE_BYTES) {
+      cancel(); send('torrent:error', { message: 'Torrent stopped: low disk space. Free at least 1 GiB before retrying.' }); return false;
+    }
+    const remaining = file && Math.max(0, file.length - (file.downloaded || 0));
+    if (file && remaining + storage.RESERVE_BYTES > free && spaceWarningFile !== file) {
+      spaceWarningFile = file;
+      send('torrent:warning', { message: 'Not enough free disk space to finish this file. Streaming can continue, but will stop if free space falls below 1 GiB.' });
+    }
+    return true;
   }
   function cleanInstance() {
     if (instanceDir && disposed && retiring.size === 0 && !cleanupFailed) {
@@ -218,7 +237,7 @@ module.exports = function createTorrent(send, opts = {}) {
   let lastSelDesc = null;
 
   function emitProgress() {
-    if (!active) return;
+    if (!active || (!(activeFile && activeFile.progress >= 1) && !checkSpace(activeFile))) return;
     refreshCritical();
     logSelections();
     const ahead = bytesAheadOfPlayhead();
@@ -233,7 +252,7 @@ module.exports = function createTorrent(send, opts = {}) {
     });
     send('torrent:progress', {
       peers: active.numPeers, senders: activeSenders(), speed: active.downloadSpeed,
-      downloaded: active.downloaded, length: active.length, progress: active.progress,
+      downloaded: active.downloaded, length: active.length, progress: active.progress, fileProgress: activeFile ? activeFile.progress : null,
       buffered: bufferedRanges(), // [[startFrac,endFrac],…] of the playing file — drawn on the scrubber
       health // {known, risk, secondsBuffered, sustainable, secondsToEmpty}
     });
@@ -245,17 +264,18 @@ module.exports = function createTorrent(send, opts = {}) {
     clearPrebuffer();
     cancelReads();
     cancelPolls();
+    if (!checkSpace(file, true)) return;
     const torrent = active, selection = ++fileGeneration;
     if (!torrent || !torrent.files.includes(file)) return;
     activeFile = null;
     const current = () => !disposed && active === torrent && selection === fileGeneration;
-    // Bind 0.0.0.0 (not 127.0.0.1) so the same server is reachable both at localhost
-    // (for mpv on this Mac) AND at the Mac's LAN IP (for the Apple TV during AirPlay).
+    // Only local readers reach WebTorrent. TVs use lanserver's token-scoped proxy.
     const fresh = !server;
     if (!server) {
       server = client.createServer();
+      guardTorrentServer(server, () => active && activeFile ? { infoHash: active.infoHash, path: activeFile.path } : null);
       if (DBG) require('./torrent-read-diagnostics').observeTorrentReads(server.server, { log: facts => tlog('source-http ' + JSON.stringify(facts)) });
-      server.server.listen(0, '0.0.0.0');
+      server.server.listen(0, '127.0.0.1');
     } // once, reused
     const go = () => {
       bindingListener = null;
@@ -293,7 +313,7 @@ module.exports = function createTorrent(send, opts = {}) {
         let have = 0; const total = headEnd - file._startPiece;
         for (let p = file._startPiece; p < headEnd; p++) { let h = false; try { h = active.bitfield.get(p); } catch (e) {} if (h) have++; }
         send('torrent:progress', { peers: active.numPeers, senders: activeSenders(), speed: active.downloadSpeed,
-          downloaded: active.downloaded, length: active.length, progress: active.progress, buffered: bufferedRanges(), buffering: total ? have / total : 1 });
+          downloaded: active.downloaded, length: active.length, progress: active.progress, fileProgress: activeFile ? activeFile.progress : null, buffered: bufferedRanges(), buffering: total ? have / total : 1 });
         if (have >= total) return ready('head ready');
         if (Date.now() - t0 > PREBUFFER_TIMEOUT) return ready('timeout, head ' + have + '/' + total);
         prebufferTimer = setTimeout(check, 300);
@@ -311,6 +331,7 @@ module.exports = function createTorrent(send, opts = {}) {
     let sessionDir = null;
     try {
       tlog('add ' + String(src).slice(0, 70) + (active ? ' (replacing an active torrent)' : ''));
+      if (!checkSpace(null, true)) return;
       const c = await getClient(gen);
       if (!c || disposed || gen !== generation) return;
       sessionDir = fs.mkdtempSync(path.join(ensureInstance(), 'session-'));
@@ -511,6 +532,7 @@ module.exports = function createTorrent(send, opts = {}) {
     retire(old);
     activeFile = null;
     aim.reset();
+    spaceWarningFile = null; lastDiskCheck = 0;
   }
 
   function teardown() {

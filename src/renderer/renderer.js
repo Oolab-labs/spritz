@@ -323,6 +323,7 @@ async function openFileDialog() {
   }
 }
 function stop() {
+  clearTorrentNotice();
   clearErrorStop(); hideResume();
   if (engine === 'receiver') leaveReceiver(false);
   ++sourceIntent; ++folderIntent;
@@ -875,6 +876,14 @@ if (soda.menu && soda.menu.onAction) {
 const torrentStatus = $('#torrent-status'), torrentModal = $('#torrent-modal'),
   torrentFileList = $('#torrent-file-list'), torrentCancel = $('#torrent-cancel');
 
+function clearTorrentNotice() { $('#torrent-notice').classList.add('hidden'); }
+function showTorrentNotice(message, error = false) {
+  $('#torrent-notice-text').textContent = (error ? 'Torrent error: ' : '') + message;
+  $('#torrent-notice').classList.toggle('error', error);
+  $('#torrent-notice').classList.remove('hidden');
+}
+$('#torrent-notice-dismiss').addEventListener('click', clearTorrentNotice);
+
 // route an opened source: torrents go through webtorrent, everything else to mpv
 // ---- playback tune menu (speed / aspect / zoom) ----
 let playbackSpeed = 1, videoZoom = 0;
@@ -1157,6 +1166,7 @@ function startTorrent(s) {
   soda.torrent.add(s);
 }
 function routeSource(src, fromQueue, opts) {
+  clearTorrentNotice();
   if (engine === 'receiver') leaveReceiver(false);
   clearErrorStop();
   const intent = ++sourceIntent;
@@ -1230,6 +1240,7 @@ soda.torrent.onMetadata((m) => {
 });
 // Select a file within the active torrent and track our position for the playlist + auto-advance.
 function selectTorrentFile(index) {
+  clearTorrentNotice();
   torrentIdx = torrentQueue.findIndex((t) => t.index === index);
   syncNavButtons();
   soda.torrent.selectFile(index);
@@ -1242,31 +1253,23 @@ function paintBuffered(ranges) {
   seekBuffered.innerHTML = (ranges || []).map(([a, b]) =>
     `<span class="seg" style="left:${(a * 100).toFixed(2)}%;width:${Math.max(0, (b - a) * 100).toFixed(2)}%"></span>`).join('');
 }
-soda.torrent.onProgress(({ peers, speed, buffered, progress }) => {
-  paintBuffered(buffered); // always update the scrubber overlay, even once the pill is hidden
-  // The same download feeds the TV; keep its speed and peers visible while casting.
-  if ((progress || 0) >= 1) { torrentStatus.classList.add('hidden'); return; }
+soda.torrent.onProgress((p) => {
+  if (!torrentActive) return; // a queued tick must not resurrect a failed/stopped stream
+  paintBuffered(p.buffered);
+  const model = SpritzTorrentStatus.model(p, { loaded: st.loaded, paused: st.paused, prettyBytes });
+  if (model.complete) { torrentStatus.classList.add('hidden'); return; }
   torrentStatus.classList.remove('hidden', 'controls-hidden');
-  // Seeding-health "light": green ≥3.5 MB/s, orange 1.5–3.5, red <1.5 or no peers (4K HEVC needs ~1.83 MB/s).
-  const mbps = (speed || 0) / (1024 * 1024);
-  let cls = 'poor';
-  if (peers > 0 && mbps >= 3.5) cls = 'excellent';
-  else if (peers > 0 && mbps >= 1.5) cls = 'good';
-  // The dot is the at-a-glance verdict; the text gives the two numbers that explain it. Peer count
-  // matters because "slow" from 2 peers and "slow" from 40 peers are different problems.
-  const dot = document.createElement('span'); dot.className = 'dot ' + cls;
-  const txt = peers <= 0 ? 'connecting…'
-    : prettyBytes(speed) + '/s · ' + peers + (peers === 1 ? ' peer' : ' peers')
-      + (st.loaded && progress != null ? ' · ' + Math.floor(progress * 100) + '%' : '');
-  torrentStatus.replaceChildren(dot, document.createTextNode(txt));
-  torrentStatus.title = 'Torrent stream: ' + txt; // hover tooltip for the truncated/compact pill
+  const dot = document.createElement('span'); dot.className = 'dot ' + model.dot;
+  torrentStatus.replaceChildren(dot, document.createTextNode(model.text));
+  torrentStatus.title = 'Torrent stream: ' + model.text;
 });
-soda.torrent.onReady(({ url }) => { soda.player.load(url); });
+soda.torrent.onReady(({ url }) => { if (torrentActive) soda.player.load(url); });
+soda.torrent.onWarning(({ message }) => { if (torrentActive) showTorrentNotice(message); });
 soda.torrent.onError(({ message }) => {
+  if (!torrentActive) return;
   console.error('[torrent]', message);
-  torrentStatus.classList.remove('hidden');
-  torrentStatus.textContent = 'Torrent error: ' + message;
-  scheduleErrorStop(1800);
+  stop();
+  showTorrentNotice(message, true); // home-screen explanation survives progress ticks until dismissed
 });
 torrentCancel.addEventListener('click', () => { torrentModal.classList.add('hidden'); stop(); });
 

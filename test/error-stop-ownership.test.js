@@ -30,7 +30,7 @@ for (const changed of [false, true]) {
   test(`VPN admission ${changed ? 'rejects stale' : 'accepts current'} source intent`, async () => {
     let finish;
     const started = [];
-    const ctx = { engine: 'mpv', sourceIntent: 0, folderIntent: 0, clearErrorStop() {}, applyRouteHints() {}, st: {},
+    const ctx = { engine: 'mpv', sourceIntent: 0, folderIntent: 0, clearErrorStop() {}, clearTorrentNotice() {}, applyRouteHints() {}, st: {},
       paintBuffered() {}, updateQuality() {}, isPlaylistFile: () => false, isTorrentSrc: () => true,
       settings: { requireVpn: true }, titleFromSrc: () => 'movie', playerTitle: {}, hideResume() {}, syncNavButtons() {},
       youtubeId: () => null, skipSponsors: false, startTorrent: (src) => started.push(src), toast() {},

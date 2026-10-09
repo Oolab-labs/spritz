@@ -22,6 +22,9 @@
     <button class="wc wc-full" id="wc-full" title="Fullscreen" aria-label="Fullscreen"><svg viewBox="0 0 12 12"><path d="M4 2H2v2M8 2h2v2M4 10H2V8M8 10h2V8"/></svg></button>
   </div>
 
+  <div id="torrent-notice" class="torrent-notice hidden" role="alert">
+    <span id="torrent-notice-text"></span><button class="btn" id="torrent-notice-dismiss" type="button">Dismiss</button>
+  </div>
   <!-- Welcome screen (opaque). Hidden while media is loaded; hiding it reveals
        the transparent web layer and the native video underneath. -->
   <section id="home">
@@ -279,6 +282,7 @@
 
   <script src="./route-hints.js"></script>
   <script src="./cast-routes.js"></script>
+  <script src="./torrent-status.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>
