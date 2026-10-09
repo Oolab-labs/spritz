@@ -1038,7 +1038,10 @@ module.exports = function createLanServer(opts) {
       const position = requested === null ? null : Number(requested);
       const task = hlsSubTasks.get(name);
       try { startSubExtract(name, Number.isFinite(position) && position >= 0 ? position : null); } catch (e) {}
-      if (requested !== null && task) {
+      // AVPlayer requests plain rendition URLs, without Spritz's position query.
+      // Those requests must also wait: an empty successful segment is cached as
+      // the selected track and never gains the cues published by extraction.
+      if (task) {
         require('./subtitle-ready-response').waitForSubtitle({ response: res,
           timeoutMs: SUB_RENDITION_BUDGET_MS + SUB_GRACE_MS + 1000,
           state: () => token !== hlsToken ? 'stale' : task.status === 'ready' ? 'ready' : task.status === 'failed' ? 'failed' : 'pending',
@@ -1046,7 +1049,7 @@ module.exports = function createLanServer(opts) {
             clog('subtitle response ' + name + ': ' + status + ', queued=' + (task.startedAt ? task.startedAt - task.queuedAt : Date.now() - task.queuedAt) + 'ms');
             const currentStat = status === 'ready' && safeStat(f);
             if (currentStat) return deliverFile(req, res, f, currentStat.size, 'text/vtt', { 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
-            res.writeHead(status === 'stale' ? 404 : 503, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); res.end();
+            res.writeHead(status === 'stale' ? 404 : 503, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store', ...(status === 'stale' ? {} : { 'Retry-After': '1' }) }); res.end();
           }
         });
         return;
