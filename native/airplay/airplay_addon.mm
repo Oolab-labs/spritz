@@ -205,6 +205,27 @@ Napi::Value UpdatePickerRect(const Napi::CallbackInfo& info) {
   return info.Env().Undefined();
 }
 
+// Activate AVKit's own button using AppKit's public NSButton action. Keep route
+// presentation, pairing and the delegate lifecycle inside the system picker.
+static NSButton* pickerButton(NSView* view) {
+  for (NSView* child in view.subviews) {
+    if ([child isKindOfClass:[NSButton class]]) return (NSButton*)child;
+    NSButton* nested = pickerButton(child);
+    if (nested) return nested;
+  }
+  return nil;
+}
+Napi::Value OpenPicker(const Napi::CallbackInfo& info) {
+  __block bool opened = false;
+  RunOnMain(^{
+    if (!gPicker || gPicker.hidden || !gPicker.window || NSMaxX(gPicker.frame) <= 0) return;
+    NSButton* button = pickerButton(gPicker);
+    if (!button || !button.enabled) return;
+    [button performClick:nil]; opened = true;
+  });
+  return Napi::Boolean::New(info.Env(), opened);
+}
+
 // prepare(url, startSec) — create the AVPlayer (paused, muted) bound to the picker.
 Napi::Value Prepare(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
@@ -334,6 +355,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("setEventListener", Napi::Function::New(env, SetEventListener));
   exports.Set("attachPicker", Napi::Function::New(env, AttachPicker));
   exports.Set("updatePickerRect", Napi::Function::New(env, UpdatePickerRect));
+  exports.Set("openPicker", Napi::Function::New(env, OpenPicker));
   exports.Set("prepare", Napi::Function::New(env, Prepare));
   exports.Set("play", Napi::Function::New(env, Play));
   exports.Set("pause", Napi::Function::New(env, Pause));

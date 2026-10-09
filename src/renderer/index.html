@@ -157,6 +157,8 @@
         <li class="cast-airplay" id="cast-airplay-row" role="button" tabindex="0" aria-label="Choose an AirPlay device"><div class="cast-name">AirPlay</div><div class="cast-detail" id="cast-airplay-detail"></div></li>
         <!-- discovered Chromecast / DLNA devices are appended below -->
       </ul>
+      <div class="discovery-summary" id="cast-discovery" role="status" aria-live="polite"></div>
+      <button type="button" class="btn discovery-retry" id="cast-discovery-retry">Retry discovery</button>
       <!-- Spritz Receivers: televisions running Spritz's own receiver, rather than someone else's
            protocol. Same menu as every other target, because to the viewer it is the same choice. -->
       <div id="receiver-section" class="hidden">

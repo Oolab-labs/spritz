@@ -83,7 +83,7 @@ contextBridge.exposeInMainWorld('soda', {
   },
   diag: () => ipcRenderer.invoke('diag:get'), // live subsystem snapshot for the debug overlay
   cast: { // Google Cast (Chromecast / LG webOS)
-    discover: () => ipcRenderer.send('cast:discover'),
+    discover: (retry = false) => ipcRenderer.send('cast:discover', { retry: retry === true }),
     setManualHosts: (csv) => ipcRenderer.send('cast:manualHosts', { csv }), // user-entered TV IPs, probed alongside discovery
     load: (host) => ipcRenderer.send('cast:load', { host }),
     play: () => ipcRenderer.send('cast:play'),

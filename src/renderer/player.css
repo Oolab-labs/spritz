@@ -345,3 +345,5 @@ body.casting #torrent-status { opacity: 1; } /* download also supplies the TV */
 .torrent-notice { position: fixed; z-index: 30; left: 50%; top: 54px; transform: translateX(-50%); width: min(700px, 90vw); padding: 12px 14px; border: 1px solid #b99038; border-radius: 10px; background: #242018; color: #f3dfb2; display: flex; align-items: center; gap: 14px; font-size: 13px; line-height: 1.4; }
 .torrent-notice.error { border-color: #a84b4b; background: #291b1b; color: #ffd1d1; }
 .torrent-notice .btn { flex: none; }
+
+.cast-airplay:focus-visible { outline: 2px solid #65a9ff; outline-offset: -2px; }
