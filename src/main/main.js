@@ -1730,7 +1730,12 @@ if (!gotLock) {
         const subtitleTrackId = previous && previous.src === src && typeof svc.subtitleSelection === 'function'
           ? svc.subtitleSelection(receiverId, previous.mediaId, previous.epoch) : undefined;
         receiverPlan = { receiverId, mediaId, title, epoch: null, url, src, subtitles, subtitleTrackId, timelineOrigin: metadata && metadata.timelineOrigin, sourceDuration: metadata && metadata.sourceDuration, audioCatalog: metadata && metadata.audio, selectedAudio: metadata && metadata.selectedAudio, transport: mediaLan, autoplay: cancel.autoplay };
-        finish(svc.play(receiverId, { mediaId, url, title, startSec, subtitles, subtitleTrackId, timelineOrigin: metadata && metadata.timelineOrigin, sourceDuration: metadata && metadata.sourceDuration, audioCatalog: metadata && metadata.audio, autoplay: cancel.autoplay }));
+        // The webOS player stalls when started late inside an HLS segment, exactly as AirPlay did:
+        // start the TV at that segment's start instead (it repeats a few seconds; see airplay-start-snap).
+        let playStart = startSec;
+        try { playStart = require('./airplay-start-snap').safeStartOnTimeline(startSec, mediaLan.airplayMediaPlaylist(), metadata && metadata.timelineOrigin); } catch (e) {}
+        if (playStart !== startSec) console.log('[spritz] receiver start ' + startSec.toFixed(1) + 's is late in its segment; starting at ' + playStart.toFixed(1) + 's');
+        finish(svc.play(receiverId, { mediaId, url, title, startSec: playStart, subtitles, subtitleTrackId, timelineOrigin: metadata && metadata.timelineOrigin, sourceDuration: metadata && metadata.sourceDuration, audioCatalog: metadata && metadata.audio, autoplay: cancel.autoplay }));
       }), typeof svc.profile === 'function' ? svc.profile(receiverId) : null, true, { startSec, receiver: true, receiverSubtitles: true, audioHint: macAudioOrdinal(), transport: mediaLan });
       if (finished && failed) disposePreparation();
       })();
