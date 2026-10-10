@@ -1,0 +1,39 @@
+name: Pages
+
+# Publishes site/ to GitHub Pages (https://oolab-labs.github.io/spritz/). The site is plain HTML, CSS
+# and one script, so there is no build step: the folder is uploaded exactly as committed.
+#
+# One-time setup, by a repository admin: Settings → Pages → Build and deployment → Source:
+# "GitHub Actions". Until that is set, the deploy step fails with a 404 from the Pages API.
+
+on:
+  push:
+    branches: [main]
+    paths: ['site/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let an in-progress deploy finish rather than cancelling it halfway; a newer push queues behind it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

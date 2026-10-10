@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spritz</title>
+<meta name="description" content="A free media player for Apple Silicon Macs that plays almost any file and casts it to your TV over DLNA, Google Cast or AirPlay, converting only what the TV can't decode.">
+<meta name="theme-color" content="#16161c">
+<meta property="og:title" content="Spritz">
+<meta property="og:description" content="A free media player for Apple Silicon Macs that casts to your TV at the best quality the TV can take.">
+<meta property="og:image" content="https://oolab-labs.github.io/spritz/assets/og.jpg">
+<meta property="og:url" content="https://oolab-labs.github.io/spritz/">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="assets/favicon.svg" alt="" width="24" height="24">Spritz</a>
+    <nav aria-label="Sections">
+      <a href="#routes">Casting</a>
+      <a href="#install">Install</a>
+      <a href="#limitations">Known limitations</a>
+      <a href="#sponsor">Sponsor</a>
+    </nav>
+    <a class="gh" href="https://github.com/Oolab-labs/spritz">GitHub</a>
+  </div>
+</header>
+
+<main>
+  <div class="wrap intro">
+    <p class="meta"><span id="version">2.0.0-rc.16</span><span>macOS 11+</span><span>Apple Silicon</span><span>GPL-3.0</span></p>
+    <h1>A Mac media player that gets your film onto the TV at the best quality the TV can take.</h1>
+    <p class="lede">Spritz plays almost any video file on your Mac. When you send it to a TV, it checks what the file contains and what the TV can decode, then sends the original wherever it can and converts only the parts the TV can't handle.</p>
+    <div class="actions">
+      <a class="button" id="dl" href="https://github.com/Oolab-labs/spritz/releases">Download for Mac <small id="dl-size">.dmg</small></a>
+      <a class="plain" href="https://github.com/Oolab-labs/spritz">Source code on GitHub</a>
+    </div>
+    <p class="dl-note">Free, with no account. Needs an M1 or newer Mac. Intel Macs aren't supported.</p>
+  </div>
+
+  <div class="wrap shot">
+    <figure>
+      <img src="assets/player.webp" width="1800" height="1125" alt="The Spritz player window showing Big Buck Bunny paused at 1:38, with the Subtitles menu open: subtitle delay, Download Subtitles (OpenSubtitles) and Add Subtitle.">
+      <figcaption>The player with its Subtitles menu open. Film: <i>Big Buck Bunny</i>, Blender Foundation, CC BY 3.0.</figcaption>
+    </figure>
+  </div>
+
+  <section id="how">
+    <div class="wrap">
+      <div class="col">
+        <h2>How it decides what to send</h2>
+        <p>Before anything is sent, Spritz reads the file and asks the TV what it supports. Converting video costs quality and battery, so it does that only when the TV leaves no other choice.</p>
+      </div>
+<pre class="diagram" aria-label="Your video, then Spritz reads the file (codec, HDR, audio, subtitles), then Spritz reads your TV (what it decodes, how big, what audio), then the best route it can use (send as-is, or convert only what has to change).">your video  →  <b>Spritz reads the file</b>  →  <b>Spritz reads your TV</b>  →  the best route it can use
+                (codec, HDR, audio,        (what it decodes,        send as-is · convert only
+                 subtitles)                 how big, what audio)     what has to change</pre>
+      <div class="col">
+        <p>It then tells you which of these happened, in these words:</p>
+        <ul class="status">
+          <li style="--c: var(--ok)"><div><q>Playing the original video and audio untouched.</q><span class="when">The TV decodes everything in the file. Nothing is re-encoded.</span></div></li>
+          <li style="--c: var(--ok)"><div><q>Playing the original video; only the audio is being converted.</q><span class="when">For example, a 4K HEVC film with TrueHD sound on a TV that can't decode TrueHD. Surround stays surround.</span></div></li>
+          <li style="--c: var(--warn)"><div><q>Converting the video for this device; audio is untouched.</q><span class="when">For example, a 4K HDR film with AC3 sound sent over AirPlay, which tops out at 1080p SDR. The HDR is tone-mapped rather than flattened.</span></div></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="routes">
+    <div class="wrap">
+      <div class="col">
+        <h2>Four ways onto a TV</h2>
+        <p>Your Mac and the TV need to be on the same network. Spritz picks the route per device, and the cast menu shows which one it chose.</p>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th scope="col">Route</th><th scope="col">Works with</th><th scope="col">What the TV receives</th><th scope="col">Change audio and subtitles</th></tr></thead>
+          <tbody>
+            <tr><td>DLNA / UPnP<span class="sub">best for 4K HDR</span></td><td>Many LG, Samsung, Sony, Vizio, TCL and Philips TVs, and standalone renderers</td><td class="q">The original file. 4K HEVC, HDR10 and HDR10+ arrive untouched.</td><td>With the TV remote</td></tr>
+            <tr><td>Google Cast</td><td>Chromecast dongles and TVs with Chromecast built in</td><td class="q">Native 4K HEVC + HDR10 on capable TVs. H.264 on older 1080p dongles.</td><td>On the Mac. A change restarts the stream.</td></tr>
+            <tr><td>AirPlay 2</td><td>Apple TV, AirPlay 2 TVs and receivers</td><td class="q">H.264 SDR up to 1080p. AC3 and E-AC3 surround pass through.</td><td>On the Mac</td></tr>
+            <tr><td>Spritz Receiver<span class="sub">optional, LG webOS</span></td><td>LG webOS TVs in Developer Mode</td><td class="q">The film from your Mac, played by a small app on the TV.</td><td>On the Mac or with the TV remote</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-note col">Dolby Vision is not passed through; DV films play as their HDR10 base layer. Spritz Receiver isn't in the LG Content Store and is installed as a developer app. <a href="https://github.com/Oolab-labs/spritz#spritz-receiver-for-lg-webos">How to install it</a>.</p>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <div class="col">
+        <h2>Playing on the Mac</h2>
+        <p>Spritz is built on libmpv, so it plays HEVC, AV1, VP9 and HDR files without codec packs. There's no library to import: drag a file onto the window, or use Open With from Finder.</p>
+      </div>
+      <div class="facts">
+        <div><h3>Subtitles</h3><p>Embedded tracks, sidecar files next to the video (<code>Movie.en.srt</code> or a <code>Subs</code> folder) and styled ASS. Image subtitles a TV can't draw are burned into the picture. Files without subtitles can use OpenSubtitles or generate them with Whisper.</p></div>
+        <div><h3>Picks up where you left off</h3><p>Continue Watching, playlists and queues, and remembered audio and subtitle languages for each title.</p></div>
+        <div><h3>Keyboard</h3><p><kbd>Space</kbd> play and pause, <kbd>←</kbd> <kbd>→</kbd> seek, <kbd>↑</kbd> <kbd>↓</kbd> volume, <kbd>F</kbd> full screen, <kbd>,</kbd> <kbd>.</kbd> frame step, <kbd>Ctrl</kbd> <kbd>D</kbd> diagnostics.</p></div>
+        <div><h3>Where your media comes from</h3><p>Local files and folders, network shares and external drives, direct media links, pages that yt-dlp can read, M3U and PLS playlists, and torrents or magnet links you supply. Spritz has no catalog or search of its own. See <a href="https://github.com/Oolab-labs/spritz#acceptable-use">acceptable use</a>.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="privacy">
+    <div class="wrap"><div class="col">
+      <h2>What leaves your Mac</h2>
+      <p>There's no account and no telemetry, and nothing is uploaded. Casting goes over your home network, never through the internet. Spritz contacts GitHub only when you choose <b>Help → Check for Updates…</b>, and it never checks or downloads anything on its own.</p>
+      <p class="muted">Features you start yourself, such as an OpenSubtitles search or a yt-dlp link, connect to those services when you use them.</p>
+    </div></div>
+  </section>
+
+  <section id="install">
+    <div class="wrap"><div class="col">
+      <h2>Install</h2>
+      <ol class="steps">
+        <li><div><h3>Download the .dmg</h3><p>From the <a href="https://github.com/Oolab-labs/spritz/releases">Releases page</a>, which also lists SHA-256 checksums and the full source for each build.</p></div></li>
+        <li><div><h3>Drag Spritz to Applications</h3><p>Open the disk image and drag the app into your Applications folder.</p></div></li>
+        <li><div><h3>Open it the first time</h3>
+          <p>Builds aren't notarized by Apple, so macOS blocks the first launch. Use whichever of these fits your Mac:</p>
+          <div class="launch">
+            <div><b>Any macOS version.</b> Run this in Terminal, then open Spritz as usual.
+              <div class="cmd"><code id="xattr">xattr -dr com.apple.quarantine /Applications/Spritz.app</code><button type="button" data-copy="xattr">Copy</button></div>
+            </div>
+            <div><b>macOS 15 Sequoia and later.</b> Try to open Spritz and dismiss the warning. Then go to System Settings → Privacy &amp; Security and click <b>Open Anyway</b> next to Spritz.</div>
+            <div><b>macOS 11 to 14.</b> Right-click Spritz, choose Open, then Open again.</div>
+          </div>
+        </div></li>
+      </ol>
+      <p class="muted" style="margin-top:28px">Prefer to build it yourself? <a href="https://github.com/Oolab-labs/spritz#build--run-from-source">Build from source</a>.</p>
+    </div></div>
+  </section>
+
+  <section id="limitations">
+    <div class="wrap"><div class="col">
+      <h2>Known limitations</h2>
+      <p>Spritz is a release candidate, built and tested by one person on one Mac and one TV, an LG 55NANO80T6A. It works day to day. These are the rough edges most likely to affect you:</p>
+      <ul class="limits">
+        <li><b>Not notarized</b><span>macOS asks you to approve the first launch. See Install above.</span></li>
+        <li><b>AirPlay is 1080p</b><span>4K and HDR are converted down. Use DLNA for 4K HDR.</span></li>
+        <li><b>Dolby Vision</b><span>Not passed through. Some strict DLNA TVs still reject 4K DV files.</span></li>
+        <li><b>Google Cast</b><span>Seeking or switching tracks re-casts from the nearest keyframe and can rewind a few seconds. Only one Chromecast TV has been tested.</span></li>
+        <li><b>Other TVs</b><span>Anything other than the LG above is untested. Bug reports with your TV model help a lot.</span></li>
+      </ul>
+      <p style="margin-top:20px"><a href="https://github.com/Oolab-labs/spritz#status--known-limitations">The full list</a> is in the README.</p>
+    </div></div>
+  </section>
+
+  <section id="sponsor">
+    <div class="wrap"><div class="col">
+      <h2>Support Spritz</h2>
+      <p>Spritz is free and has no paid version. If it's useful to you, you can support its development through GitHub Sponsors. Bug reports, especially from TVs other than the one it's tested on, help just as much.</p>
+      <div class="sponsor-row">
+        <a class="button sponsor" href="https://github.com/sponsors/Oolab-labs"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 14.25l-.345.666a.75.75 0 01-.69 0l-.008-.004-.018-.01a7.152 7.152 0 01-.31-.17 22.055 22.055 0 01-3.434-2.414C2.045 10.731 0 8.35 0 5.5 0 2.836 2.086 1 4.25 1 5.797 1 7.153 1.802 8 3.02 8.847 1.802 10.203 1 11.75 1 13.914 1 16 2.836 16 5.5c0 2.85-2.045 5.231-3.885 6.818a22.066 22.066 0 01-3.744 2.584l-.018.01-.006.003h-.002z"/></svg>Sponsor on GitHub</a>
+        <a href="https://github.com/Oolab-labs/spritz/issues/new">Report a bug</a>
+      </div>
+    </div></div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Spritz is free software under the <a href="https://github.com/Oolab-labs/spritz/blob/main/LICENSE">GPL-3.0-or-later</a>. Screenshot shows <i>Big Buck Bunny</i> © Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>.</p>
+    <nav aria-label="Project links">
+      <a href="https://github.com/Oolab-labs/spritz/releases">Releases</a>
+      <a href="https://github.com/Oolab-labs/spritz#acceptable-use">Acceptable use</a>
+      <a href="https://github.com/Oolab-labs/spritz#disclaimer">Disclaimer</a>
+      <a href="https://github.com/Oolab-labs/spritz/blob/main/THIRD_PARTY_NOTICES.md">Third-party notices</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>
