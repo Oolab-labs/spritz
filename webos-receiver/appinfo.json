@@ -14,5 +14,6 @@
     "deviceinfo.query"
   ],
   "disableBackHistoryAPI": true,
-  "bgImage": "splash.png"
+  "bgImage": "splash.png",
+  "splashBackground": "splash.png"
 }
