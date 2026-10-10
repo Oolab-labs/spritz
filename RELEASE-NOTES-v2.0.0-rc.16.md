@@ -1,4 +1,4 @@
-## Spritz 2.0.0-rc.16 (pre-release) — DRAFT, not yet released
+## Spritz 2.0.0-rc.16 (pre-release)
 
 A Mac media player (libmpv) that casts to your TV, plus an optional **Spritz Receiver** app for LG webOS TVs.
 **This is a release candidate, tested by one person on one Mac and one TV.** Please read the caveats.
@@ -24,7 +24,8 @@ On an LG 55NANO80T6A (webOS 24, firmware 33.31.75), with packaged candidate buil
   and the download carried on.
 - **AirPlay start-up stalls:** 19 hand-offs measured to find the cause, then 3 hand-offs at positions that had
   always stalled, which all played with this release.
-- **Spritz Receiver:** the new time display, launcher icon and launch screen, seen on the TV.
+- **Spritz Receiver:** the new time display, launcher icon and launch screen, seen on the TV; a cast started at a
+  position that used to freeze now plays, and *Return to Mac* returns playback with one click.
 - Google Cast and DLNA were not re-tested in this round; their results from rc.15 stand.
 
 ### New since rc.15
@@ -34,6 +35,9 @@ On an LG 55NANO80T6A (webOS 24, firmware 33.31.75), with packaged candidate buil
   stream segment; Spritz now starts it at a point the TV can play, and checks the TV ended up where the Mac was.
 - **AirPlay subtitles show text.** A selected subtitle track no longer comes up empty, and a subtitle chosen
   while on AirPlay is kept when playback returns to the Mac.
+- **Spritz Receiver casts no longer freeze** when started partway through a film at an unlucky position (the same
+  stream-segment problem as AirPlay).
+- **Return to Mac** works in smaller windows; the control bar was covering it.
 - **AirPlay recovery.** If the TV drops the connection, Spritz returns to playing on the Mac by itself.
 - **The whole AirPlay row** in the cast menu opens the device picker (click, Enter or Space), not just its icon.
 - **Retry discovery** on the welcome screen and in the cast menu, with separate Google Cast and DLNA status.
@@ -48,7 +52,8 @@ On an LG 55NANO80T6A (webOS 24, firmware 33.31.75), with packaged candidate buil
 - Not notarized. YouTube formats may be missing (no JavaScript runtime bundled for `yt-dlp`).
 - **After Stop, the TV stays on its AirPlay screen** until you quit Spritz or leave AirPlay with the TV remote.
   This is how macOS keeps AirPlay connections; playback itself has stopped.
-- When AirPlay hands over, the TV can start a few seconds early and then jump to the right place.
+- When casting starts or AirPlay hands over, the TV can start a few seconds before where you were (it repeats
+  them rather than stalling) or start early and then jump to the right place.
 - **Not yet verified:** the first-launch steps on a Mac that has never run Spritz, a very large remux from a cold
   start, an HDMI freeze seen once during development, and picture and sound staying aligned by eye over a whole film.
 - Receiver and casting were tested on one TV only; other Chromecasts and AirPlay receivers were not.
@@ -59,3 +64,4 @@ components, at the exact versions inside this release, is attached here as
 `Spritz-2.0.0-rc.16-corresponding-source.tar`: the upstream archives, the Homebrew build recipe for each
 library, an index and checksums. Spritz's own source is this repository. The licence texts are inside the app
 (Help → *Show Licenses in Finder*). See the README section *GPL binaries and corresponding source*.
+
