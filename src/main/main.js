@@ -134,6 +134,7 @@ if (!gotLock) {
   let avItemFailed = false;
   let castSubs = [];        // sideloaded WebVTT text tracks for the current castUrl (HLS casts)
   let externalSubs = [];    // user-added external .srt/.ass files for the current source (carried into casts)
+  let mpvTrackList = [];    // last non-empty mpv track-list: maps an AirPlay subtitle choice back to a local sid
   let loadGen = 0; // invalidated by source admission and local Stop
   let receiverIntent = 0, pendingReceiverOperation = null;
   let pendingThumbnail = null;
@@ -257,10 +258,28 @@ if (!gotLock) {
   function handOffToAirplay(why) {
     console.log('[airplay] handing off to AirPlay (' + why + ')');
     setEngine('airplay');
-    const pos = mpvPos();
+    // The LG stalls when started late in an HLS segment (19/19 handoffs: <=5.3s in played, >=6s in
+    // stalled) — move such a start back to its segment's start. See airplay-start-snap.js.
+    const at = mpvPos();
+    let pos = at;
+    try { pos = require('./airplay-start-snap').safeAirplayStart(at, lan.airplayMediaPlaylist()); } catch (e) {}
+    if (pos !== at) console.log('[airplay] ' + at.toFixed(1) + 's is late in its segment; starting the TV at ' + pos.toFixed(1) + 's');
     captureTracks();                        // remember language/subtitle for the return
     try { mpvAddon.command('stop'); } catch (e) {}
     try { apAddon.seek(pos); apAddon.play(); } catch (e) {}
+    // The hidden player free-runs from the moment the picker opens, and this seek has been observed
+    // not to reach the TV (Mac at 33.1s, TV started at 20.0s; 40.6s -> 7.1s). Check, and correct.
+    const t0 = Date.now();
+    const verify = (tries) => setTimeout(() => {
+      if (castEngine !== 'airplay') return;
+      let cur; try { cur = apAddon.stat().cur; } catch (e) { return; }
+      const expected = pos + (Date.now() - t0) / 1000;
+      if (!Number.isFinite(cur) || (cur >= pos - 2 && cur <= expected + 4)) return;
+      console.log('[airplay] TV at ' + cur.toFixed(1) + 's, expected ~' + expected.toFixed(1) + 's: seeking again');
+      try { apAddon.seek(pos); } catch (e) {}
+      if (tries > 1) verify(tries - 1);
+    }, 2500);
+    verify(2);
   }
   // The second file of a session never played to the TV, and this is why: the route from the FIRST
   // file is still held, so macOS emits no new 'external' event — there is no transition to observe.
@@ -1411,6 +1430,11 @@ if (!gotLock) {
           try { torrent.setPlayhead(ev.value / mpvDuration, mpvDuration); } catch (e) {}
         }
         if (ev && ev.type === 'property-change' && ev.name === 'duration' && typeof ev.value === 'number') mpvDuration = ev.value;
+        // Kept so a subtitle chosen over AirPlay (while mpv is stopped and its list is empty) can be
+        // restored on the way back. Empty lists are mpv's transient file-swap/stop state: ignore them.
+        if (ev && ev.type === 'property-change' && ev.name === 'track-list' && typeof ev.value === 'string') {
+          try { const list = JSON.parse(ev.value); if (Array.isArray(list) && list.length) mpvTrackList = list; } catch (e) {}
+        }
         send('player-event', ev);
       }); // BEFORE startPlayer
       const sp = mpvAddon.startPlayer();
@@ -2188,6 +2212,16 @@ if (!gotLock) {
     // never exported by the addon and silently threw) one that actually exists. Works without a
     // reload, so the AirPlay route stays connected. kind='audio'|'subs'; index<0 = subtitles off.
     try { if (apAddon) apAddon.selectMedia(kind, index); } catch (e) {}
+    // The return to local restores savedSid, which was captured from mpv at handoff — so a subtitle
+    // chosen here used to be lost on the way back. Carry it over when the mapping can be verified.
+    if (kind === 'subs' && castEngine === 'airplay') {
+      try {
+        const sid = require('./airplay-subtitle-restore').sidForAirplaySubtitle({ index,
+          options: ((apAddon && apAddon.mediaTracks()) || {}).subs, renditions: castSubs, mpvTracks: mpvTrackList });
+        if (sid !== null) savedSid = sid === 'no' ? null : sid;
+        console.log('[airplay] subtitle ' + index + ' -> local sid ' + (sid === null ? 'unchanged (unverified mapping)' : sid));
+      } catch (e) { console.error('[airplay] subtitle restore map', e.message); }
+    }
   });
 
   // ---- Google Cast (Chromecast / LG webOS) ----

@@ -3704,6 +3704,15 @@ module.exports = function createLanServer(opts) {
     // Where the AirPlay player is. Only the orchestrator sees AVPlayer's clock, and only this module
     // knows when a subtitle extractor is about to choose where to start reading.
     noteAirplayPosition: (sec) => { if (typeof sec === 'number' && sec >= 0) airplayPos = sec; },
+    // The live AirPlay media playlist (video variant), so a handoff can see the real segment
+    // boundaries — they follow the source's keyframes in a stream copy. null when there is none.
+    airplayMediaPlaylist: () => {
+      if (!hlsDir) return null;
+      for (const f of [path.join(hlsDir, 'stream_0', 'index.m3u8'), path.join(hlsDir, 'index.m3u8')]) {
+        try { return fs.readFileSync(f, 'utf8'); } catch (e) {}
+      }
+      return null;
+    },
     // The container this route actually serves. What the receiver is told must agree with what the
     // socket delivers, so it is read from here rather than written out again at each call site —
     // where it had already drifted to a hardcoded Matroska type in one place and video/mp4 in another.
