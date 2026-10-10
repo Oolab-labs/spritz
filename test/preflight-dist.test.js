@@ -131,6 +131,7 @@ function packagedApp({ addons = ['mpv_render.node', 'airplay.node', 'nowplaying.
   const unpacked = path.join(app, 'Contents', 'Resources', 'app.asar.unpacked', 'native', 'x', 'build', 'Release');
   fs.mkdirSync(unpacked, { recursive: true });
   for (const a of addons) fs.writeFileSync(path.join(unpacked, a), 'addon');
+  require('./helpers/asar').writeAsar(path.join(app, 'Contents', 'Resources', 'app.asar'), { 'package.json': JSON.stringify({ name: 'spritz', dependencies: {} }) });
   if (receiver) {
     const rd = path.join(app, 'Contents', 'Resources', 'receiver');
     fs.mkdirSync(rd, { recursive: true });
