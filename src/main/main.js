@@ -134,6 +134,7 @@ if (!gotLock) {
   let avItemFailed = false;
   let castSubs = [];        // sideloaded WebVTT text tracks for the current castUrl (HLS casts)
   let externalSubs = [];    // user-added external .srt/.ass files for the current source (carried into casts)
+  let mpvTrackList = [];    // last non-empty mpv track-list: maps an AirPlay subtitle choice back to a local sid
   let loadGen = 0; // invalidated by source admission and local Stop
   let receiverIntent = 0, pendingReceiverOperation = null;
   let pendingThumbnail = null;
@@ -1411,6 +1412,11 @@ if (!gotLock) {
           try { torrent.setPlayhead(ev.value / mpvDuration, mpvDuration); } catch (e) {}
         }
         if (ev && ev.type === 'property-change' && ev.name === 'duration' && typeof ev.value === 'number') mpvDuration = ev.value;
+        // Kept so a subtitle chosen over AirPlay (while mpv is stopped and its list is empty) can be
+        // restored on the way back. Empty lists are mpv's transient file-swap/stop state: ignore them.
+        if (ev && ev.type === 'property-change' && ev.name === 'track-list' && typeof ev.value === 'string') {
+          try { const list = JSON.parse(ev.value); if (Array.isArray(list) && list.length) mpvTrackList = list; } catch (e) {}
+        }
         send('player-event', ev);
       }); // BEFORE startPlayer
       const sp = mpvAddon.startPlayer();
@@ -2188,6 +2194,16 @@ if (!gotLock) {
     // never exported by the addon and silently threw) one that actually exists. Works without a
     // reload, so the AirPlay route stays connected. kind='audio'|'subs'; index<0 = subtitles off.
     try { if (apAddon) apAddon.selectMedia(kind, index); } catch (e) {}
+    // The return to local restores savedSid, which was captured from mpv at handoff — so a subtitle
+    // chosen here used to be lost on the way back. Carry it over when the mapping can be verified.
+    if (kind === 'subs' && castEngine === 'airplay') {
+      try {
+        const sid = require('./airplay-subtitle-restore').sidForAirplaySubtitle({ index,
+          options: ((apAddon && apAddon.mediaTracks()) || {}).subs, renditions: castSubs, mpvTracks: mpvTrackList });
+        if (sid !== null) savedSid = sid === 'no' ? null : sid;
+        console.log('[airplay] subtitle ' + index + ' -> local sid ' + (sid === null ? 'unchanged (unverified mapping)' : sid));
+      } catch (e) { console.error('[airplay] subtitle restore map', e.message); }
+    }
   });
 
   // ---- Google Cast (Chromecast / LG webOS) ----
