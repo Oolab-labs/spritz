@@ -1,6 +1,6 @@
 {
   "id": "com.spritz.receiver",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "vendor": "Spritz",
   "type": "web",
   "main": "index.html",

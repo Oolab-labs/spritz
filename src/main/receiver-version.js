@@ -3,7 +3,7 @@
 // Which Spritz Receiver build this Mac app was released with, and whether a connected TV is behind it.
 // Kept in src/ (the TV's own files are not packaged into the Mac app) and pinned to the receiver's
 // appinfo.json by test/receiver-version.test.js so the two cannot drift apart.
-const RECOMMENDED_RECEIVER_VERSION = '0.3.2';
+const RECOMMENDED_RECEIVER_VERSION = '0.4.0';
 
 function majorMinor(v) {
   const m = /^(\d+)\.(\d+)\.\d+/.exec(String(v == null ? '' : v));

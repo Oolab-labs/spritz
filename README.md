@@ -18,7 +18,7 @@ Everything runs on your own machine and your own network. No account, nothing up
 no telemetry. The only time Spritz contacts GitHub (api.github.com) is when you choose **Help → Check for Updates…**; nothing is checked or downloaded automatically. Spritz ships **no** content, catalog, or index of any kind — every file,
 link and stream comes from you.
 
-> Status: `2.0.0-rc.15` (release candidate) — macOS 11+ on Apple Silicon (arm64). Read [Status & known limitations](#status--known-limitations) before relying on it.
+> Status: `2.0.0-rc.16` (release candidate) — macOS 11+ on Apple Silicon (arm64). Read [Status & known limitations](#status--known-limitations) before relying on it.
 
 ## What it does
 
