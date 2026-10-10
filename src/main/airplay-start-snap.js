@@ -31,4 +31,13 @@ function safeAirplayStart(pos, playlist, { maxOffset = MAX_OFFSET } = {}) {
   return pos - seg.start > maxOffset ? seg.start : pos;
 }
 
-module.exports = { segmentStarts, safeAirplayStart, MAX_OFFSET };
+// The same rule for a playlist that starts partway into the film (receiver HLS with a timeline
+// origin): positions are film time, the playlist counts from `origin`. Spritz Receiver on the LG froze
+// the same way (#EXT-X-START 24.823 = 8.16s into an 8.333s segment, 2026-10-10).
+function safeStartOnTimeline(startSec, playlist, origin = 0) {
+  const o = Number.isFinite(origin) && origin > 0 ? origin : 0;
+  if (!Number.isFinite(startSec) || startSec <= o) return startSec;
+  return o + safeAirplayStart(startSec - o, playlist);
+}
+
+module.exports = { segmentStarts, safeAirplayStart, safeStartOnTimeline, MAX_OFFSET };

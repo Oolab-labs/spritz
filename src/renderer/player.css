@@ -215,7 +215,10 @@ body.casting .quality { display: none; }
   pointer-events: none;
   background: radial-gradient(120% 120% at 50% 42%, #16161f 0%, #0a0a0e 78%); }
 #casting-overlay button { pointer-events: auto; }
-body.casting .controls { opacity: 1; pointer-events: auto; }
+body.casting .controls { opacity: 1; pointer-events: none; }
+/* The bar's top padding is a transparent strip above the casting overlay (z 13 over 12); it swallowed
+   clicks on "Return to Mac" in short windows. Only the bar's own controls take clicks. */
+body.casting .controls > * { pointer-events: auto; }
 #casting-overlay .cast-glyph { width: 74px; height: 74px; fill: var(--accent);
   filter: drop-shadow(0 0 20px rgba(5,131,255,.45)); animation: castPulse 2.6s ease-in-out infinite; }
 @keyframes castPulse { 0%, 100% { opacity: .88; transform: scale(1); } 50% { opacity: 1; transform: scale(1.045); } }
