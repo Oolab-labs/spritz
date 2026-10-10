@@ -87,4 +87,15 @@ module.exports = [
     files: ['src/renderer/cast-routes.js', 'src/renderer/route-hints.js', 'src/renderer/discovery-status.js', 'src/renderer/torrent-status.js'],
     languageOptions: { globals: { module: 'writable', require: 'readonly' } },
   },
+  {
+    // The GitHub Pages site: a plain browser script. Without this block it matched nothing above,
+    // so `eslint .` parsed it with no rules and passed whatever it said.
+    files: ['site/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: 'script',
+      globals: { ...globals.browser },
+    },
+    rules,
+  },
 ];
