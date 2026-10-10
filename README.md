@@ -118,6 +118,11 @@ Settings → Privacy & Security → Local Network** and make sure Spritz is enab
 it already looks enabled, toggle it off and on. TVs that never advertise themselves can
 be added by IP under **Settings → Manual TV addresses**.
 
+If TV discovery stays empty after changing Local Network permission, use **Retry discovery**
+on the welcome screen or in the Cast / AirPlay menu. Cast and DLNA report their search
+results separately. AirPlay devices appear in the macOS picker; Spritz Receiver must
+be open on the TV.
+
 Three routes, picked per device (plus a fourth for TVs running [Spritz Receiver](#spritz-receiver-for-lg-webos)):
 
 - **DLNA** — the original file, untouched. Best for 4K HEVC/HDR10 on a TV that can
@@ -135,6 +140,12 @@ downloading, prioritising the part you are watching.
 The torrent HTTP server listens on loopback and serves only the selected file.
 TVs fetch that file through the LAN server's token-scoped proxy; the torrent server
 does not expose file listings or accept browser-origin requests.
+
+Torrent errors remain visible until dismissed. The stream status reports the selected
+file's download progress and an approximate buffer runway. Spritz warns when the
+selected file will not fit and stops torrent downloads below a 1 GiB free-space
+reserve. New cache directories carry process ownership for crash recovery; older
+unmarked cache directories are preserved.
 
 Spritz provides no way to find any of these. It opens what you give it, which for
 torrents means things distributed that way on purpose — Linux and BSD images, Internet
@@ -163,7 +174,7 @@ Spritz Receiver is a small web app that runs on an LG webOS TV and plays what yo
 
 **If the TV can't find your Mac:** it searches its own network first, then a short list of common home ranges (`192.168.1.x`, `192.168.0.x`, `10.0.0.x`, `10.0.1.x`). A TV on a guest network, a separate VLAN, or an unusual range won't find the Mac. Put both on the same network. If the search finds nothing (it can take about a minute), the TV shows **Can't find Spritz** with a box for the Mac's address, which Spritz shows under **Devices**.
 
-**Where it has been tested:** one TV (LG 55NANO80T6A, webOS firmware 33.31.61). Receiver 0.3.2 was exercised on it for the search, typed-address, pairing, code-refresh and pair-again flows, and for playing a local file and a streaming torrent with audio and subtitles switched from both the Mac and the TV's own menu. This was driven over the TV's web inspector with simulated clicks, not by a person holding the remote. Other models and webOS versions are untested. Receiver and Mac app versions are meant to be used together: **Devices** shows the receiver's version and flags a TV running an older one, but the Mac app does not update it for you.
+**Where it has been tested:** one TV (LG 55NANO80T6A). Receiver 0.3.2 was exercised on it (webOS firmware 33.31.61) for the search, typed-address, pairing, code-refresh and pair-again flows, and for playing a local file and a streaming torrent with audio and subtitles switched from both the Mac and the TV's own menu. Receiver 0.4.0 was checked on the same TV on webOS 24 (firmware 33.31.75): pairing from the Mac's code field, the start and end times on screen, the launcher icon and launch screen, and a cast started at a position that used to freeze. This was driven over the TV's web inspector and the Mac, not by a person holding the remote. Other models and webOS versions are untested. Receiver and Mac app versions are meant to be used together: **Devices** shows the receiver's version and flags a TV running an older one, but the Mac app does not update it for you.
 
 ## Acceptable use
 
@@ -199,9 +210,11 @@ live. That responsibility is not transferred by this notice — see
 - Playback from a **cold, very large remux** (a long delay before the first frame is expected).
 - **A video freeze that needed a TV reboot** (HDMI) was seen once during development and is not understood.
 - That picture, sound and subtitles stay **aligned by eye** over a full film. Automated checks read the TV's own player state; they cannot see or hear.
-- The Mac's **resume position after you stop casting** and return to local playback.
 - The **first-launch steps** above, on a Mac that has never run Spritz.
 - **AirPlay** reported "Cannot Decode" once, the first time it was started partway through a film; starting it again worked. Not understood.
+
+**AirPlay Stop**
+- After you stop an AirPlay cast, the TV stays on its AirPlay screen until you quit Spritz or leave AirPlay with the TV's remote. macOS ends the playback but keeps the connection to the TV; playback on the Mac resumes where the TV was.
 
 **4K / HDR casting**
 - **DLNA is the reliable 4K path** — the original file is streamed untouched and the TV decodes it natively (4K HEVC / HDR10 / HDR10+).
@@ -229,7 +242,7 @@ Bug reports and PRs welcome.
 ## Requirements
 
 - macOS 11+ on Apple Silicon (arm64)
-- [Node.js](https://nodejs.org) 18+ and npm
+- [Node.js](https://nodejs.org) 22+ and npm (the test runner's file pattern needs Node 21 or newer; CI uses 22)
 - [Homebrew](https://brew.sh) — to provide `libmpv` and `ffmpeg`
 
 ## Build & run from source
@@ -239,7 +252,7 @@ This repository is **source-only**. The GPL media binaries (`libmpv`, `ffmpeg`,
 [License](#license)); you build or install them locally.
 
 Prerequisites: macOS 11+ on Apple Silicon, [Homebrew](https://brew.sh),
-[Node.js](https://nodejs.org) 18+, and the Xcode command-line tools
+[Node.js](https://nodejs.org) 22+, and the Xcode command-line tools
 (`xcode-select --install`) for the Objective-C++ addons.
 
 ```sh
@@ -250,8 +263,10 @@ cd spritz
 # 2. Media libraries and build tools
 brew install mpv ffmpeg nasm pkg-config
 
-# 3. JS dependencies
+# 3. JS dependencies. npm 11.19 and later skip packages' install scripts by default,
+#    which leaves Electron's binary undownloaded; fetch it explicitly.
 npm install
+node node_modules/electron/install.js
 
 # 4. Build the three native addons (libmpv render, AirPlay, Now Playing).
 #    Compiles against the Electron version in package.json — not your system Node —
@@ -264,6 +279,11 @@ npm start
 
 Check your work with `npm test` (unit tests, no TV or media files required) and
 `npx eslint .`.
+
+Keep `node_modules` a real directory, installed from this checkout's own lockfile. A
+symlink to another checkout's `node_modules` makes electron-builder drop most of the npm
+dependencies from the package without failing; `npm run dist` now refuses such a build
+(the package check walks the dependencies inside `app.asar`).
 
 ### The bundled ffmpeg is not Homebrew's
 
@@ -342,8 +362,8 @@ Re-signing can also drop that grant on its own. If casting goes quiet after a de
 toggle **System Settings → Privacy & Security → Local Network** off and on before
 suspecting the code.
 
-To produce a distributable `.app`/`.dmg`: `npm run dist` (electron-builder — install it
-first with `npm i -D electron-builder`). That runs `build/preflight-dist.js` first, which
+To produce a distributable `.app`/`.dmg`: `npm run dist` (electron-builder is a dev
+dependency). That runs `build/preflight-dist.js` first, which
 refuses to package a tree that would produce an app only this machine can run — no
 `bin/ffmpeg`, an addon still linked to `/opt/homebrew`, missing entitlements. Each
 refusal names the command that fixes it. It exists because none of those failures are
@@ -366,9 +386,18 @@ Developer account ($99/yr):
    export APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"   # appleid.apple.com → App-Specific Passwords
    npm run dist
    ```
-4. Publish the `.dmg` to a GitHub Release (don't commit it to the repo):
+4. Publish to a GitHub pre-release (don't commit the artifacts to the repo). Tag the commit
+   the app was built from, and attach the five files every release carries: the `.dmg`, the
+   `.zip`, the receiver `.ipk`, the corresponding-source tar (see
+   [GPL binaries and corresponding source](#gpl-binaries-and-corresponding-source)) and
+   `SHA256SUMS`; use `RELEASE-NOTES-v<version>.md` as the notes:
    ```sh
-   gh release create v2.0.0-alpha.0 dist/Spritz-*-arm64.dmg --title "v2.0.0-alpha.0" --notes "First public alpha."
+   V=2.0.0-rc.16
+   gh release create v$V --target <build-commit> --prerelease --title "Spritz $V" \
+     --notes-file RELEASE-NOTES-v$V.md \
+     dist/Spritz-$V-arm64.dmg dist/Spritz-$V-arm64-mac.zip \
+     dist-receiver/com.spritz.receiver_<receiver-version>_all.ipk \
+     Spritz-$V-corresponding-source.tar SHA256SUMS
    ```
 
 ## License
@@ -439,14 +468,3 @@ Built on the shoulders of [mpv](https://github.com/mpv-player/mpv),
 [FFmpeg](https://ffmpeg.org), [WebTorrent](https://webtorrent.io),
 [Electron](https://electronjs.org), and [Anime4K](https://github.com/bloc97/Anime4K).
 See [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) for the full list.
-
-If TV discovery stays empty after changing Local Network permission, use **Retry discovery**
-on the welcome screen or in the Cast / AirPlay menu. Cast and DLNA report their search
-results separately. AirPlay devices appear in the macOS picker; Spritz Receiver must
-be open on the TV.
-
-Torrent errors remain visible until dismissed. The stream status reports the selected
-file's download progress and an approximate buffer runway. Spritz warns when the
-selected file will not fit and stops torrent downloads below a 1 GiB free-space
-reserve. New cache directories carry process ownership for crash recovery; older
-unmarked cache directories are preserved.
