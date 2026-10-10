@@ -63,9 +63,11 @@ contextBridge.exposeInMainWorld('soda', {
     onMetadata: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('torrent:metadata', h); return () => ipcRenderer.removeListener('torrent:metadata', h); },
     onProgress: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('torrent:progress', h); return () => ipcRenderer.removeListener('torrent:progress', h); },
     onReady: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('torrent:ready', h); return () => ipcRenderer.removeListener('torrent:ready', h); },
+    onWarning: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('torrent:warning', h); return () => ipcRenderer.removeListener('torrent:warning', h); },
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('torrent:error', h); return () => ipcRenderer.removeListener('torrent:error', h); }
   },
   airplay: {
+    openPicker: () => ipcRenderer.send('airplay:openPicker'),
     showButton: (rect) => ipcRenderer.send('airplay:showButton', { rect }),
     hideButton: () => ipcRenderer.send('airplay:hideButton'),
     play: () => ipcRenderer.send('airplay:play'),
@@ -81,7 +83,7 @@ contextBridge.exposeInMainWorld('soda', {
   },
   diag: () => ipcRenderer.invoke('diag:get'), // live subsystem snapshot for the debug overlay
   cast: { // Google Cast (Chromecast / LG webOS)
-    discover: () => ipcRenderer.send('cast:discover'),
+    discover: (retry = false) => ipcRenderer.send('cast:discover', { retry: retry === true }),
     setManualHosts: (csv) => ipcRenderer.send('cast:manualHosts', { csv }), // user-entered TV IPs, probed alongside discovery
     load: (host) => ipcRenderer.send('cast:load', { host }),
     play: () => ipcRenderer.send('cast:play'),
@@ -121,7 +123,7 @@ contextBridge.exposeInMainWorld('soda', {
     save: (key, pref) => ipcRenderer.send('pref:save', { key, pref })
   },
   dlna: { // DLNA / UPnP "play to"
-    discover: () => ipcRenderer.send('dlna:discover'),
+    discover: (retry = false) => ipcRenderer.send('dlna:discover', { retry: retry === true }),
     load: (location) => ipcRenderer.send('dlna:load', { location }),
     play: () => ipcRenderer.send('dlna:play'),
     pause: () => ipcRenderer.send('dlna:pause'),

@@ -335,3 +335,15 @@ body.casting #torrent-status { opacity: 1; } /* download also supplies the TV */
 #menu-cast .cast-name, #menu-cast .cast-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #menu-cast .cast-airplay { padding-top: 6px; padding-bottom: 6px; }
 #menu-cast #receiver-section > .menu-title, #menu-cast #receiver-section > .menu-sep { display: none; } /* the row already says Spritz Receiver */
+
+.discovery-summary { margin: 10px 0 8px; font-size: 12px; line-height: 1.5; color: #9a9aa6; white-space: pre-line; }
+#menu-cast .discovery-summary { max-width: 280px; margin: 8px 10px; }
+.discovery-retry { font-size: 12px; padding: 6px 10px; margin-bottom: 8px; }
+#menu-cast .discovery-retry { margin-left: 10px; }
+.discovery-retry:disabled { opacity: .5; cursor: default; }
+
+.torrent-notice { position: fixed; z-index: 30; left: 50%; top: 54px; transform: translateX(-50%); width: min(700px, 90vw); padding: 12px 14px; border: 1px solid #b99038; border-radius: 10px; background: #242018; color: #f3dfb2; display: flex; align-items: center; gap: 14px; font-size: 13px; line-height: 1.4; }
+.torrent-notice.error { border-color: #a84b4b; background: #291b1b; color: #ffd1d1; }
+.torrent-notice .btn { flex: none; }
+
+.cast-airplay:focus-visible { outline: 2px solid #65a9ff; outline-offset: -2px; }

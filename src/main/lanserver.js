@@ -1038,7 +1038,10 @@ module.exports = function createLanServer(opts) {
       const position = requested === null ? null : Number(requested);
       const task = hlsSubTasks.get(name);
       try { startSubExtract(name, Number.isFinite(position) && position >= 0 ? position : null); } catch (e) {}
-      if (requested !== null && task) {
+      // AVPlayer requests plain rendition URLs, without Spritz's position query.
+      // Those requests must also wait: an empty successful segment is cached as
+      // the selected track and never gains the cues published by extraction.
+      if (task) {
         require('./subtitle-ready-response').waitForSubtitle({ response: res,
           timeoutMs: SUB_RENDITION_BUDGET_MS + SUB_GRACE_MS + 1000,
           state: () => token !== hlsToken ? 'stale' : task.status === 'ready' ? 'ready' : task.status === 'failed' ? 'failed' : 'pending',
@@ -1046,7 +1049,7 @@ module.exports = function createLanServer(opts) {
             clog('subtitle response ' + name + ': ' + status + ', queued=' + (task.startedAt ? task.startedAt - task.queuedAt : Date.now() - task.queuedAt) + 'ms');
             const currentStat = status === 'ready' && safeStat(f);
             if (currentStat) return deliverFile(req, res, f, currentStat.size, 'text/vtt', { 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
-            res.writeHead(status === 'stale' ? 404 : 503, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); res.end();
+            res.writeHead(status === 'stale' ? 404 : 503, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store', ...(status === 'stale' ? {} : { 'Retry-After': '1' }) }); res.end();
           }
         });
         return;
@@ -2700,7 +2703,7 @@ module.exports = function createLanServer(opts) {
       const compatContainer = ['mp4', 'm4v', 'mov'].includes(ext) || /\/webtorrent\//.test(input) && /\.(mp4|m4v|mov)/i.test(input);
       const compatAudio = !info.acodec || AUDIO_OK.has(info.acodec);
       if (compatContainer && compatAudio) {
-        // Already castable as-is: direct file serve (+ sideloadable subs), or LAN-rewrite the torrent URL.
+        // Already castable as-is: direct file serve (+ sideloadable subs), or a token-scoped torrent proxy.
         const finishDirect = (url) => {
           if (finished) return;
           if (!url) return cb(null);
@@ -2720,7 +2723,10 @@ module.exports = function createLanServer(opts) {
           return;
         }
         const m = input.match(/^http:\/\/(?:localhost|127\.0\.0\.1)(:\d+)(\/.*)$/i);
-        return finishDirect(m ? 'http://' + lan + m[1] + m[2] : null);
+        if (!m) return finishDirect(null);
+        disposeServe = serveDlna(input, 'video/mp4', finishDirect);
+        if (cancelled && typeof disposeServe === 'function') { try { disposeServe(); } catch (e) {} disposeServe = null; }
+        return;
       }
       if (remuxAlt) return fallback(); // fast: live HLS (first segment in seconds)
       // remux needed (foreign container and/or audio): -c:v copy (+ audio→AAC) to a temp

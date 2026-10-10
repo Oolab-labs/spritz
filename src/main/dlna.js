@@ -78,6 +78,7 @@ function httpReq(opts, body, cb, timeoutMs) {
   });
   req.on('error', (e) => cb(e)); req.setTimeout(timeoutMs || 6000, () => req.destroy(new Error('timeout')));
   if (body) req.write(body); req.end();
+  return req;
 }
 // Per-action SOAP budgets. A blanket 6s was wrong in both directions: Play/SetAVTransportURI make
 // the TV open and buffer the stream before answering (an LG can sit well past 6s on a cold start,
@@ -95,7 +96,7 @@ const TSCALE = (() => {
 const SOAP_TIMEOUT = { SetAVTransportURI: 20000, Play: 20000, Stop: 10000, Seek: 10000,
   GetPositionInfo: 2500, GetTransportInfo: 2500, SetVolume: 4000 };
 for (const k of Object.keys(SOAP_TIMEOUT)) SOAP_TIMEOUT[k] = Math.max(50, Math.round(SOAP_TIMEOUT[k] * TSCALE));
-const httpGet = (url, cb) => { try { const u = new URL(url); httpReq({ host: u.hostname, port: u.port || 80, path: u.pathname + u.search, method: 'GET' }, null, cb); } catch (e) { cb(e); } };
+const httpGet = (url, cb) => { try { const u = new URL(url); return httpReq({ host: u.hostname, port: u.port || 80, path: u.pathname + u.search, method: 'GET' }, null, cb); } catch (e) { cb(e); } };
 
 // Physical-LAN private IPv4s only (skip loopback + VPN/tunnel interfaces) — same rule as cast.js,
 // so the unicast SSDP sweep below walks exactly the subnets the eureka sweep does.
@@ -150,21 +151,32 @@ module.exports = function createDlna() {
   const ev = new EventEmitter();
   const devices = new Map(); // location → device {host,name,avControl,rcControl}
   let sock = null, timer = null, current = null;
-  let burstTimers = []; // pending M-SEARCH probes, cancelled by stopDiscovery()
+  const burstTimers = new Set(); // pending M-SEARCH probes, cancelled by stopDiscovery()
+  let discoveryGeneration = 0;
+  const discoveryRequests = new Set();
+  const health = require('./discovery-health').createDiscoveryHealth('dlna', state => ev.emit('discovery', state), { setTimeout, clearTimeout });
 
   function emitDevices() {
+    health.found(devices.size);
     const list = [...devices.values()].map((d) => ({ id: 'dlna-' + d.location, type: 'dlna', name: d.name, location: d.location }));
     dlog('[dlna] emitDevices -> ' + list.length + ' device(s): ' + (list.map((d) => d.name).join(', ') || '(none)'));
     ev.emit('devices', list);
   }
 
   function fetchDevice(location) {
+    const gen = discoveryGeneration;
     if (devices.has(location)) { dlog('[dlna] (already known) ' + location); return; }
     if (!isLanUrl(location)) { dlog('[dlna] IGNORED non-LAN LOCATION: ' + location); return; }
-    httpGet(location, (err, res, xml) => {
+    let req;
+    req = httpGet(location, (err, res, xml) => {
+      discoveryRequests.delete(req);
+      if (gen !== discoveryGeneration || !sock) return;
+      if (err) health.error(err, loadCache().some(c => c.location === location));
       if (err || !xml) { dlog('[dlna] description fetch FAILED: ' + location + ' · ' + (err && err.message)); return; }
       // only MediaRenderers (must have an AVTransport service)
-      if (!new RegExp(AVT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(xml)) { dlog('[dlna] not a MediaRenderer (no AVTransport service): ' + location); return; }
+      const renderer = new RegExp(AVT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(xml);
+      health.reply(!renderer);
+      if (!renderer) { dlog('[dlna] not a MediaRenderer (no AVTransport service): ' + location); return; }
       // friendlyName is an unbounded attacker-influenced string that reaches the device list, the
       // on-disk cache and the DIDL we send back. Bound it and drop control characters; it is a
       // label. (It reaches the DOM via textContent, checked — not innerHTML — so this is about
@@ -204,6 +216,7 @@ module.exports = function createDlna() {
       saveCache([{ location, host, name }].concat(loadCache().filter((c) => c.location !== location)));
       emitDevices();
     });
+    if (req) discoveryRequests.add(req);
   }
 
   // Query several search targets — some renderers (incl. LG webOS) answer one ST but not another.
@@ -222,9 +235,13 @@ module.exports = function createDlna() {
   // after teardown the remaining probes still fired, up to 8s later, against a socket that had just
   // been closed and set to null — pointless work for a discovery the caller explicitly stopped, and
   // enough to hold the event loop open (which is why the test suite idled for 8s after finishing).
+  function later(fn, delay) {
+    const id = setTimeout(() => { burstTimers.delete(id); fn(); }, delay);
+    burstTimers.add(id);
+  }
   function burst() {
-    [0, 800, 2000, 4000, 8000].forEach((d) => burstTimers.push(setTimeout(search, d)));
-    [300, 5000].forEach((d) => burstTimers.push(setTimeout(unicastSweep, d))); // multicast-less networks (see below)
+    [0, 800, 2000, 4000, 8000].forEach((d) => later(search, d));
+    [300, 5000].forEach((d) => later(unicastSweep, d)); // multicast-less networks (see below)
   }
 
   // Unicast M-SEARCH fallback. Plenty of home routers/APs silently drop 239.255.255.250 between
@@ -253,6 +270,7 @@ module.exports = function createDlna() {
   let sweptOnce = false;
   function unicastSweep() {
     if (!sock) return;
+    const gen = discoveryGeneration, owner = sock;
     const hosts = knownHosts().concat(manualHosts()); // last-good renderers answer first
     for (const ip of lanSubnets()) {
       const base = ip.replace(/\.\d+$/, '.');
@@ -266,7 +284,7 @@ module.exports = function createDlna() {
     let i = 0;
     const CHUNK = 16;
     const pump = () => {
-      if (!sock || i >= hosts.length) return;
+      if (gen !== discoveryGeneration || sock !== owner || !sock || i >= hosts.length) return;
       for (let c = 0; c < CHUNK && i < hosts.length; c++, i++) {
         const h = hosts[i];
         for (const st of UNI_STS) {
@@ -275,17 +293,23 @@ module.exports = function createDlna() {
           if (both) { const lm = legacyMsg(st); try { sock.send(lm, 0, lm.length, SSDP_PORT, h); } catch (e) {} }
         }
       }
-      setTimeout(pump, 40);
+      later(pump, 40);
     };
     pump();
     sweptOnce = true;
   }
 
-  function startDiscovery() {
-    if (sock) { emitDevices(); burst(); return; }
+  function startDiscovery({ retry = false } = {}) {
+    if (sock && !retry) { emitDevices(); burst(); return; }
+    if (retry) { stopDiscovery(); devices.clear(); sweptOnce = false; }
+    discoveryGeneration++;
+    const gen = discoveryGeneration;
+    health.start();
+    emitDevices();
     sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-    sock.on('error', () => {});
+    sock.on('error', error => { if (gen === discoveryGeneration) health.error(error); });
     sock.on('message', (msg, rinfo) => {
+      if (gen !== discoveryGeneration || !sock) return;
       const s = msg.toString();
       const m = /LOCATION:\s*(\S+)/i.exec(s);
       if (m) { const srv = /SERVER:\s*(.*)/i.exec(s); dlog('[dlna] SSDP resp from ' + (rinfo && rinfo.address) + ' LOCATION=' + m[1].trim() + (srv ? ' SERVER=' + srv[1].trim().slice(0, 60) : '')); fetchDevice(m[1].trim()); }
@@ -297,8 +321,10 @@ module.exports = function createDlna() {
     timer = setInterval(() => { search(); unicastSweep(); }, 30000);
   }
   function stopDiscovery() {
+    discoveryGeneration++; health.stop();
+    for (const req of discoveryRequests) req.destroy(); discoveryRequests.clear();
     if (timer) { clearInterval(timer); timer = null; }
-    burstTimers.forEach(clearTimeout); burstTimers = [];
+    burstTimers.forEach(id => clearTimeout(id)); burstTimers.clear();
     try { if (sock) sock.close(); } catch (e) {} sock = null;
   }
 
@@ -441,5 +467,5 @@ module.exports = function createDlna() {
 
   function teardown() { try { if (current) stop(); } catch (e) {} stopDiscovery(); current = null; } // stop the TV, not just discovery
 
-  return { on: (e, fn) => ev.on(e, fn), startDiscovery, stopDiscovery, load, play, pause, stop, seek, setVolume, position, transportState, teardown, setManualHosts };
+  return { on: (e, fn) => ev.on(e, fn), startDiscovery, stopDiscovery, load, play, pause, stop, seek, setVolume, position, transportState, teardown, setManualHosts, discoveryState: health.snapshot };
 };

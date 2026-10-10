@@ -533,8 +533,8 @@ if (!gotLock) {
         } : null
       },
       lan: { address: lanAddr, port: lanPort },
-      cast: { count: diagCast.length, names: diagCast.map((d) => d.name).slice(0, 6) },
-      dlna: { count: diagDlna.length, names: diagDlna.map((d) => d.name).slice(0, 6) },
+      cast: { count: diagCast.length, names: diagCast.map((d) => d.name).slice(0, 6), discovery: cast.discoveryState() },
+      dlna: { count: diagDlna.length, names: diagDlna.map((d) => d.name).slice(0, 6), discovery: dlna.discoveryState() },
       torrent: diagTorrent,
       source: mpvLastUrl ? String(mpvLastUrl).slice(0, 120) : null,
       engineLog: engineLog.slice(-4).reverse(),
@@ -568,6 +568,7 @@ if (!gotLock) {
   // ---- DLNA / UPnP casting (parallel to Chromecast) ----
   let dlnaPoll = null;
   dlna.on('devices', (devices) => { diagDlna = devices || []; send('dlna-event', { type: 'devices', devices }); });
+  dlna.on('discovery', state => send('dlna-event', { type: 'discovery', state }));
   dlna.on('error', (e) => { recordErr('dlna', e.message); send('dlna-event', { type: 'error', message: e.message }); });
   function stopDlnaPoll() { if (dlnaPoll) { clearInterval(dlnaPoll); dlnaPoll = null; } }
   // Poll GetPositionInfo + GetTransportInfo so the remote scrubber advances and a stop-on-TV
@@ -667,7 +668,7 @@ if (!gotLock) {
     } catch (e) { return { ok: false, why: e.message }; }
   });
 
-  ipcMain.on('dlna:discover', () => { try { dlna.startDiscovery(); } catch (e) {} });
+  ipcMain.on('dlna:discover', (_e, opts) => { try { dlna.startDiscovery({ retry: !!(opts && opts.retry === true) }); } catch (e) { recordErr('dlna-discovery', e.message); } });
   ipcMain.on('dlna:load', (_e, { location } = {}) => {
     if (!location) { send('dlna-event', { type: 'error', message: 'No DLNA device selected.' }); return; }
     // DLNA renderers (LG/Samsung/Sony webOS etc.) play direct seekable files, NOT HLS. For a local
@@ -1025,6 +1026,7 @@ if (!gotLock) {
   // bulletproof stream; switching = a fresh stream at the same position). null for direct-MP4 casts.
   let castMkv = null; // { input, caps, audioTracks:[{idx,name,lang}], dur, audioTrack }
   cast.on('devices', (devices) => { diagCast = devices || []; send('cast-event', { type: 'devices', devices }); });
+  cast.on('discovery', state => send('cast-event', { type: 'discovery', state }));
   cast.on('error', (e) => { recordErr('cast', e.message); send('cast-event', { type: 'error', message: e.message }); });
   // A load that the receiver accepts is NOT proof it can play the stream. The grey-screen failures
   // all had a successful load: the receiver took the request, fetched a couple of seconds, and hung
@@ -1158,7 +1160,7 @@ if (!gotLock) {
 
   // Resolve the AirPlay-castable URL for a source the Apple TV can actually fetch:
   //   • https + AV container            → use as-is (ATS-safe, e.g. yt-dlp / direct MP4)
-  //   • torrent localhost URL + AV ext  → rewrite host to the Mac's LAN IP (TV can't reach loopback)
+  //   • torrent localhost URL + AV ext  → token-scoped LAN proxy (TV can't reach loopback)
   //   • local file + AV container       → serve it over the LAN file server
   //   • anything else (mkv/webm, http)  → null (no AirPlay; gated honestly in the UI)
   const ctypeFor = (u) => /\.m3u8(\?|#|$)/i.test(u || '') ? 'application/vnd.apple.mpegurl'
@@ -1196,16 +1198,13 @@ if (!gotLock) {
       : { ...(extra && extra.receiver && require('./receiver-preparation-policy').receiverFeatures(process.env).sourceAudio && Number.isFinite(extra.startSec) ? { receiverStartSec: () => extra.startSec } : {}), ...(extra && Number.isInteger(extra.audioHint) ? { audioHint: extra.audioHint } : {}), receiverSourceWaiting: () => receiverSourceWaiting(s, resolutionGen), sourceSelectedAudio: !!(extra && extra.receiver && require('./receiver-preparation-policy').receiverFeatures(process.env).sourceAudio), sideloadSubs: !!(extra && extra.receiver), receiverSubtitles: !!(extra && extra.receiverSubtitles), caps: caps || airplayCaps(AIRPLAY_CAPS), ...(caps && caps.hevc4k ? { capsFallback: require('./device-profile').defaultProfile() } : {}), extraSubs: externalSubs };
     // Remote https (yt-dlp / direct): no probe/remux — use as-is when it's an AV container.
     if (/^https:\/\//i.test(s)) return cb(mediaLan.avCompatible(s) ? s : null);
-    // Torrent localhost stream: rewrite host→LAN IP so the TV can fetch webtorrent's
-    // range-served stream directly. NO ffprobe/remux here — probing a torrent stream stalls
+    // Torrent localhost stream: expose only this file through the token-scoped LAN proxy.
+    // NO ffprobe/remux here — probing a torrent stream stalls
     // (moov may be at the tail / whole file not downloaded), which would block the cast button.
     // AVPlayer range-reads the moov itself. MKV/etc can't be cast (no AV container) → null.
     const tor = s.match(/^http:\/\/(?:localhost|127\.0\.0\.1)(:\d+)(\/webtorrent\/.*)$/i);
     if (tor) {
-      if (mediaLan.avCompatible(s)) { // mp4/mov/m4v → AVPlayer fetches webtorrent's stream directly
-        const ip = mediaLan.lanAddress();
-        return cb(ip ? 'http://' + ip + tor[1] + tor[2] : null);
-      }
+      if (mediaLan.avCompatible(s)) return mediaLan.serveDlna(s, ctypeFor(s), cb);
       // mkv/avi/ts/etc (H.264/HEVC) → live HLS remux so AVPlayer/Chromecast can play it as it streams
       if (/\.(mkv|avi|ts|m2ts|webm|wmv|flv|mpg|mpeg|ogv)(\?|#|$)/i.test(s)) return mediaLan.serveHls(s, cb, hlsOpts());
       return cb(null);
@@ -1446,7 +1445,16 @@ if (!gotLock) {
                 ' externalActive=' + apExternalActive + (apTimeSeen > 5 ? ' advanced=' + moved.toFixed(1) + 's' + (moved < 0.5 ? ' STALLED' : '') : ''));
               apLastLoggedTime = ev.cur;
             }
-            lastAvTime = ev.cur; avItemFailed = false; if (castEngine === 'airplay') cancelDrop();
+            // Only playback that ADVANCES on an ACTIVE external route proves the cast is healthy. The
+            // prepared AVPlayer keeps ticking locally after a route loss or item failure; letting those
+            // ticks clear the failure and cancel the drop left engine=airplay forever with nothing on
+            // the TV. Off-route ticks also must not move the playhead recovery resumes from.
+            if (castEngine !== 'airplay') lastAvTime = ev.cur;
+            else if (apExternalActive) {
+              const advanced = ev.cur > lastAvTime + 0.05;
+              lastAvTime = ev.cur;
+              if (advanced) { avItemFailed = false; cancelDrop(); }
+            }
             // Tell the LAN server where the player is, so a subtitle extractor started from the remote
             // seeks to the play head instead of reading the file from the beginning.
             try { lan.noteAirplayPosition(ev.cur); } catch (e) {}
@@ -2153,6 +2161,11 @@ if (!gotLock) {
     try { if (apAddon && rect) apAddon.updatePickerRect(rect.x, rect.y, rect.w, rect.h, true); }
     catch (e) { console.error('[airplay:showButton]', e.message); }
   });
+  ipcMain.on('airplay:openPicker', () => {
+    try { if (apAddon && apAddon.openPicker()) return; }
+    catch (e) { console.error('[airplay:openPicker]', e.message); }
+    send('toast', { message: 'AirPlay picker unavailable. Close and reopen the Cast menu, then try again.' });
+  });
   ipcMain.on('airplay:hideButton', () => { try { if (apAddon) apAddon.updatePickerRect(0, 0, 0, 0, false); } catch (e) {} });
   ipcMain.on('airplay:play', () => { try { if (apAddon) apAddon.play(); } catch (e) {} });
   ipcMain.on('airplay:pause', () => { try { if (apAddon) apAddon.pause(); } catch (e) {} });
@@ -2178,7 +2191,7 @@ if (!gotLock) {
   });
 
   // ---- Google Cast (Chromecast / LG webOS) ----
-  ipcMain.on('cast:discover', () => { try { cast.startDiscovery(); } catch (e) {} });
+  ipcMain.on('cast:discover', (_e, opts) => { try { cast.startDiscovery({ retry: !!(opts && opts.retry === true) }); } catch (e) { recordErr('cast-discovery', e.message); } });
   // User-entered TV addresses, probed in addition to normal discovery. Also handed to the DLNA
   // side, since a TV that hides from one discovery protocol usually hides from both.
   ipcMain.on('cast:manualHosts', (_e, { csv } = {}) => {

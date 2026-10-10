@@ -118,6 +118,13 @@ const { verify } = require('../build/verify-package');
 function packagedApp({ addons = ['mpv_render.node', 'airplay.node', 'nowplaying.node'], bins = ['ffmpeg', 'ffprobe', 'yt-dlp'], ytdlpScript = false, shaders = true, receiver = true , licenses = true} = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'spritz-pkg-'));
   const app = path.join(root, 'Spritz.app');
+  fs.mkdirSync(path.join(app, 'Contents/Frameworks'), { recursive: true });
+  fs.mkdirSync(path.join(app, 'Contents/MacOS'), { recursive: true });
+  const executable = Buffer.alloc(64);
+  executable.writeUInt32LE(0xfeedfacf, 0); executable.writeUInt32LE(1, 16); executable.writeUInt32LE(24, 20);
+  executable.writeUInt32LE(0x1b, 32); executable.writeUInt32LE(24, 36);
+  require('../build/app-uuid').stampUuid(executable, 'app.spritz.player/Contents/MacOS/Spritz');
+  fs.writeFileSync(path.join(app, 'Contents/MacOS/Spritz'), executable);
   const bin = path.join(app, 'Contents', 'Resources', 'bin');
   fs.mkdirSync(bin, { recursive: true });
   for (const b of bins) fs.writeFileSync(path.join(bin, b), b === 'yt-dlp' && ytdlpScript ? '#!/opt/homebrew/bin/python\n' : 'binary');
@@ -239,9 +246,9 @@ test('asarUnpack covers vendor/shaders', () => {
   assert.ok(require('../package.json').build.asarUnpack.includes('vendor/shaders/**'));
 });
 
-test('a complete package passes', () => {
+test('a complete package payload passes (synthetic executable is unsigned)', () => {
   const { root, app } = packagedApp();
-  assert.deepEqual(verify(app), []);
+  assert.deepEqual(verify(app).filter(p => !/bundle signature|Electron fuses/.test(p.what)), []);
   cleanup(root);
 });
 

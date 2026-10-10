@@ -74,17 +74,22 @@
     font-size: 112px; font-weight: 300; font-variant-numeric: tabular-nums; color: #fff;
     background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); box-shadow: 0 10px 30px rgba(0,0,0,.4); }
   /* Time left on the code, as well as in words: a bar is readable from across the room. */
-  .bar { width: 560px; height: 6px; margin: 28px auto 22px; border-radius: 3px; background: rgba(255,255,255,.10); overflow: hidden; }
-  .bar i { display: block; height: 100%; width: 100%; background: #0583ff; border-radius: 3px; transition: width 1s linear; }
+  #codebar { width: 560px; height: 6px; margin: 28px auto 22px; border-radius: 3px; background: rgba(255,255,255,.10); overflow: hidden; }
+  #codebar i { display: block; height: 100%; width: 100%; background: #0583ff; border-radius: 3px; transition: width 1s linear; }
   #statusbox { text-align: center; }
 
   /* Compact control surface with a separate track drawer. */
-  #ui { position: absolute; left: 88px; right: 88px; bottom: 58px; padding: 18px 0 0;
-    border: 0; background: transparent; text-shadow: 0 1px 6px rgba(0,0,0,.8);
+  /* Full-width box with a bottom-up scrim so the times stay legible over bright scenes; padding keeps
+   * the controls at their old 88px/58px insets. */
+  #ui { position: absolute; left: 0; right: 0; bottom: 0; padding: 120px 88px 58px;
+    border: 0; background: linear-gradient(to top, rgba(0,0,0,.72), rgba(0,0,0,.45) 55%, rgba(0,0,0,0)); text-shadow: 0 1px 6px rgba(0,0,0,.8);
     opacity: 0; transition: opacity .2s ease; pointer-events: none; }
   #ui.show { opacity: 1; pointer-events: auto; }
   #title { font-size: 23px; font-weight: 400; margin-bottom: 18px; color: #d9dce2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar { display: flex; align-items: center; gap: 20px; font-size: 20px; color: #b8bcc4; font-variant-numeric: tabular-nums; }
+  /* Read from the sofa: 20px grey was reported unreadable on the 1920x1080 surface. */
+  .time { font-size: 30px; font-weight: 500; color: #ffffff; font-variant-numeric: tabular-nums; letter-spacing: .02em;
+    text-shadow: 0 1px 2px rgba(0,0,0,.9), 0 0 8px rgba(0,0,0,.7); }
   .track { position: relative; flex: 1; height: 2px; background: rgba(255,255,255,.22); border-radius: 3px; overflow: hidden; }
   .buf, .play { position: absolute; inset: 0 auto 0 0; border-radius: 3px; width: 0; }
   .buf { background: #777e8c; } .play { background: #eceef2; }
@@ -127,7 +132,7 @@
     <div class="pairlead">Pair this TV with Spritz</div>
     <div class="code" id="code">----</div>
     <div class="tiles" id="codetiles" aria-hidden="true"></div>
-    <div class="bar" id="codebar"><i id="barfill"></i></div>
+    <div id="codebar"><i id="barfill"></i></div>
     <div class="hint" id="pairhint">Enter this code in Spritz on your Mac</div>
     <div class="hint" id="paircount"></div>
     <div class="btnrow"><button id="new-code" type="button">Get a new code</button></div>
@@ -160,9 +165,9 @@
   <div id="ui">
     <div id="title"></div>
     <div class="bar">
-      <span id="cur">00:00</span>
+      <span id="cur" class="time">00:00</span>
       <div class="track"><div class="buf" id="buf"></div><div class="play" id="pos"></div></div>
-      <span id="dur">00:00</span>
+      <span id="dur" class="time">00:00</span>
     </div>
     <div class="tabs" role="toolbar" aria-label="Playback controls">
       <button id="seek-back" type="button" aria-label="Back 30 seconds">-30s</button>

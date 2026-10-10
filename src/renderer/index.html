@@ -22,6 +22,9 @@
     <button class="wc wc-full" id="wc-full" title="Fullscreen" aria-label="Fullscreen"><svg viewBox="0 0 12 12"><path d="M4 2H2v2M8 2h2v2M4 10H2V8M8 10h2V8"/></svg></button>
   </div>
 
+  <div id="torrent-notice" class="torrent-notice hidden" role="alert">
+    <span id="torrent-notice-text"></span><button class="btn" id="torrent-notice-dismiss" type="button">Dismiss</button>
+  </div>
   <!-- Welcome screen (opaque). Hidden while media is loaded; hiding it reveals
        the transparent web layer and the native video underneath. -->
   <section id="home">
@@ -41,6 +44,8 @@
       <div class="cw-title">Devices</div>
       <div id="devices-list"></div>
       <div class="device-meta" id="devices-empty">Open Spritz Receiver on your LG TV, then type its code here. <a href="#" id="devices-installer">Show the TV installer in Finder</a></div>
+      <div class="discovery-summary" id="home-discovery" role="status" aria-live="polite"></div>
+      <button type="button" class="btn discovery-retry" id="home-discovery-retry">Retry discovery</button>
       <div class="device-meta" id="devices-address"></div>
       <div id="home-pair" class="hidden">
         <label class="pair-name" id="home-pair-name" for="home-code">Spritz Receiver</label>
@@ -149,9 +154,11 @@
       <ul class="list">
         <!-- AirPlay is always available; the native AVRoutePickerView overlays this row and draws
              its own glyph at the left (padding clears space for it). Text-only to avoid a 2nd glyph. -->
-        <li class="cast-airplay" id="cast-airplay-row"><div class="cast-name">AirPlay</div><div class="cast-detail" id="cast-airplay-detail"></div></li>
+        <li class="cast-airplay" id="cast-airplay-row" role="button" tabindex="0" aria-label="Choose an AirPlay device"><div class="cast-name">AirPlay</div><div class="cast-detail" id="cast-airplay-detail"></div></li>
         <!-- discovered Chromecast / DLNA devices are appended below -->
       </ul>
+      <div class="discovery-summary" id="cast-discovery" role="status" aria-live="polite"></div>
+      <button type="button" class="btn discovery-retry" id="cast-discovery-retry">Retry discovery</button>
       <!-- Spritz Receivers: televisions running Spritz's own receiver, rather than someone else's
            protocol. Same menu as every other target, because to the viewer it is the same choice. -->
       <div id="receiver-section" class="hidden">
@@ -279,6 +286,8 @@
 
   <script src="./route-hints.js"></script>
   <script src="./cast-routes.js"></script>
+  <script src="./discovery-status.js"></script>
+  <script src="./torrent-status.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

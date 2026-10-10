@@ -28,6 +28,7 @@ const mdnsLib = () => (multicastDns || (multicastDns = require('multicast-dns'))
 const txtLib = () => (dnsTxt || (dnsTxt = require('dns-txt')()));
 const castLib = () => (castv2 || (castv2 = require('castv2-client')));
 const deviceProfile = require('./device-profile'); // one definition of what a receiver can decode
+const { createDiscoveryHealth } = require('./discovery-health');
 
 // Physical-LAN private IPv4s only (skip loopback + VPN/tunnel interfaces).
 function lanSubnets() {
@@ -50,10 +51,14 @@ module.exports = function createCast() {
   const ev = new EventEmitter();
   const devices = new Map(); // host → { host, name }
   let mdns = null, timer = null, discovering = false;
+  let discoveryGeneration = 0, earlyRetry = null;
+  const discoveryRequests = new Set(), discoverySockets = new Map();
+  const health = createDiscoveryHealth('cast', state => ev.emit('discovery', state), { setTimeout, clearTimeout });
   let client = null, player = null, connectedHost = null, lastStatus = null, reconnectTries = 0;
   let castGen = 0; // bumped on every load()/stop() — a superseded client's events/reconnect are ignored (Audit H3)
 
   function emitDevices() {
+    health.found(devices.size);
     ev.emit('devices', [...devices.values()].map((d) => ({ id: 'cast-' + d.host, type: 'chromecast', host: d.host, name: d.name })));
   }
   function addDevice(host, name, caps) {
@@ -94,12 +99,13 @@ module.exports = function createCast() {
   // of the brute-force sweep. Purely additive — the sweep still runs and still finds everything else.
   const LG_ST = 'urn:lge-com:service:webos-second-screen:1';
   function lgSsdpProbe() {
+    const gen = discoveryGeneration;
     let sock = null;
     try { sock = dgram.createSocket({ type: 'udp4', reuseAddr: true }); } catch (e) { return; }
-    const close = () => { try { sock.close(); } catch (e) {} };
-    sock.on('error', close);
+    const close = () => { clearTimeout(discoverySockets.get(sock)); discoverySockets.delete(sock); try { sock.close(); } catch (e) {} };
+    sock.on('error', error => { if (gen === discoveryGeneration) health.error(error); close(); });
     sock.on('message', (msg, rinfo) => {
-      if (!rinfo || !rinfo.address) return;
+      if (gen !== discoveryGeneration || !discovering || !rinfo || !rinfo.address) return;
       probeEureka(rinfo.address, () => {}, true); // force: bypass the backoff, this is a live hit
     });
     const m = Buffer.from(['M-SEARCH * HTTP/1.1', 'HOST: 239.255.255.250:1900',
@@ -108,7 +114,7 @@ module.exports = function createCast() {
       try { sock.setBroadcast(true); } catch (e) {}
       try { sock.send(m, 0, m.length, 1900, '239.255.255.250'); } catch (e) {}
     });
-    setTimeout(close, 5000); // one short burst per discovery start; not a standing listener
+    discoverySockets.set(sock, setTimeout(close, 5000));
   }
 
   // Wake-on-LAN. An LG with "Mobile TV On → Turn on via Wi-Fi" enabled wakes on a magic packet,
@@ -154,21 +160,26 @@ module.exports = function createCast() {
   }
 
   // --- discovery ---
-  function startDiscovery() {
-    if (discovering) { emitDevices(); return; }
+  function startDiscovery({ retry = false } = {}) {
+    if (discovering && !retry) { emitDevices(); return; }
+    if (retry) { stopDiscovery(); devices.clear(); lastProbe.clear(); }
     discovering = true;
+    discoveryGeneration++;
+    health.start();
+    emitDevices();
+    const gen = discoveryGeneration;
     try {
       mdns = mdnsLib()();
-      mdns.on('error', () => {});
-      mdns.on('response', onMdns);
-    } catch (e) { /* mDNS optional; eureka sweep still runs */ }
+      mdns.on('error', error => { if (gen === discoveryGeneration) health.error(error); });
+      mdns.on('response', pkt => { if (gen === discoveryGeneration && discovering) onMdns(pkt); });
+    } catch (e) { health.error(e); }
     sweep();
     lgSsdpProbe(); // fast lane: ask LG TVs to identify themselves
     // A cold TV can drop the very first probe entirely (observed: request 1 fails, request 2
     // succeeds once the service has woken). Without an early retry the next chance was the 60s
     // interval, so a TV that was merely asleep looked absent for a full minute. Retry once,
     // shortly after the first sweep has had time to time out, but only while nothing is found.
-    setTimeout(() => { if (discovering && !devices.size) sweep(); }, 10000);
+    earlyRetry = setTimeout(() => { if (gen === discoveryGeneration && discovering && !devices.size) sweep(); }, 10000);
     timer = setInterval(sweep, 60000);
   }
 
@@ -213,6 +224,7 @@ module.exports = function createCast() {
   }
 
   function sweep() {
+    const gen = discoveryGeneration;
     // mDNS query (catches standard Chromecasts)
     try { if (mdns) mdns.query({ questions: [{ name: '_googlecast._tcp.local', type: 'PTR' }] }); } catch (e) {}
     // eureka /24 sweep (catches LG webOS + Chromecast-built-in TVs) + any manual hosts
@@ -223,7 +235,7 @@ module.exports = function createCast() {
     }
     let idx = 0;
     const MAXC = 16;
-    const pump = () => { if (idx < hosts.length) probeEureka(hosts[idx++], pump); };
+    const pump = () => { if (discovering && gen === discoveryGeneration && idx < hosts.length) probeEureka(hosts[idx++], pump); };
     for (let c = 0; c < MAXC && c < hosts.length; c++) pump();
     reapDevices(); // evict TVs that have gone away
   }
@@ -233,6 +245,9 @@ module.exports = function createCast() {
   // a known host is only a liveness refresh, so it can safely wait.
   const lastProbe = new Map();
   function probeEureka(host, done, force) {
+    const gen = discoveryGeneration;
+    let settled = false;
+    const finish = () => { if (settled) return; settled = true; discoveryRequests.delete(req); if (gen === discoveryGeneration && discovering) done(); };
     const now = Date.now();
     if (!force && devices.has(host) && now - (lastProbe.get(host) || 0) < 20000) return done();
     lastProbe.set(host, now);
@@ -243,19 +258,25 @@ module.exports = function createCast() {
     // "Searching for TVs…" forever. Costs little on a sweep: unused addresses fail fast
     // (no ARP -> EHOSTUNREACH, or an immediate RST); only genuinely silent hosts wait it out.
     const req = http.get({ host, port: 8008, path: '/setup/eureka_info?options=detail', timeout: 8000 }, (res) => {
+      if (gen !== discoveryGeneration || !discovering) { res.destroy(); return; }
       let body = '';
       res.on('data', (d) => { body += d; });
       res.on('end', () => {
-        done();
-        try { const j = JSON.parse(body); if (j && j.name) addDevice(host, String(j.name), capsFromEureka(j)); } catch (e) {}
+        if (gen === discoveryGeneration && discovering) { health.reply(); try { const j = JSON.parse(body); if (j && j.name) addDevice(host, String(j.name), capsFromEureka(j)); } catch (e) {} }
+        finish();
       });
     });
-    req.on('error', () => done());
-    req.on('timeout', () => { req.destroy(); done(); });
+    discoveryRequests.add(req);
+    req.on('error', error => { if (gen === discoveryGeneration && discovering) health.error(error); finish(); });
+    req.on('timeout', () => { if (gen === discoveryGeneration && discovering) health.error({ code: 'ETIMEDOUT' }); req.destroy(); finish(); });
   }
 
   function stopDiscovery() {
     discovering = false;
+    discoveryGeneration++;
+    health.stop(); clearTimeout(earlyRetry); earlyRetry = null;
+    for (const req of discoveryRequests) req.destroy(); discoveryRequests.clear();
+    for (const [sock, timeout] of discoverySockets) { clearTimeout(timeout); try { sock.close(); } catch (e) {} } discoverySockets.clear();
     if (timer) { clearInterval(timer); timer = null; }
     try { if (mdns) mdns.destroy(); } catch (e) {} mdns = null;
   }
@@ -510,6 +531,7 @@ module.exports = function createCast() {
     on: (e, fn) => ev.on(e, fn),
     startDiscovery, stopDiscovery, load, play, pause, seek, stop, setVolume, teardown, wake, setManualHosts,
     tracks, setTrack, connectedHost: () => connectedHost,
-    capsFor: (host) => { const d = devices.get(host); return d ? d.caps : null; }
+    capsFor: (host) => { const d = devices.get(host); return d ? d.caps : null; },
+    discoveryState: health.snapshot
   };
 };
