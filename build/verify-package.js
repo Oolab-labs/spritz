@@ -163,6 +163,21 @@ function verify(app) {
       }
     }
   }
+  // Every npm package the code needs must be inside app.asar. A symlinked node_modules once made
+  // electron-builder drop WebTorrent's whole dependency tree while this check stayed green.
+  const asarFile = path.join(app, 'Contents', 'Resources', 'app.asar');
+  if (fs.existsSync(asarFile)) {
+    try {
+      const { readAsar, missingDependencies } = require('./asar-deps');
+      const missing = missingDependencies(readAsar(asarFile));
+      if (missing.length) problems.push({
+        what: `${missing.length} npm package${missing.length === 1 ? ' is' : 's are'} missing from app.asar: ` +
+          missing.slice(0, 6).map((m) => `${m.name} (needed by ${m.neededBy})`).join(', ') + (missing.length > 6 ? ', …' : ''),
+        fix: 'build from a real node_modules (not a symlink); electron-builder logs "cannot find path for dependency" when it drops them'
+      });
+    } catch (e) { problems.push({ what: 'cannot read the dependencies inside app.asar: ' + e.message, fix: 'rebuild the package' }); }
+  } else problems.push({ what: 'app.asar is not in the package', fix: 'check build.asar in package.json' });
+
   // Files libmpv opens itself (Anime4K shaders) must be unpacked from app.asar — native code cannot
   // read inside an archive, and the failure is silent (the UI still reports the mode as active).
   const shader = path.join(app, 'Contents', 'Resources', 'app.asar.unpacked', 'vendor', 'shaders', 'anime4k', 'Anime4K_Clamp_Highlights.glsl');

@@ -118,6 +118,8 @@ const { verify } = require('../build/verify-package');
 function packagedApp({ addons = ['mpv_render.node', 'airplay.node', 'nowplaying.node'], bins = ['ffmpeg', 'ffprobe', 'yt-dlp'], ytdlpScript = false, shaders = true, receiver = true , licenses = true} = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'spritz-pkg-'));
   const app = path.join(root, 'Spritz.app');
+  fs.mkdirSync(path.join(app, 'Contents', 'Resources'), { recursive: true });
+  require('./helpers/asar').writeAsar(path.join(app, 'Contents', 'Resources', 'app.asar'), { 'package.json': JSON.stringify({ name: 'spritz', dependencies: {} }) });
   const bin = path.join(app, 'Contents', 'Resources', 'bin');
   fs.mkdirSync(bin, { recursive: true });
   for (const b of bins) fs.writeFileSync(path.join(bin, b), b === 'yt-dlp' && ytdlpScript ? '#!/opt/homebrew/bin/python\n' : 'binary');
