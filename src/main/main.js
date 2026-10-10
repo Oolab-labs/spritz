@@ -258,10 +258,28 @@ if (!gotLock) {
   function handOffToAirplay(why) {
     console.log('[airplay] handing off to AirPlay (' + why + ')');
     setEngine('airplay');
-    const pos = mpvPos();
+    // The LG stalls when started late in an HLS segment (19/19 handoffs: <=5.3s in played, >=6s in
+    // stalled) — move such a start back to its segment's start. See airplay-start-snap.js.
+    const at = mpvPos();
+    let pos = at;
+    try { pos = require('./airplay-start-snap').safeAirplayStart(at, lan.airplayMediaPlaylist()); } catch (e) {}
+    if (pos !== at) console.log('[airplay] ' + at.toFixed(1) + 's is late in its segment; starting the TV at ' + pos.toFixed(1) + 's');
     captureTracks();                        // remember language/subtitle for the return
     try { mpvAddon.command('stop'); } catch (e) {}
     try { apAddon.seek(pos); apAddon.play(); } catch (e) {}
+    // The hidden player free-runs from the moment the picker opens, and this seek has been observed
+    // not to reach the TV (Mac at 33.1s, TV started at 20.0s; 40.6s -> 7.1s). Check, and correct.
+    const t0 = Date.now();
+    const verify = (tries) => setTimeout(() => {
+      if (castEngine !== 'airplay') return;
+      let cur; try { cur = apAddon.stat().cur; } catch (e) { return; }
+      const expected = pos + (Date.now() - t0) / 1000;
+      if (!Number.isFinite(cur) || (cur >= pos - 2 && cur <= expected + 4)) return;
+      console.log('[airplay] TV at ' + cur.toFixed(1) + 's, expected ~' + expected.toFixed(1) + 's: seeking again');
+      try { apAddon.seek(pos); } catch (e) {}
+      if (tries > 1) verify(tries - 1);
+    }, 2500);
+    verify(2);
   }
   // The second file of a session never played to the TV, and this is why: the route from the FIRST
   // file is still held, so macOS emits no new 'external' event — there is no transition to observe.
