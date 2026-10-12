@@ -3,6 +3,8 @@
 **A private, native macOS media player that gets your media onto almost any screen,
 at the best quality that screen can actually take.**
 
+**Website:** [oolab-labs.github.io/spritz](https://oolab-labs.github.io/spritz/) · **Download:** [Releases](https://github.com/Oolab-labs/spritz/releases)
+
 Give Spritz a video and pick a screen. It works out the difficult part — what the file
 is, what your TV can decode, and the shortest route between the two — then plays it
 locally via [libmpv](https://github.com/mpv-player/mpv) or casts it over AirPlay,
