@@ -1537,7 +1537,13 @@ function syncReceiverPlayback() {
   if (engine !== 'receiver' || !activeReceiver || activeReceiver.source !== sourceIntent) return;
   const target = receiverTargets.find(r => r.id === activeReceiver.id), p = target && target.playback;
   seek.disabled = !target || target.status !== 'online';
+  // The television let go of the film by itself: Back or Stop on its remote, or a fatal media error.
+  // Both report idle with mediaId:null, and the main process has already torn the stream down. Only
+  // believed once this TV has reported holding THIS film — until then an idle report may be the
+  // one from before the load arrived. (A replacement load never reports idle in between.)
+  if (p && activeReceiver.confirmed && p.state === 'idle' && p.mediaId === null) { releaseFromReceiver(); return; }
   if (!p || p.mediaId !== activeReceiver.mediaId) return;
+  activeReceiver.confirmed = true;
   if (typeof receiverTrackMenus === 'function') receiverTrackMenus(p);
   if (p.state === 'playing' || p.state === 'paused') st.paused = p.state === 'paused';
   else if (typeof p.paused === 'boolean') st.paused = p.paused;
@@ -1569,6 +1575,17 @@ async function leaveReceiver(resumeLocal) {
   if (resumeLocal && owner.source === sourceIntent) {
     restoreReceiverPosition(position);
   }
+}
+// The receiver is already idle, so this is Return to Mac without the Stop command. A Return to Mac
+// still awaiting its reply sees activeReceiver !== owner and does nothing more.
+function releaseFromReceiver() {
+  const owner = activeReceiver;
+  if (!owner) return;
+  activeReceiver = null;
+  setPlaybackEngine('mpv'); document.body.classList.remove('casting'); castOverlay.classList.add('hidden');
+  volSlider.disabled = muteBtn.disabled = false;
+  refreshCast();
+  if (owner.source === sourceIntent) restoreReceiverPosition(owner.position);
 }
 function restoreReceiverPosition(position) {
   soda.player.pause(); soda.player.seek(position); st.paused = true; showIcon('play');
