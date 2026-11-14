@@ -137,8 +137,6 @@ const helloFrom = (sessionId, { receiverId, name, platform, version, now } = {})
     version: version == null ? null : String(version)
   }, now);
 
-const ready = (sessionId, { now } = {}) => envelope('ready', sessionId, {}, now);
-
 // Every report the receiver makes about media names BOTH the film (mediaId) and the transport
 // (epoch) it is holding — the two facts shouldLoad and the position mapping need together.
 const loaded = (sessionId, { mediaId, epoch, durationSec, now } = {}) =>
@@ -193,15 +191,6 @@ const capabilities = (sessionId, { reported, now } = {}) =>
   envelope('capabilities', sessionId, { reported: reported && typeof reported === 'object' ? reported : {} }, now);
 
 // ---- pairing and authentication ---------------------------------------------------------------
-
-// TV -> Mac. A receiver with no stored credential asks to pair. It carries no secret, because it
-// has none: this is the one message a completely untrusted socket is allowed to originate.
-const pairRequest = (sessionId, { receiverId, name, platform, now: n } = {}) =>
-  envelope('pair.request', sessionId, {
-    receiverId: receiverId == null ? null : String(receiverId),
-    name: name == null ? null : String(name),
-    platform: platform == null ? null : String(platform)
-  }, n);
 
 // Mac -> TV. The code the human will read off the screen, and when it stops working.
 //
@@ -294,9 +283,9 @@ function parse(text) {
 const serialize = (msg) => JSON.stringify(msg);
 
 module.exports = {
-  PROTOCOL_VERSION, COMMANDS, EVENTS, STATES, PRE_AUTH_ALLOWED, POST_AUTH_ONLY,
-  pairRequest, pairChallenge, pairAccepted, pairDeclined, auth, authOk, authFailed,
+  PROTOCOL_VERSION, STATES, PRE_AUTH_ALLOWED, POST_AUTH_ONLY,
+  pairChallenge, pairAccepted, pairDeclined, auth, authOk, authFailed,
   envelope, parse, serialize,
   hello, load, play, pause, seek, stop, ping,
-  helloFrom, ready, loaded, state, position, error, pong, capabilities
+  helloFrom, loaded, state, position, error, pong, capabilities
 };

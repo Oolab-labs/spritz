@@ -64,4 +64,4 @@ function probeWithRetries(probeOnce, cb, opts) {
   return cancel;
 }
 
-module.exports = { probeWithRetries, ATTEMPT_TIMEOUTS, RETRY_DELAY_MS };
+module.exports = { probeWithRetries };

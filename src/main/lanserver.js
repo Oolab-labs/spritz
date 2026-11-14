@@ -3829,7 +3829,6 @@ module.exports.minimalMaster = minimalMaster;
 module.exports.servedMaster = servedMaster;
 module.exports.isCompleteMaster = isCompleteMaster;
 module.exports.canSynthesizeMaster = canSynthesizeMaster;
-module.exports.masterWithSubs = masterWithSubs;
 module.exports.CAST_PIPE_MUXFLAGS = CAST_PIPE_MUXFLAGS;
 module.exports.lastKeyframeAtOrBefore = lastKeyframeAtOrBefore;
 module.exports.castSeekArgs = castSeekArgs;

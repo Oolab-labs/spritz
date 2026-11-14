@@ -149,4 +149,4 @@ function decode(buf, state) {
   return { frames, rest: buf.slice(off), state: st };
 }
 
-module.exports = { MAX_FRAME_BYTES, MAX_MESSAGE_BYTES, MAX_MESSAGE_FRAGMENTS, OP, GUID, acceptKey, encode, encodeText, encodeClose, encodePing, encodePong, decode };
+module.exports = { MAX_FRAME_BYTES, MAX_MESSAGE_FRAGMENTS, OP, acceptKey, encode, encodeText, encodeClose, encodePing, encodePong, decode };

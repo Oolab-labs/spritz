@@ -366,4 +366,3 @@ function createReceiverHub({ onLog, registry, onRegistryChange, maxConnections =
 module.exports = createReceiverHub;
 module.exports.PATH = PATH;
 module.exports.STATE = STATE;
-module.exports.IDLE_TIMEOUT_MS = IDLE_TIMEOUT_MS;
