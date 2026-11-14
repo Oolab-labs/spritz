@@ -12,11 +12,11 @@ function fixture() {
   vm.createContext(ctx);
   const proxy = source.slice(source.indexOf('  const tokenRegistrations ='), source.indexOf('  function serveDlnaProxy('));
   const file = source.slice(source.indexOf('  function serve(absPath'), source.indexOf('  // prepareCast(input'));
-  vm.runInContext(proxy + file + '\nthis.routes = [serve, serveSource, (input, cb) => serveDlna(input, "video/mp4", cb)]; this.cancel = cancelTokenRegistrations;', ctx);
+  vm.runInContext(proxy + file + '\nthis.routes = [serve, (input, cb) => serveDlna(input, "video/mp4", cb)]; this.cancel = cancelTokenRegistrations;', ctx);
   return { ctx, ready, results, files, proxies, cancel: ctx.cancel,
     admit: (index) => ctx.routes[index]('/movie.mp4', (url) => results.push(url)) };
 }
-for (const [index, name] of ['file', 'producer proxy', 'viewer proxy'].entries()) {
+for (const [index, name] of ['file', 'viewer proxy'].entries()) {
   test(`${name} cancellation settles once and never registers a late token`, () => {
     const f = fixture(); f.admit(index); f.cancel(); f.cancel(); f.ready[0]();
     assert.deepEqual(f.results, [null]);
@@ -32,7 +32,7 @@ for (const [index, name] of ['file', 'producer proxy', 'viewer proxy'].entries()
   });
 }
 
-for (const [index, name] of ['file', 'producer proxy', 'viewer proxy'].entries()) {
+for (const [index, name] of ['file', 'viewer proxy'].entries()) {
   test(`${name} owned admission cancellation preserves an unrelated pending registration`, () => {
     const f = fixture(); const cancel = f.admit(index); f.admit(index);
     cancel(); cancel(); f.ready[0](); f.ready[1]();

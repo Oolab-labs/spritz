@@ -28,8 +28,9 @@
 // exit, error, explicit stop or supersession makes it inactive. Never an HTTP request — a real
 // ffmpeg was measured making several Range requests per run and closing each before the next.
 //
-// INPUT is opaque: a local path now, a lan.serveSource() URL when the source is a torrent. ffmpeg
-// treats both as `-i`, and nothing here forks on which it was given.
+// INPUT is opaque to this module. Today it is always a local path — serveVod is reached for local
+// files only (main.js resolveCastable) — but ffmpeg treats a URL the same as `-i`, and nothing here
+// forks on which it was given.
 
 const fs = require('fs');
 const path = require('path');

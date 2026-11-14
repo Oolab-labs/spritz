@@ -80,12 +80,24 @@ async function untilSeen(seen, pred, ms = 2000) {
   return null;
 }
 
+// The packager's source is a createOwnedSource proxy (what serveHls hands ffmpeg for a torrent).
+// Its reads are reported to the producer lease registerSourceProducer returned, not to the global
+// onSourceRead hook — the lease is what forwards them to the torrent scheduler in main.js.
+function producerLease(seen) {
+  return () => ({ noteSourceRead: (o) => seen.push(Object.assign({ t: Date.now() }, o)), setActive() {}, dispose() {} });
+}
+async function ownedSourceUrl(lan, upstreamUrl) {
+  await new Promise((resolve) => lan.ensureServer(resolve));
+  const owned = lan.createOwnedSource(upstreamUrl);
+  return owned && owned.url;
+}
+
 async function withSource(delayMs, fn) {
   const up = await upstream(delayMs);
   const seen = [];
-  const lan = createLanServer({ onSourceRead: (o) => seen.push(Object.assign({ t: Date.now() }, o)) });
+  const lan = createLanServer({ registerSourceProducer: producerLease(seen) });
   try {
-    const url = await new Promise((resolve) => lan.serveSource(up.url, resolve));
+    const url = await ownedSourceUrl(lan, up.url);
     assert.ok(url, 'a source URL is handed out');
     await fn({ url, seen, lan });
   } finally {
@@ -169,9 +181,9 @@ test('a producer seek is NOT a viewer seek: it reaches onSourceRead, never onSee
   const prev = setSeek(true);
   const up = await upstream(0);
   const seeks = [], seen = [];
-  const lan = createLanServer({ onSeekBytes: (b) => seeks.push(b), onSourceRead: (o) => seen.push(o) });
+  const lan = createLanServer({ onSeekBytes: (b) => seeks.push(b), registerSourceProducer: producerLease(seen) });
   try {
-    const url = await new Promise((resolve) => lan.serveSource(up.url, resolve));
+    const url = await ownedSourceUrl(lan, up.url);
     await read(url, { range: 'bytes=755085-' });
     assert.deepEqual(seeks, [], 'the producer never touched the viewer-seek hook');
     assert.equal(seen.find((o) => o.event === 'open').byteStart, 755085, 'and its demand went out as a source read');

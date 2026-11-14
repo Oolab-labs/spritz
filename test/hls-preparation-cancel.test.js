@@ -11,7 +11,7 @@ function fixture() {
     hlsDir: null, hlsRoot: '/owned', hlsStartedAt: 0, hlsAnnounced: false,
     subProcs: [], hlsWatch: null, hlsWarned: false, hlsSubTasks: new Map(), receiverSubtitles: null, startSubExtract() {},
     path, fs: { mkdirSync: (dir) => directories.push(dir), rmSync() {} },
-    onAirplayHlsGone() {}, cancelRemux() {}, clog() {}, whoCalled: () => 'test',
+    onAirplayHlsGone() {}, clog() {}, whoCalled: () => 'test',
     lanAddress: () => '127.0.0.1', newToken: () => String(directories.length),
     ensure: (cb) => ready.push(cb),
     probeTracks: (_, cb) => { probes.push(cb); return () => disposals.push(cb); }
