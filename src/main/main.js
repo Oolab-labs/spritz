@@ -430,8 +430,8 @@ if (!gotLock) {
     const restored = windowState.restore(windowState.load(windowStateFile), screen.getAllDisplays(), { width: 950, height: 560 });
     mainWindow = new BrowserWindow({
       ...restored,
-      minWidth: 520,
-      minHeight: 400,
+      minWidth: windowState.MIN_W,   // one source for the minimum: restore() clamps saved sizes to the same numbers
+      minHeight: windowState.MIN_H,
       // Transparent so the native libmpv layer (below the web contents) shows
       // through where the DOM is transparent. frame:true on purpose (frameless +
       // transparent + resizable hits Electron regression #49173).
@@ -455,11 +455,14 @@ if (!gotLock) {
     });
 
     // Remember size and position: debounced while the person drags or resizes, and once more on close. The
-    // restored (normal) bounds are saved even in fullscreen, and the mini-player's tiny window is skipped.
+    // restored (normal) bounds are saved even in fullscreen. Nothing is saved while the mini player is on
+    // (`mini`, declared with the window:toggleMini handler): macOS clamps its setSize to the minimum above, so
+    // a size threshold cannot tell it from a normal window, and saving it made the next launch open small in
+    // the mini player's corner. The last normal-mode bounds stay on disk instead.
     let windowStateTimer = null;
     const rememberWindow = () => {
       try {
-        if (!mainWindow || mainWindow.isDestroyed()) return;
+        if (!mainWindow || mainWindow.isDestroyed() || mini) return;
         const b = mainWindow.getNormalBounds();
         if (b.width >= windowState.MIN_W && b.height >= windowState.MIN_H) windowState.save(windowStateFile, b);
       } catch (e) { /* never let bookkeeping disturb playback */ }
@@ -519,6 +522,9 @@ if (!gotLock) {
       try { lan.teardown(); } catch (e) {}
       try { cast.teardown(); } catch (e) {}
       try { dlna.teardown(); } catch (e) {}
+      // A window closed in mini mode takes the mini state with it: a window re-created on dock activate is
+      // normal-sized, and must not inherit a flag that stops it being remembered (or a stale restore target).
+      mini = false; prevBounds = null;
       mainWindow = null;
     });
   }
