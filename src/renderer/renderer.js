@@ -793,19 +793,7 @@ $('#sub-online').addEventListener('click', async () => {
   const res = await soda.player.onlineSubtitles(currentLocalPath);
   if (!ownsSubtitle(owner)) return;
   if (res && res.ok) { soda.player.addSubtitleFile(res.srt); toast('Subtitles added: ' + (res.name || 'OpenSubtitles') + ' ✓', 3000); }
-  else toast((res && res.error) || 'No subtitles found — try Whisper', 4000);
-});
-// Whisper is shelved (see index.html): it works, but it is too slow and too inaccurate on a
-// feature-length film to sit in the menu next to two subtitle sources that are neither.
-if (soda.experimental) $('#sub-generate').classList.remove('hidden');
-$('#sub-generate').addEventListener('click', async () => {
-  const owner = subtitleOwner();
-  closeMenus();
-  if (!currentLocalPath) { showSponsorToast('AI subs need a local file'); return; }
-  const res = await soda.player.generateSubtitles(currentLocalPath); // Whisper (async; main posts progress notices)
-  if (!ownsSubtitle(owner)) return;
-  if (res && res.ok) soda.player.addSubtitleFile(res.srt);
-  else toast((res && res.error) || 'Subtitle generation failed', 4000);
+  else toast((res && res.error) || 'No subtitles found', 4000);
 });
 const clampDelay = (v) => Math.round(Math.max(-30, Math.min(30, v)) * 10) / 10;
 const fmtDelay = (v) => (v > 0 ? '+' : '') + v.toFixed(1) + 's';

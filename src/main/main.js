@@ -31,7 +31,7 @@ process.on('uncaughtException', (e) => { try { console.error('[uncaughtException
 process.on('unhandledRejection', (e) => { try { console.error('[unhandledRejection]', e && e.stack || e); } catch (_) {} });
 
 // Packaged builds use only their bundled copies — see bin-path.js.
-const { binPath, userBinPath } = require('./bin-path');
+const { binPath } = require('./bin-path');
 const YTDLP = binPath('yt-dlp');
 const FFMPEG = binPath('ffmpeg');
 
@@ -797,46 +797,6 @@ if (!gotLock) {
   }
   ipcMain.on('nowplaying:update', (_e, info = {}) => { try { if (npAddon) npAddon.setInfo(info); } catch (e) {} });
   ipcMain.on('nowplaying:clear', () => { try { if (npAddon) npAddon.clear(); } catch (e) {} });
-
-  // ---- Whisper auto-subtitles ----
-  // Extract 16kHz mono audio (whisper.cpp's required format) then transcribe to an .srt
-  // and hand it back for sub-add. Binary/model are discovered or overridable via env.
-  function whisperBin() {
-    if (process.env.WHISPER_BIN) return process.env.WHISPER_BIN;
-    // user-installed, never bundled — so the system lookup applies even when packaged
-    for (const n of ['whisper-cli', 'whisper-cpp']) { const p = userBinPath(n); if (p !== n) return p; }
-    return null;
-  }
-  function whisperModel() {
-    const m = process.env.WHISPER_MODEL || path.join(app.getPath('userData'), 'models', 'ggml-base.en.bin');
-    return fs.existsSync(m) ? m : null;
-  }
-  ipcMain.handle('subtitle:generate', async (_e, { src } = {}) => {
-    const bin = whisperBin(), model = whisperModel();
-    const file = localMediaPath(src); // same reasoning as thumb:at — this feeds ffmpeg -i
-    if (!file) return { ok: false, error: 'No media loaded' };
-    if (!bin) return { ok: false, error: 'Whisper not found — install with: brew install whisper-cpp' };
-    if (!model) return { ok: false, error: 'No Whisper model — put ggml-base.en.bin in app models folder' };
-    const base = path.join(app.getPath('temp'), 'spritz-whisper-' + Date.now());
-    const wav = base + '.wav';
-    try {
-      send('toast', { message: 'Extracting audio for subtitles…' });
-      await run(FFMPEG, ['-y', '-i', file, '-ar', '16000', '-ac', '1', '-f', 'wav', wav], 300000); // 5 min
-      send('toast', { message: 'Transcribing with Whisper…' });
-      await run(bin, ['-m', model, '-f', wav, '-osrt', '-of', base], 1800000); // 30 min cap
-      try { fs.unlinkSync(wav); } catch (e) {}
-      if (fs.existsSync(base + '.srt')) { send('toast', { message: 'Subtitles ready ✓' }); return { ok: true, srt: base + '.srt' }; }
-      return { ok: false, error: 'No subtitles produced' };
-    } catch (e) { try { fs.unlinkSync(wav); } catch (_) {} return { ok: false, error: e.message }; }
-  });
-  // BOTH pipes have to be drained, not just stderr. A child that writes past the 64 KiB pipe buffer
-  // into a stream nobody reads blocks on that write forever, and the only symptom is the timeout
-  // firing much later with a misleading message. whisper-cli prints the transcript to STDOUT —
-  // measured at roughly 28 bytes per second of audio, with stderr carrying only its few KB of model
-  // info — so a feature-length film deadlocked somewhere past the half-hour mark while a short test
-  // clip, well under 64 KiB, always finished. That gap is exactly why this looked like "works
-  // standalone, broken in the app" and sent the search after the wrong change.
-  function run(cmd, args, timeout) { return new Promise((res, rej) => { const p = spawn(cmd, args, { timeout: timeout || 0 }); p.stdout.on('data', () => {}); p.stderr.on('data', () => {}); p.on('error', rej); p.on('close', (c) => c === 0 ? res() : rej(new Error(path.basename(cmd) + (c === null ? ' timed out' : ' failed')))); }); }
 
   // ---- OpenSubtitles (legacy XML-RPC, no API key) ----
   // Hash the file and fetch a matching subtitle. Uses the OpenSubtitles

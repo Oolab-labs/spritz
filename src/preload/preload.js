@@ -6,9 +6,6 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron'); // all available to a sandboxed preload
 
 contextBridge.exposeInMainWorld('soda', {
-  // Shelved or half-finished features stay in the tree but out of the menu. A boolean, resolved
-  // here — not the environment itself, which the renderer has no business being handed.
-  experimental: !!process.env.SPRITZ_EXPERIMENTAL,
   player: {
     // url = absolute path or http(s) URL; opts.start = resume seconds
     load: (url, opts) => ipcRenderer.send('player:load', { url, start: opts && opts.start, referer: opts && opts.referer }),
@@ -31,7 +28,6 @@ contextBridge.exposeInMainWorld('soda', {
       ipcRenderer.send('player:command', { args: ['sub-add', p, 'select'] });
       ipcRenderer.send('subtitle:external', { path: p, lang: opts && opts.lang, name: opts && opts.name });
     },
-    generateSubtitles: (src) => ipcRenderer.invoke('subtitle:generate', { src }), // Whisper → {ok, srt|error}
     onlineSubtitles: (src, lang) => ipcRenderer.invoke('subtitle:online', { src, lang }), // OpenSubtitles → {ok, srt, name|error}
     setSubDelay: (n) => ipcRenderer.send('player:setProperty', { name: 'sub-delay', value: n }),
     setHwdec: (mode) => ipcRenderer.send('player:setProperty', { name: 'hwdec', value: mode }),
