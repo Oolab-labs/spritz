@@ -1977,7 +1977,7 @@ if (!gotLock) {
     receivers.on('track-request-error', (e) => send('receiver-event', { type: 'track-error', ...e }));
     receivers.on('pairing', (pending) => send('receiver-event', { type: 'pairing', pending }));
     // A position is EPOCH-LOCAL as the television counts it. Translate to logical film time before
-    // anyone downstream sees it, keeping the local reading beside it for the log.
+    // anyone downstream sees it.
     receivers.on('position', (p) => {
       if (!p || !Number.isFinite(p.currentTime) || p.currentTime < 0) return;
       let out = p;

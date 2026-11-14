@@ -78,17 +78,7 @@
     }
     return count;
   }
-  function remoteChoice(choice, key, select) {
-    if (key === 13) { select(choice.value); choice.blur(); return true; }
-    if ([461, 27].indexOf(key) !== -1) { choice.blur(); return true; }
-    var delta = key === 38 ? -1 : key === 40 ? 1 : 0;
-    if (delta) {
-      choice.selectedIndex = Math.max(0, Math.min(choice.options.length - 1, choice.selectedIndex + delta));
-      return true;
-    }
-    return false;
-  }
-  var api = { snapshot: snapshot, select: select, boundSubtitles: boundSubtitles, selectBoundSubtitle: selectBoundSubtitle, carryActiveCues: carryActiveCues, remoteChoice: remoteChoice };
+  var api = { snapshot: snapshot, select: select, boundSubtitles: boundSubtitles, selectBoundSubtitle: selectBoundSubtitle, carryActiveCues: carryActiveCues };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.SpritzMediaTracks = api;
 })(typeof window !== 'undefined' ? window : this);
