@@ -7,7 +7,7 @@
 //   addon events (TSFN)      → main → IPC('player-event') → renderer
 
 // Cache compiled JS on disk so subsequent launches skip re-parsing/compiling the main process's
-// modules (this file is ~1200 lines and pulls in webtorrent, castv2 and friends). Node >=22 only,
+// modules (this file is ~2500 lines and pulls in webtorrent, castv2 and friends). Node >=22 only,
 // and purely an optimisation — wrapped because a failure here must never stop the app booting.
 try { require('module').enableCompileCache?.(); } catch (e) {}
 
@@ -1231,9 +1231,10 @@ if (!gotLock) {
   const ctypeFor = (u) => /\.m3u8(\?|#|$)/i.test(u || '') ? 'application/vnd.apple.mpegurl'
     : /\.mkv(\?|#|$)/i.test(u || '') ? 'video/x-matroska' : 'video/mp4';
   // caps = receiver capability profile (copy-vs-transcode); extraSubs implied from externalSubs.
-  // forCast = this resolution is for an actual Chromecast handoff (extract sideloadable subs for a
-  // direct MP4); the AirPlay pre-resolution leaves it false so we don't spawn sub-extractors on every
-  // local MP4 load (AVPlayer reads an MP4's embedded subs itself).
+  // forCast = this resolution is for a Spritz Receiver handoff (extract sideloadable subs for a
+  // direct MP4). Chromecast does not come through here — it has resolveChromecast. The AirPlay
+  // pre-resolution leaves it false so we don't spawn sub-extractors on every local MP4 load
+  // (AVPlayer reads an MP4's embedded subs itself).
   // Buffer health is a conservative hint, scoped to the current source and load.
   function receiverSourceWaiting(source, generation) {
     return require('./receiver-preparation-policy').sourceWaiting(torrentPreparationSample,
@@ -1244,10 +1245,8 @@ if (!gotLock) {
     const mediaLan = extra && extra.transport || lan;
     const resolutionGen = loadGen;
     const s = String(url || '');
-    // The 4K profile is offered ONLY for local files. A stream copy has no bitrate knob, and a torrent
-    // swarm measured here at 0.0 MB/s for four and a half straight minutes; an EVENT playlist that
-    // stops growing is exactly what produces -16839, and after readiness the permanently-fatal -11866.
-    // A local file is a disk read. capsFallback carries the proven profile so lanserver can decline.
+    // capsFallback carries the proven profile so lanserver can decline the 4K one.
+    //
     // Streamed sources may now take the 4K profile too. The original local-only rule was written
     // when a failed 4K copy demoted to a 4K SOFTWARE encode, which never produces a segment and ends
     // the launch ladder at cb(null) — on a torrent that was a real risk, so the gate stayed shut.
@@ -1294,6 +1293,12 @@ if (!gotLock) {
         // the ordinary case, not an error path. LOCAL FILES ONLY, deliberately: the keyframe probe
         // is a full pass over the file, which on a still-downloading torrent would either stall or
         // read pieces that have not arrived. That case is a separate piece of work.
+        //
+        // RECEIVERS DO NOT REACH serveVod while source-selected audio is on, which is the default
+        // (receiver-preparation-policy: SPRITZ_RECEIVER_SOURCE_AUDIO !== '0'): the sourceSelectedAudio
+        // branch below returns serveHls first. So SPRITZ_VOD / _PRESEG / _EPOCH currently affect only
+        // the non-receiver (AirPlay) local-file path, which has never run on hardware — every VOD
+        // hardware result so far (RECEIVER-ARCH.md) is from the LG receiver.
         const opts = hlsOpts();
         // startSec is where the viewer is; an epoch-backed session opens its first epoch there rather
         // than at 0 and then superseding it.
@@ -1628,9 +1633,10 @@ if (!gotLock) {
   //     only thing that decides that, and it compares what the television reports holding against
   //     what the application wants. resume-point.js is deliberately NOT consulted: it answers where
   //     to relaunch ffmpeg for a live cast pipe, a question this path does not have.
-  //   - mediaId: stable per source, so "the same film" and "a different film" are distinguishable.
-  //     Derived from the source, not from the URL, because a URL carries a fresh token per session
-  //     and would make every re-pick look like new media.
+  //   - mediaId: a hash of the source plus a per-play random suffix, so it is UNIQUE PER PLAY on
+  //     purpose. Every play builds a fresh transport and URL (receiverTransportFor below), so the
+  //     television must load it; a stable id would let receiver-session.shouldLoad() adopt a stale
+  //     URL on a re-pick of the same film.
   //
   // Authenticated platform UHD and codec reports enable HEVC copy; unknown receivers stay 1080p.
   function receiverTransportFor() {

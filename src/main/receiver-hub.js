@@ -91,8 +91,9 @@ function createReceiverHub({ onLog, registry, onRegistryChange, maxConnections =
     // The MEDIA is not stopped here, and that is the point of the whole design: a control-channel
     // outage must not kill healthy playback. The television keeps pulling HLS over its own HTTP
     // connection and keeps playing; when it reconnects it re-announces where it is and the Mac
-    // reconstructs state. See HANDOFF-vod.md for why the previous cast-pipe behaviour, where the
-    // control channel dying took the picture with it, needed a whole recovery module.
+    // reconstructs state. See RECEIVER-ARCH.md, "The product boundary this work exposed", for why the
+    // previous cast-pipe behaviour, where the control channel dying took the picture with it, needed
+    // a whole recovery module.
     hub.emit('disconnected', { sessionId, why, receiver: c.receiver || null });
   }
 

@@ -1,5 +1,5 @@
 'use strict';
-// AirPlay 4K is opt-in (SPRITZ_AIRPLAY_4K=1) and offered only for LOCAL files. decide4k() is the guard
+// AirPlay 4K is opt-in (SPRITZ_AIRPLAY_4K=1), for local and streamed (torrent) sources alike. decide4k() is the guard
 // that keeps the ambitious profile from making things worse. Two failure modes it exists to prevent:
 //
 //   - taking 4K when the plan is a TRANSCODE. A 2160p encode cannot hold realtime, its software retry
