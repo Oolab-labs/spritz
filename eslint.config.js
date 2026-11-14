@@ -98,4 +98,45 @@ module.exports = [
     },
     rules,
   },
+  {
+    // Release gates (verify-package, preflight-dist, audit-gate) and dev tools: Node, CommonJS. Like
+    // site/ before it, these matched no block, so `eslint .` parsed them as ES modules with zero rules.
+    files: ['build/**/*.js', 'tools/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: 'commonjs',
+      globals: { ...globals.node },
+    },
+    rules,
+  },
+  {
+    // These drive an Electron window and pass functions into it (executeJavaScript, page callbacks),
+    // so they name DOM globals as well as Node's. Scoped to these files so the other gates still get
+    // a no-undef error if they reach for `document`.
+    files: ['build/check-layout.js', 'build/render-mac-icon.js', 'build/render-receiver-icons.js'],
+    languageOptions: { globals: { ...globals.node, ...globals.browser } },
+  },
+  {
+    // The icon drawing is read as text and run inside the render window: a browser script, not Node.
+    files: ['build/receiver-art/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 5,
+      sourceType: 'script',
+      globals: { ...globals.browser },
+    },
+  },
+  {
+    // The TV receiver: classic <script> tags on webOS Chromium versions nobody has tested (README),
+    // written in plain ES5 on purpose. ecmaVersion 5 makes newer syntax a parse error here instead of
+    // a blank screen on an older TV. `module` is for the UMD guard that lets node --test require them.
+    // ecmaVersion 5 also drops the ES2015+ built-in globals, so the two the receiver does use are
+    // named here: Uint8Array (hmac.js) and Intl (track-menu.js, behind a typeof check).
+    files: ['webos-receiver/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 5,
+      sourceType: 'script',
+      globals: { ...globals.browser, module: 'writable', Uint8Array: 'readonly', Intl: 'readonly' },
+    },
+    rules,
+  },
 ];
