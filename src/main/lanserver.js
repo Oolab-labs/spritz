@@ -1718,10 +1718,8 @@ module.exports = function createLanServer(opts) {
           ? ['-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5', '-rw_timeout', String(HTTP_READ_TIMEOUT_US)]
           : [];
         const finalizeReceiver = !!(sourceAudio && opts && opts.receiverSubtitles === true);
-        const inputStart = sourceAudio && opts ? require('./receiver-audio-plan').nearInputStart(opts.receiverInputStartSec, info && info.dur, transcode) : 0;
-        if (inputStart > 0) inOpts.push('-ss', String(inputStart), '-copyts');
         if (finalizeReceiver) inOpts.unshift('-xerror');
-        const hlsOpts = [...(inputStart > 0 ? ['-avoid_negative_ts', 'disabled'] : []), '-hls_segment_type', 'fmp4', '-hls_time', '2', '-hls_list_size', '0',
+        const hlsOpts = ['-hls_segment_type', 'fmp4', '-hls_time', '2', '-hls_list_size', '0',
           // NO append_list. Measured against the bundled ffmpeg: on a COMPLETELY FRESH directory,
           // append_list emits a leading #EXT-X-DISCONTINUITY before segment 0, where omit_endlist
           // alone emits none. That tag sets segment 0's discontinuity sequence to 1, and AVFoundation
@@ -1831,9 +1829,12 @@ module.exports = function createLanServer(opts) {
         const myDir = hlsDir, tok = myToken, m3u8 = path.join(myDir, playlist);
         const primaryMode = transcode ? 'hw' : 'copy';
         let settled = false, triedFallback = false;
-        let timelineOrigin = inputStart > 0 ? null : 0, originPending = false, producerExit = null;
+        // Preparation always starts at the head of the source, so the transport timeline begins at 0.
+        // It is still announced: Spritz Receiver 0.4.0 validates timelineOrigin in the load message.
+        const timelineOrigin = 0;
+        let producerExit = null;
         const finalizePlaylist = () => {
-          if (!finalizeReceiver || !producerExit || timelineOrigin === null || hlsToken !== tok) return;
+          if (!finalizeReceiver || !producerExit || hlsToken !== tok) return;
           try {
             const complete = require('./receiver-hls-finalize').completedPlaylist(fs.readFileSync(m3u8, 'utf8'), info.dur - timelineOrigin, producerExit.code, producerExit.signal);
             if (complete) { fs.writeFileSync(m3u8 + '.complete', complete); fs.renameSync(m3u8 + '.complete', m3u8); }
@@ -1843,17 +1844,6 @@ module.exports = function createLanServer(opts) {
 
         const ready = () => {
           if (!(countSegs(myDir) > 0 && safeStat(m3u8))) return false;
-          if (timelineOrigin === null) {
-            if (!originPending) {
-              originPending = true;
-              cancelTracks = probeFirstPts('concat:' + path.join(myDir, 'init.mp4') + '|' + path.join(myDir, 'seg00000.m4s'), pts => {
-                if (cancelled || finished || hlsToken !== tok) return;
-                if (!Number.isFinite(pts) || pts < 0 || pts > inputStart + 2) { cancel(); return; }
-                timelineOrigin = pts; finalizePlaylist();
-              });
-            }
-            return false;
-          }
           finalizePlaylist();
           if (!opts || typeof opts.receiverStartSec !== 'function') return true;
           try { return require('./hls-start-position').coversPosition(fs.readFileSync(m3u8, 'utf8'), opts.receiverStartSec() - timelineOrigin); }
@@ -1904,24 +1894,12 @@ module.exports = function createLanServer(opts) {
           const fail = (reason, code, signal) => {
             if (settled || hlsToken !== tok) return;
             if (sourceAudio) clog('receiver HLS preparation failed ' + JSON.stringify({
-              reason, mode, audioIndex: sourceAudio.index, inputStart,
+              reason, mode, audioIndex: sourceAudio.index,
               elapsedMs: Date.now() - hlsStartedAt, firstSegmentMs, segments: lastSegs,
               idleMs: Date.now() - lastProgressAt,
               ...preparationDiagnostics.summarize({ timedOut: reason === 'no-segment-progress', bytes: 0, code, signal })
             }));
             clearInterval(tick);
-            if (inputStart > 0) {
-              const failure = preparationDiagnostics.summarize({ code, signal, bytes: 0 });
-              if (failure.category === 'timestamp-or-mux-error') {
-                // Dispose this candidate before the caller starts the origin retry. The
-                // receiver's previous producer belongs to a different transport instance.
-                settled = true;
-                if (hlsPreparation === cancel) hlsPreparation = null;
-                cancelHls();
-                cb(null, [], { retryFromOrigin: true });
-              } else cancel();
-              return;
-            } // retain prior stream; no unmapped encoder fallback
             // A 4K copy that wedged must go back to the proven profile, NOT to a 4K software encode.
             // This retry re-plans first, so the relaunch is the ordinary 1080p H.264 path.
             if (retreatFrom4k()) {
@@ -1960,9 +1938,6 @@ module.exports = function createLanServer(opts) {
           ff.stderr.on('data', chunk => {
             if (ff !== hlsProc || settled || hlsToken !== tok) return;
             preparationDiagnostics.capture(chunk);
-            // A failed mux thread can leave FFmpeg's input thread alive. Do not
-            // wait for the progress watchdog when this candidate is already fatal.
-            if (inputStart > 0 && preparationDiagnostics.hasTerminalMuxFailure()) fail('mux-error');
           });
           // A SUPERSEDED process (e.g. the hw ffmpeg SIGKILLed when launching the sw fallback) must NOT
           // re-enter fail()/cancelHls() — that would tear down the brand-new process. Gate on the event
@@ -1983,7 +1958,7 @@ module.exports = function createLanServer(opts) {
             if (settled || hlsToken !== tok) return;
             // ffmpeg exited before we observed readiness. If it actually finished writing (a short
             // clip), the segments exist → let the next tick settle it; otherwise it failed → fail().
-            try { if (ready() || originPending && timelineOrigin === null) return; } catch (e) {}
+            try { if (ready()) return; } catch (e) {}
             fail('producer-exit', code, signal);
           });
         }
