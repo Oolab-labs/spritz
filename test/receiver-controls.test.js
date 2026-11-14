@@ -120,3 +120,22 @@ test('a Return to Mac still in flight when the TV stops does not restore twice',
   assert.equal(f.ctx.engine, 'mpv');
   assert.equal(f.calls.filter(c => c[0] === 'local' && c[1] === 'seek').length, 1);
 });
+// While casting, the audio and subtitle menus hold the TV's tracks, whose handlers act only in
+// receiver mode. Measured on the LG with the packaged build: after the TV stopped, choosing
+// "English (UK)" on the Mac left mpv's sid at "no" with no message. Leaving the TV for the SAME
+// film must hand the menus back to mpv.
+test('leaving the TV for the same film rebuilds the local track menus', async () => {
+  const viaTv = fixture(); let rebuilt = 0; viaTv.ctx.restoreLocalTrackMenus = () => { rebuilt++; };
+  viaTv.ctx.enter({ id: 'lg' }, 'film');
+  viaTv.ctx.targets([{ id: 'lg', status: 'online', playback: { mediaId: 'film', state: 'playing', currentTime: 30 } }]); viaTv.ctx.sync();
+  viaTv.ctx.targets([tvIdle]); viaTv.ctx.sync();
+  assert.equal(rebuilt, 1, 'a stop on the TV');
+  const viaMac = fixture(); rebuilt = 0; viaMac.ctx.restoreLocalTrackMenus = () => { rebuilt++; };
+  viaMac.ctx.enter({ id: 'lg' }, 'film');
+  const leaving = viaMac.ctx.leave(true); viaMac.complete({ ok: true }); await leaving;
+  assert.equal(rebuilt, 1, 'Return to Mac');
+  const newSource = fixture(); rebuilt = 0; newSource.ctx.restoreLocalTrackMenus = () => { rebuilt++; };
+  newSource.ctx.enter({ id: 'lg' }, 'film');
+  await newSource.ctx.leave(false);
+  assert.equal(rebuilt, 0, 'a new source brings its own track list');
+});

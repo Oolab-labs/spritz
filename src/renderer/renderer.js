@@ -645,10 +645,18 @@ function trackLabel(t, kind) {
   if (!parts.length) parts.push(kind + ' ' + t.id);
   return parts.join(' · ') + (t.external ? '  (ext)' : '');
 }
+// mpv's last track list for the current source. While casting to a Spritz Receiver the menus hold the
+// TV's tracks instead, and mpv does not re-send its list when the cast ends — the file never changed —
+// so leaving the TV replays this one. Tied to its source so a list can never cross into another film.
+let localTrackList = null;
+function restoreLocalTrackMenus() {
+  if (localTrackList && localTrackList.intent === sourceIntent) onTrackList(localTrackList.tracks);
+}
 function onTrackList(tracks) {
   // mpv fires a transient empty track-list while swapping files; ignore it so the
   // menus don't flicker to empty mid-load (stop() resets menus explicitly).
   if (!Array.isArray(tracks) || tracks.length === 0) return;
+  localTrackList = { intent: sourceIntent, tracks };
   const audio = tracks.filter((t) => t.type === 'audio');
   const subs = tracks.filter((t) => t.type === 'sub');
 
@@ -1573,6 +1581,7 @@ async function leaveReceiver(resumeLocal) {
   volSlider.disabled = muteBtn.disabled = false;
   refreshCast();
   if (resumeLocal && owner.source === sourceIntent) {
+    if (typeof restoreLocalTrackMenus === 'function') restoreLocalTrackMenus();
     restoreReceiverPosition(position);
   }
 }
@@ -1585,7 +1594,10 @@ function releaseFromReceiver() {
   setPlaybackEngine('mpv'); document.body.classList.remove('casting'); castOverlay.classList.add('hidden');
   volSlider.disabled = muteBtn.disabled = false;
   refreshCast();
-  if (owner.source === sourceIntent) restoreReceiverPosition(owner.position);
+  if (owner.source === sourceIntent) {
+    if (typeof restoreLocalTrackMenus === 'function') restoreLocalTrackMenus();
+    restoreReceiverPosition(owner.position);
+  }
 }
 function restoreReceiverPosition(position) {
   soda.player.pause(); soda.player.seek(position); st.paused = true; showIcon('play');
