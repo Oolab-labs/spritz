@@ -2118,7 +2118,7 @@ if (!gotLock) {
       }
     } catch (e) {}
   }
-  ipcMain.on('player:load', (_e, { url, start, referer } = {}) => {
+  ipcMain.on('player:load', (_e, { url, referer } = {}) => {
     const gen = invalidateLoad();
     applyHttpHeaders(url, referer);
     applyStreamCache(url);
@@ -2133,7 +2133,7 @@ if (!gotLock) {
     const isTorLoad = /^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\//i.test(url || '');
     if (isTorLoad && process.env.SPRITZ_DEBUG) { try { fs.appendFileSync('/tmp/spritz-torrent.log', '[' + new Date().toISOString().slice(11, 23) + '] player:load -> mpv loadfile ' + String(url).slice(0, 90) + '\n'); } catch (e) {} }
     try {
-      mpvAddon.command('loadfile', url, 'replace', '-1', loadOpts(start));
+      mpvAddon.command('loadfile', url, 'replace', '-1', loadOpts());
       mpvLastUrl = url;
       if (mainWindow && url) {
         const base = decodeURIComponent(String(url).split('/').pop().split('?')[0] || '');
@@ -2263,7 +2263,6 @@ if (!gotLock) {
     resumeLocalFromAirplay(true);
     setTimeout(() => { try { if (apAddon && castUrl && castEngine === 'mpv') apAddon.prepare(castUrl, mpvPos()); } catch (e) {} }, 1800);
   });
-  ipcMain.handle('airplay:stat', () => { try { return apAddon ? apAddon.stat() : null; } catch (e) { return null; } });
   ipcMain.handle('airplay:mediaTracks', () => { try { return apAddon ? apAddon.mediaTracks() : null; } catch (e) { return null; } });
   ipcMain.on('airplay:selectMedia', (_e, { kind, index } = {}) => {
     // Switch the casting AVPlayer's audio/subtitle rendition via AVMediaSelectionGroup — the native,
@@ -2510,13 +2509,12 @@ if (!gotLock) {
   ipcMain.on('window:minimize', () => { if (mainWindow) mainWindow.minimize(); });
   // Float-on-top + mini-player (compact always-on-top window)
   let onTop = false, mini = false, prevBounds = null;
-  function setFloat(v) { onTop = v; if (mainWindow) mainWindow.setAlwaysOnTop(v, 'floating'); send('window-state', { onTop, mini }); }
+  function setFloat(v) { onTop = v; if (mainWindow) mainWindow.setAlwaysOnTop(v, 'floating'); }
   ipcMain.on('window:toggleFloat', () => setFloat(!onTop));
   ipcMain.on('window:toggleMini', () => {
     if (!mainWindow) return;
     if (!mini) { prevBounds = mainWindow.getBounds(); mainWindow.setSize(480, 270, true); setFloat(true); mini = true; }
     else { if (prevBounds) mainWindow.setBounds(prevBounds); setFloat(false); mini = false; }
-    send('window-state', { onTop, mini });
   });
   ipcMain.on('window:close', () => { if (mainWindow) mainWindow.close(); });
   // manual window dragging (-webkit-app-region is unreliable on the transparent window)
@@ -2528,9 +2526,4 @@ if (!gotLock) {
   ipcMain.on('window:setTitle', (_e, { title } = {}) => { if (mainWindow && title != null) mainWindow.setTitle(title); });
   ipcMain.on('power:block', () => { if (psbId < 0) psbId = powerSaveBlocker.start('prevent-display-sleep'); });
   ipcMain.on('power:unblock', () => { if (psbId >= 0) { powerSaveBlocker.stop(psbId); psbId = -1; } });
-
-  ipcMain.handle('app:getVersions', () => ({
-    app: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome,
-    node: process.versions.node, arch: process.arch
-  }));
 }

@@ -529,7 +529,7 @@ module.exports = function createCast() {
 
   return {
     on: (e, fn) => ev.on(e, fn),
-    startDiscovery, stopDiscovery, load, play, pause, seek, stop, setVolume, teardown, wake, setManualHosts,
+    startDiscovery, load, play, pause, seek, stop, setVolume, teardown, setManualHosts,
     tracks, setTrack, connectedHost: () => connectedHost,
     capsFor: (host) => { const d = devices.get(host); return d ? d.caps : null; },
     discoveryState: health.snapshot
