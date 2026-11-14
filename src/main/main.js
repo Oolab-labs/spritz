@@ -608,7 +608,7 @@ if (!gotLock) {
   }
   ipcMain.handle('diag:get', () => { try { return diagSnapshot(); } catch (e) { return null; } });
   const { trustPosition, effectiveState } = require('./resume-point'); // which receiver clocks are worth believing
-  const { playheadUpdate } = require('./receiver-playhead'); // aiming the torrent window at the RECEIVER's position
+  const { playheadUpdate, isTorrentSource } = require('./receiver-playhead'); // aiming the torrent window at the RECEIVER's position; what is a torrent stream URL
   const history = require('./history')(); // resume positions / recents
   const deviceMemory = require('./device-memory-store')(); // what each receiver has been seen to play
   // The receiver's own opinion, which the app records nowhere. Until now the only trace of what the
@@ -1283,8 +1283,7 @@ if (!gotLock) {
     // NO ffprobe/remux here — probing a torrent stream stalls
     // (moov may be at the tail / whole file not downloaded), which would block the cast button.
     // AVPlayer range-reads the moov itself. MKV/etc can't be cast (no AV container) → null.
-    const tor = s.match(/^http:\/\/(?:localhost|127\.0\.0\.1)(:\d+)(\/webtorrent\/.*)$/i);
-    if (tor) {
+    if (isTorrentSource(s)) {
       if (mediaLan.avCompatible(s)) return mediaLan.serveDlna(s, ctypeFor(s), cb);
       // mkv/avi/ts/etc (H.264/HEVC) → live HLS remux so AVPlayer/Chromecast can play it as it streams
       if (/\.(mkv|avi|ts|m2ts|webm|wmv|flv|mpg|mpeg|ogv)(\?|#|$)/i.test(s)) return mediaLan.serveHls(s, cb, hlsOpts());
@@ -1349,7 +1348,7 @@ if (!gotLock) {
   function resolveChromecast(url, caps, audioTrack, startSec, cb) {
     const s = String(url || '');
     if (/^https:\/\//i.test(s)) return cb(lan.avCompatible(s) ? s : null, { subs: [], audioTracks: [], dur: 0, isMkv: false });
-    const tor = /^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\//i.test(s);
+    const tor = isTorrentSource(s);
     const filePath = decodeURIComponent(s.replace(/^file:\/\//, ''));
     const input = tor ? s : filePath;
     if (!tor && !/^\//.test(filePath)) return cb(null);
@@ -1375,8 +1374,7 @@ if (!gotLock) {
     const s = String(url || '');
     if (/\.m3u8(\?|#|$)/i.test(s)) return cb(null);              // remote HLS → DLNA can't play it
     if (/^https:\/\//i.test(s)) return cb(lan.avCompatible(s) ? s : null);
-    const tor = s.match(/^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\/.*/i);
-    if (tor) {
+    if (isTorrentSource(s)) {
       // Serve the ORIGINAL torrent stream (any container) to the LG through our DLNA-AWARE PROXY.
       // webOS decodes MKV/HEVC/HDR/Dolby Vision natively + gives its own scrubber/subtitle/audio
       // menus, but it's a STRICT renderer: it HEADs the URL and needs contentFeatures.dlna.org /
@@ -1481,7 +1479,7 @@ if (!gotLock) {
         if (mpvLog.handle(ev)) return; // libmpv error lines go to userData/mpv.log, not the renderer
         // Temp torrent diag: log mpv's load lifecycle for a torrent URL so we can see whether mpv actually
         // opened the stream (file-loaded) or failed (end-file reason=4=ERROR). Remove once "press twice" is solved.
-        if (process.env.SPRITZ_DEBUG && ev && (ev.type === 'file-loaded' || ev.type === 'end-file') && /^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\//i.test(mpvLastUrl || '')) {
+        if (process.env.SPRITZ_DEBUG && ev && (ev.type === 'file-loaded' || ev.type === 'end-file') && isTorrentSource(mpvLastUrl)) {
           try { fs.appendFileSync('/tmp/spritz-torrent.log', '[' + new Date().toISOString().slice(11, 23) + '] mpv ' + ev.type + (ev.type === 'end-file' ? ' reason=' + ev.reason : '') + '\n'); } catch (e) {}
         }
         // Feed the play position to the torrent engine so it can keep its CRITICAL piece window
@@ -2137,8 +2135,8 @@ if (!gotLock) {
     // mpv 0.38+ loadfile signature: <url> [<flags> [<index> [<options>]]] — the
     // 'index' slot was inserted before 'options', so pass '-1' (default) or the
     // opts land in the index slot and the file silently fails to load.
-    const isTorLoad = /^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\//i.test(url || '');
-    if (isTorLoad && process.env.SPRITZ_DEBUG) { try { fs.appendFileSync('/tmp/spritz-torrent.log', '[' + new Date().toISOString().slice(11, 23) + '] player:load -> mpv loadfile ' + String(url).slice(0, 90) + '\n'); } catch (e) {} }
+    const isTor = isTorrentSource(url);
+    if (isTor && process.env.SPRITZ_DEBUG) { try { fs.appendFileSync('/tmp/spritz-torrent.log', '[' + new Date().toISOString().slice(11, 23) + '] player:load -> mpv loadfile ' + String(url).slice(0, 90) + '\n'); } catch (e) {} }
     try {
       mpvAddon.command('loadfile', url, 'replace', '-1', loadOpts(start));
       mpvLastUrl = url;
@@ -2151,7 +2149,6 @@ if (!gotLock) {
       // newer source's castUrl (cross-source contamination → cast plays the wrong title).
       // Torrents: the HLS remux can't produce a segment until enough is downloaded, so a
       // just-started torrent resolves to null. Retry as it buffers so the cast button appears.
-      const isTor = /^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\//i.test(url || '');
       let tries = 0;
       const tryResolve = () => resolveCastable(url, (av, subs) => {
         if (gen !== loadGen || receiverPlan && receiverPlan.src === url) return;

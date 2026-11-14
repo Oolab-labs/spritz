@@ -1,7 +1,9 @@
 'use strict';
 
+const { isTorrentSource } = require('./receiver-playhead'); // the one definition of a torrent stream URL
+
 function sourceWaiting(sample, { source, generation, now }) {
-  if (!/^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\/webtorrent\//i.test(String(source))) return false;
+  if (!isTorrentSource(source)) return false;
   if (!sample || sample.source !== source || sample.generation !== generation) return false;
   const age = now - sample.at;
   const health = sample.health;

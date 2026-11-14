@@ -11,7 +11,7 @@ const main = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8'
 function resolveWith(env, extra) {
   let seen = null;
   const ctx = { loadGen: 1, AIRPLAY_4K: false, AIRPLAY_CAPS: { base: true }, externalSubs: ['ext'], airplayCaps: c => c,
-    process: { env }, receiverSourceWaiting: () => false, ctypeFor: () => 'video/x-matroska',
+    process: { env }, isTorrentSource: require('../src/main/receiver-playhead').isTorrentSource, receiverSourceWaiting: () => false, ctypeFor: () => 'video/x-matroska',
     require: name => require(name.startsWith('./') ? path.join(__dirname, '../src/main', name) : name),
     lan: { avCompatible: () => false, serveHls: (_src, _cb, opts) => { seen = opts; } } };
   vm.createContext(ctx);

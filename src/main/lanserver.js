@@ -37,6 +37,7 @@ const { createEpochs, planSeek, toLogical: epochToLogical, toLocal: epochToLocal
 const { segmentArgs, segmentRunArgs, runSegmentReady, presegmentArgs, presegmentPackageArgs, keyframeArgs, parseKeyframes, segmentPath, vodEligible,
   subPlaylist, subExtractArgs, buildVodMaster, VTT_HEAD } = require('./vod-segment');                      // one segment, on demand
 
+const { isTorrentSource } = require('./receiver-playhead'); // the one definition of a torrent stream URL
 const { binPath: findBin } = require('./bin-path'); // packaged → bundled only
 const FFPROBE = findBin('ffprobe');
 const FFMPEG = findBin('ffmpeg');
@@ -1596,7 +1597,7 @@ module.exports = function createLanServer(opts) {
         }
         let producerInput = input;
         if (sourceAudio && typeof registerSourceProducer === 'function' &&
-            /^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\/webtorrent\//i.test(input)) {
+            isTorrentSource(input)) {
           hlsProducer = createOwnedSource(input);
           if (!hlsProducer) { cancel(); return; }
           producerInput = hlsProducer.url;
