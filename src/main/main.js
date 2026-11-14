@@ -950,9 +950,17 @@ if (!gotLock) {
   // an AirPlay/Chromecast cast carries it too — converted to a WebVTT rendition (HLS) or sideloaded
   // text track (direct MP4), with charset detection. Pre-cast additions are included automatically;
   // a subtitle added mid-cast needs a re-cast to appear (AirPlay/Cast can't add a rendition live).
+  // The path comes from the renderer and later reaches ffmpeg's -i (which speaks concat/http/subfile
+  // as readily as files) and, for .srt/.smi, the LAN file server as-is — so the same localMediaPath
+  // rule as thumb:at/subtitle:generate, plus the subtitle extensions every real sender produces (the
+  // Add Subtitle dialog's filter; OpenSubtitles and Whisper both write .srt). Without the extension
+  // check any readable file (a key, a config) could be registered and handed to the TV raw.
+  const EXTERNAL_SUB_EXT = new Set(['.srt', '.ass', '.ssa', '.sub', '.smi', '.vtt']);
   ipcMain.on('subtitle:external', (_e, { path: p, lang, name } = {}) => {
-    if (!p || externalSubs.some((s) => s.path === p)) return;
-    externalSubs.push({ path: p, lang: lang || 'und', name: name || path.basename(String(p)) });
+    const file = localMediaPath(p);
+    if (!file || !EXTERNAL_SUB_EXT.has(path.extname(file).toLowerCase())) return;
+    if (externalSubs.some((s) => s.path === file)) return;
+    externalSubs.push({ path: file, lang: lang || 'und', name: name || path.basename(file) });
   });
 
   // ---- VPN kill-switch status ----
