@@ -88,8 +88,8 @@ module.exports = function createCast() {
     if (changed) emitDevices();
   }
   // Audio-only endpoints (Chromecast Audio, Nest/Home speakers, cast groups) can't show video —
-  // don't offer them as a "TV". Match on the mDNS model (md) and friendly name.
-  // (Nest Hub / Hub Max have screens → keep them.)
+  // don't offer them as a "TV". mDNS matches on its model (md) and friendly name; the eureka sweep
+  // passes the model only (see probeEureka). (Nest Hub / Hub Max have screens → keep them.)
   const isAudioOnly = (name, model) => /chromecast audio|google home(?! hub)|nest (mini|audio)|cast group|soundbar/i.test((model || '') + ' ' + (name || ''));
 
   // LG's OWN discovery vector. An LG webOS TV answers an SSDP search for its second-screen
@@ -262,7 +262,17 @@ module.exports = function createCast() {
       let body = '';
       res.on('data', (d) => { body += d; });
       res.on('end', () => {
-        if (gen === discoveryGeneration && discovering) { health.reply(); try { const j = JSON.parse(body); if (j && j.name) addDevice(host, String(j.name), capsFromEureka(j)); } catch (e) {} }
+        // Google speakers answer eureka_info too, and devices are keyed by host, so without this
+        // check the sweep re-adds a speaker the mDNS path just skipped. Check the reported model
+        // only, never the friendly name: a video Chromecast its owner called "Living Room Soundbar"
+        // must stay castable. A skipped speaker still counts as a reply and still pumps the sweep.
+        if (gen === discoveryGeneration && discovering) {
+          health.reply();
+          try {
+            const j = JSON.parse(body), info = (j && j.device_info) || {};
+            if (j && j.name && !isAudioOnly('', info.model_name || info.product_name)) addDevice(host, String(j.name), capsFromEureka(j));
+          } catch (e) {}
+        }
         finish();
       });
     });
