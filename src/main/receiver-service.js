@@ -96,9 +96,9 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
       store.save(storePath, registry);
     } catch (e) {
       // A store that cannot be written is worth saying out loud: pairings made now will not survive
-      // a restart. It is not worth stopping playback over.
+      // a restart. It is not worth stopping playback over. Logged only: nothing listens for an
+      // 'error' event on this service, and an EventEmitter throws one that nobody listens to.
       log('could not save the trust store — ' + e.message);
-      ev.emit('error', { where: 'persist', message: e.message });
     }
   }
 
