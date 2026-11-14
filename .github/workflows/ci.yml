@@ -20,7 +20,7 @@ on:
 
 jobs:
   check:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -68,7 +68,7 @@ jobs:
   # mpv for libmpv and its headers, so it does not gate the fast feedback above — but it is the only
   # thing that can catch a build that succeeds and produces something unusable.
   package:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
