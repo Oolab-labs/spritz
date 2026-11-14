@@ -1258,9 +1258,25 @@ if (!gotLock) {
     // copy costs roughly twice the airtime of the transcode it replaces. Worth it for the picture —
     // the copy is native 2160p HDR10 at 46ms of CPU per 8s, against a 1080p re-encode at ~345% — but
     // not something to switch on for everyone without the hardware evidence.
-    const hlsOpts = () => (!caps && AIRPLAY_4K && !(extra && extra.receiver))
-      ? { caps: airplayCaps(AIRPLAY_CAPS_4K), capsFallback: airplayCaps(AIRPLAY_CAPS), extraSubs: externalSubs }
-      : { ...(extra && extra.receiver && require('./receiver-preparation-policy').receiverFeatures(process.env).sourceAudio && Number.isFinite(extra.startSec) ? { receiverStartSec: () => extra.startSec } : {}), ...(extra && Number.isInteger(extra.audioHint) ? { audioHint: extra.audioHint } : {}), receiverSourceWaiting: () => receiverSourceWaiting(s, resolutionGen), sourceSelectedAudio: !!(extra && extra.receiver && require('./receiver-preparation-policy').receiverFeatures(process.env).sourceAudio), sideloadSubs: !!(extra && extra.receiver), receiverSubtitles: !!(extra && extra.receiverSubtitles), caps: caps || airplayCaps(AIRPLAY_CAPS), ...(caps && caps.hevc4k ? { capsFallback: require('./device-profile').defaultProfile() } : {}), extraSubs: externalSubs };
+    const hlsOpts = () => {
+      // Every Spritz Receiver preparation sideloads subtitles and hands them to lanserver's receiver
+      // subtitle path, so both flags follow `receiver`. Source-selected audio is a receiver feature
+      // with an env kill switch (receiver-preparation-policy), read once here.
+      const receiver = !!(extra && extra.receiver);
+      if (!caps && AIRPLAY_4K && !receiver) return { caps: airplayCaps(AIRPLAY_CAPS_4K), capsFallback: airplayCaps(AIRPLAY_CAPS), extraSubs: externalSubs };
+      const sourceAudio = receiver && require('./receiver-preparation-policy').receiverFeatures(process.env).sourceAudio;
+      return {
+        ...(sourceAudio && Number.isFinite(extra.startSec) ? { receiverStartSec: () => extra.startSec } : {}),
+        ...(extra && Number.isInteger(extra.audioHint) ? { audioHint: extra.audioHint } : {}),
+        receiverSourceWaiting: () => receiverSourceWaiting(s, resolutionGen),
+        sourceSelectedAudio: sourceAudio,
+        sideloadSubs: receiver,
+        receiverSubtitles: receiver,
+        caps: caps || airplayCaps(AIRPLAY_CAPS),
+        ...(caps && caps.hevc4k ? { capsFallback: require('./device-profile').defaultProfile() } : {}),
+        extraSubs: externalSubs,
+      };
+    };
     // Remote https (yt-dlp / direct): no probe/remux — use as-is when it's an AV container.
     if (/^https:\/\//i.test(s)) return cb(mediaLan.avCompatible(s) ? s : null);
     // Torrent localhost stream: expose only this file through the token-scoped LAN proxy.
@@ -1784,7 +1800,7 @@ if (!gotLock) {
         try { playStart = require('./airplay-start-snap').safeStartOnTimeline(startSec, mediaLan.airplayMediaPlaylist(), metadata && metadata.timelineOrigin); } catch (e) {}
         if (playStart !== startSec) console.log('[spritz] receiver start ' + startSec.toFixed(1) + 's is late in its segment; starting at ' + playStart.toFixed(1) + 's');
         finish(svc.play(receiverId, { mediaId, url, title, startSec: playStart, subtitles, subtitleTrackId, timelineOrigin: metadata && metadata.timelineOrigin, sourceDuration: metadata && metadata.sourceDuration, audioCatalog: metadata && metadata.audio, autoplay: cancel.autoplay }));
-      }), svc.profile(receiverId), true, { startSec, receiver: true, receiverSubtitles: true, audioHint: macAudioOrdinal(), transport: mediaLan });
+      }), svc.profile(receiverId), true, { startSec, receiver: true, audioHint: macAudioOrdinal(), transport: mediaLan });
       if (finished && failed) disposePreparation();
       })();
     });

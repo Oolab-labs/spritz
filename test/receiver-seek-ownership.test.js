@@ -368,7 +368,7 @@ test('same-source receiver handoff reads the latest subtitle intent at LOAD', as
     prepare('http://media/new', []);
     assert.equal((await pending).ok, true);
     assert.equal(f.loads[0][1].subtitleTrackId, latest);
-    assert.equal(preparationOptions.receiverSubtitles, true);
+    assert.equal(preparationOptions.receiver, true, 'a receiver preparation, which resolveCastable turns into receiverSubtitles');
   }
 });
 
