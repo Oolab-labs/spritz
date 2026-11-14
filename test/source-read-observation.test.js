@@ -174,7 +174,7 @@ test('the television\'s DLNA proxy reads are attributed to the viewer, not the p
   }
 });
 
-test('a producer seek is NOT a viewer seek: it reaches onSourceRead, never onSeekBytes', async () => {
+test('a producer seek is NOT a viewer seek: it reaches the producer lease, never onSeekBytes', async () => {
   // onSeekBytes leads to torrent.ensureBytes, which moves the viewer's playhead. That is right for
   // a television and exactly wrong for the packager, whose header/index/target reads would
   // otherwise drag the viewer's position around the file.

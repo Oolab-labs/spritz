@@ -4,9 +4,13 @@
 // and torrent streams over the network. The receiver fetches the URL itself, so it must
 // be the Mac's LAN IP (loopback is unreachable from the TV). Binds 0.0.0.0.
 //
-// Two roles:
+// Routes:
 //   /file/<token>   — serve a file with HTTP range support (seek/scrub). Used for original
 //                     local files and the WebVTT subtitle sidecars made for them.
+//   /dlna/<token>/  — DLNA-compliant proxy in front of webtorrent's server (serveDlnaProxy), for
+//                     a television and, on loopback, for the packager (createOwnedSource).
+//   /hls/<token>/   — live HLS (serveHls).
+//   /vod/<token>/   — seekable VOD HLS (serveVod).
 //
 // Containers or audio the receiver can't take as-is (MKV/AVI/TS/WebM, AC3/DTS/Opus/FLAC/…) are
 // not remuxed to a temp MP4 any more: they go to live HLS (serveHls) or the seekable VOD route
@@ -614,13 +618,12 @@ module.exports = function createLanServer(opts) {
   // Fire-and-forget by design: see the range handling in serveDlnaProxy for why this must not be
   // waited on. No hook (a build with no torrent engine attached) simply means no prioritisation.
   const onSeekBytes = (opts && opts.onSeekBytes) || (() => {});
-  // Where a proxied source read IS, as it happens — see serveDlnaProxy. This is how the packager's
-  // demand reaches the torrent scheduler: the packager reads the torrent through this proxy, so the
-  // proxy is the one place that demand can be observed directly rather than inferred from which
-  // segment ffmpeg last wrote. Reports carry `reader` ('producer' for a createOwnedSource URL, 'viewer'
-  // for a television on the DLNA route) because the two are different authorities and must not be
-  // confused — critical-authority.js is what tells them apart. Coalesced by
-  // SOURCE_READ_COALESCE_BYTES; fire-and-forget like onSeekBytes.
+  // Where a VIEWER's proxied source read IS, as it happens — a television on the DLNA route; see
+  // serveDlnaProxy. Reports carry `reader: 'viewer'`. Producer reads (the packager's ffmpeg on a
+  // createOwnedSource URL) never come here: they go to that source's registerSourceProducer lease
+  // (lease.noteSourceRead), because the two are different authorities and must not be confused —
+  // critical-authority.js is what tells them apart. Coalesced by SOURCE_READ_COALESCE_BYTES;
+  // fire-and-forget like onSeekBytes.
   const onSourceRead = (opts && opts.onSourceRead) || (() => {});
   // The packaging run's lifecycle — true when an epoch's ffmpeg starts, false when it exits, fails,
   // is stopped or is superseded. Forwarded to torrent.setProducerActive: this is the ONLY thing
@@ -811,10 +814,11 @@ module.exports = function createLanServer(opts) {
     });
   }
   // The same proxy, for the PACKAGER. ffmpeg reads a torrent-backed source through this so that its
-  // reads are observable (onSourceRead) and prioritisable (onSeekBytes) — the two things a file path
-  // straight into webtorrent's own server would not give us. Loopback, because the only reader is an
-  // ffmpeg on this machine: it is never handed to a television, and serveDlnaProxy refuses it from
-  // anywhere else.
+  // reads are observable and prioritisable through the registerSourceProducer lease, whose
+  // noteSourceRead receives every read (never onSourceRead or onSeekBytes: those are the viewer's).
+  // A file path straight into webtorrent's own server would not give us that. Loopback, because the
+  // only reader is an ffmpeg on this machine: it is never handed to a television, and
+  // serveDlnaProxy refuses it from anywhere else.
   function createOwnedSource(input) {
     const lease = registerSourceProducer(input);
     if (!lease) return null;
@@ -917,7 +921,7 @@ module.exports = function createLanServer(opts) {
     //
     // VIEWER reads only. onSeekBytes leads to torrent.ensureBytes, which moves the viewer's playhead
     // — correct for a television, and precisely wrong for the packager, whose reads would otherwise
-    // impersonate the viewer. A producer's demand goes out through onSourceRead below instead.
+    // impersonate the viewer. A producer's demand goes to its lease (producerOwner.noteSourceRead) below instead.
     if (reader === 'viewer' && SEEK_ENABLED() && req.headers.range) {
       const m = /^bytes=(\d+)-/.exec(String(req.headers.range));
       // Only a seek. bytes=0- is the opening request of ordinary linear playback and needs nothing.

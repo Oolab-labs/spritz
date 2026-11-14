@@ -8,8 +8,9 @@
 //
 // The old player showed the way out, and it is almost embarrassingly simple: you already know where
 // the end is. The duration comes from the probe, the cut points from a keyframe probe, and the
-// playlist can then be written complete, with ENDLIST, before any encoding starts. The receiver reads a finite, seekable playlist and asks for segments by index; each one is
-// produced when it is requested.
+// playlist can then be written complete, with ENDLIST, before any encoding starts. The receiver
+// reads a finite, seekable playlist and asks for segments by index; each one is produced when it
+// is requested.
 //
 // That is what makes the whole family of live-pipe failures go away. Pausing is not asking for the
 // next segment. Seeking is asking for a different index. A stall is asking again. There is no
