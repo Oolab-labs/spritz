@@ -645,10 +645,18 @@ function trackLabel(t, kind) {
   if (!parts.length) parts.push(kind + ' ' + t.id);
   return parts.join(' · ') + (t.external ? '  (ext)' : '');
 }
+// mpv's last track list for the current source. While casting to a Spritz Receiver the menus hold the
+// TV's tracks instead, and mpv does not re-send its list when the cast ends — the file never changed —
+// so leaving the TV replays this one. Tied to its source so a list can never cross into another film.
+let localTrackList = null;
+function restoreLocalTrackMenus() {
+  if (localTrackList && localTrackList.intent === sourceIntent) onTrackList(localTrackList.tracks);
+}
 function onTrackList(tracks) {
   // mpv fires a transient empty track-list while swapping files; ignore it so the
   // menus don't flicker to empty mid-load (stop() resets menus explicitly).
   if (!Array.isArray(tracks) || tracks.length === 0) return;
+  localTrackList = { intent: sourceIntent, tracks };
   const audio = tracks.filter((t) => t.type === 'audio');
   const subs = tracks.filter((t) => t.type === 'sub');
 
@@ -1537,7 +1545,13 @@ function syncReceiverPlayback() {
   if (engine !== 'receiver' || !activeReceiver || activeReceiver.source !== sourceIntent) return;
   const target = receiverTargets.find(r => r.id === activeReceiver.id), p = target && target.playback;
   seek.disabled = !target || target.status !== 'online';
+  // The television let go of the film by itself: Back or Stop on its remote, or a fatal media error.
+  // Both report idle with mediaId:null, and the main process has already torn the stream down. Only
+  // believed once this TV has reported holding THIS film — until then an idle report may be the
+  // one from before the load arrived. (A replacement load never reports idle in between.)
+  if (p && activeReceiver.confirmed && p.state === 'idle' && p.mediaId === null) { releaseFromReceiver(); return; }
   if (!p || p.mediaId !== activeReceiver.mediaId) return;
+  activeReceiver.confirmed = true;
   if (typeof receiverTrackMenus === 'function') receiverTrackMenus(p);
   if (p.state === 'playing' || p.state === 'paused') st.paused = p.state === 'paused';
   else if (typeof p.paused === 'boolean') st.paused = p.paused;
@@ -1567,7 +1581,22 @@ async function leaveReceiver(resumeLocal) {
   volSlider.disabled = muteBtn.disabled = false;
   refreshCast();
   if (resumeLocal && owner.source === sourceIntent) {
+    if (typeof restoreLocalTrackMenus === 'function') restoreLocalTrackMenus();
     restoreReceiverPosition(position);
+  }
+}
+// The receiver is already idle, so this is Return to Mac without the Stop command. A Return to Mac
+// still awaiting its reply sees activeReceiver !== owner and does nothing more.
+function releaseFromReceiver() {
+  const owner = activeReceiver;
+  if (!owner) return;
+  activeReceiver = null;
+  setPlaybackEngine('mpv'); document.body.classList.remove('casting'); castOverlay.classList.add('hidden');
+  volSlider.disabled = muteBtn.disabled = false;
+  refreshCast();
+  if (owner.source === sourceIntent) {
+    if (typeof restoreLocalTrackMenus === 'function') restoreLocalTrackMenus();
+    restoreReceiverPosition(owner.position);
   }
 }
 function restoreReceiverPosition(position) {

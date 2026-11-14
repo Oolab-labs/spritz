@@ -86,3 +86,56 @@ test('arrow shortcut seeks with slider focus but preserves text entry', () => {
   keydown({ target: { tagName: 'INPUT', type: 'text' }, keyCode: 37, preventDefault() { assert.fail('text input must retain arrow navigation'); } });
   assert.equal(f.calls.length, count);
 });
+// The television can stop on its own: Back or Stop on its remote, or a fatal media error. It then
+// reports idle with mediaId:null (webos-receiver stop() and its error path), and the Mac tears the
+// stream down. Before this test the window never noticed: it stayed on "Playing on TV" with the
+// cast button hidden, so casting again and choosing subtitles both went nowhere.
+const tvIdle = { id: 'lg', status: 'online', playback: { mediaId: null, state: 'idle', currentTime: null, durationSec: null } };
+test('a stop on the television returns the window to the Mac, paused where the TV was', () => {
+  const f = fixture(); f.ctx.enter({ id: 'lg' }, 'film');
+  f.ctx.targets([{ id: 'lg', status: 'online', playback: { mediaId: 'film', state: 'playing', currentTime: 1078, durationSec: 2710 } }]);
+  f.ctx.sync(); assert.equal(f.ctx.engine, 'receiver');
+  f.ctx.targets([tvIdle]); f.ctx.sync();
+  assert.equal(f.ctx.engine, 'mpv');
+  assert.equal(f.ctx.st.paused, true);
+  assert.deepEqual(f.calls.filter(c => c[0] === 'local').slice(-2), [['local', 'pause'], ['local', 'seek', 1078]]);
+  // The TV has already stopped; telling it to stop again is noise, not recovery.
+  assert.equal(f.calls.filter(c => c[0] === 'receiver' && c[2] === 'stop').length, 0);
+});
+test('an idle report from before the television took this film does not end the cast', () => {
+  const f = fixture(); f.ctx.enter({ id: 'lg' }, 'film');
+  // The load has been sent but the TV has not reported it yet: its last report is still the
+  // previous idle. That is not a stop of this film.
+  f.ctx.targets([tvIdle]); f.ctx.sync();
+  assert.equal(f.ctx.engine, 'receiver');
+  assert.equal(f.calls.filter(c => c[0] === 'local' && c[1] === 'seek').length, 0);
+});
+test('a Return to Mac still in flight when the TV stops does not restore twice', async () => {
+  const f = fixture(); f.ctx.enter({ id: 'lg' }, 'film');
+  f.ctx.targets([{ id: 'lg', status: 'online', playback: { mediaId: 'film', state: 'playing', currentTime: 40 } }]);
+  f.ctx.sync();
+  const leaving = f.ctx.leave(true);
+  f.ctx.targets([tvIdle]); f.ctx.sync();
+  f.complete({ ok: true }); await leaving;
+  assert.equal(f.ctx.engine, 'mpv');
+  assert.equal(f.calls.filter(c => c[0] === 'local' && c[1] === 'seek').length, 1);
+});
+// While casting, the audio and subtitle menus hold the TV's tracks, whose handlers act only in
+// receiver mode. Measured on the LG with the packaged build: after the TV stopped, choosing
+// "English (UK)" on the Mac left mpv's sid at "no" with no message. Leaving the TV for the SAME
+// film must hand the menus back to mpv.
+test('leaving the TV for the same film rebuilds the local track menus', async () => {
+  const viaTv = fixture(); let rebuilt = 0; viaTv.ctx.restoreLocalTrackMenus = () => { rebuilt++; };
+  viaTv.ctx.enter({ id: 'lg' }, 'film');
+  viaTv.ctx.targets([{ id: 'lg', status: 'online', playback: { mediaId: 'film', state: 'playing', currentTime: 30 } }]); viaTv.ctx.sync();
+  viaTv.ctx.targets([tvIdle]); viaTv.ctx.sync();
+  assert.equal(rebuilt, 1, 'a stop on the TV');
+  const viaMac = fixture(); rebuilt = 0; viaMac.ctx.restoreLocalTrackMenus = () => { rebuilt++; };
+  viaMac.ctx.enter({ id: 'lg' }, 'film');
+  const leaving = viaMac.ctx.leave(true); viaMac.complete({ ok: true }); await leaving;
+  assert.equal(rebuilt, 1, 'Return to Mac');
+  const newSource = fixture(); rebuilt = 0; newSource.ctx.restoreLocalTrackMenus = () => { rebuilt++; };
+  newSource.ctx.enter({ id: 'lg' }, 'film');
+  await newSource.ctx.leave(false);
+  assert.equal(rebuilt, 0, 'a new source brings its own track list');
+});
