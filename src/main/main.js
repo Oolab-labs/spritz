@@ -149,7 +149,7 @@ if (!gotLock) {
   function invalidateLoad() {
     ++loadGen;
     retireReceiverIntent();
-    if (typeof receiverPlan !== 'undefined' && receiverPlan) {
+    if (receiverPlan) {
       if (receiverPlan.pendingClockTimer) clearTimeout(receiverPlan.pendingClockTimer);
       if (receiverPlan.retirePrevious) receiverPlan.retirePrevious();
       if (receiverPlan.transport && receiverPlan.transport !== lan) receiverPlan.transport.teardown();
@@ -1671,7 +1671,7 @@ if (!gotLock) {
     if (!src) return Promise.resolve({ ok: false, why: 'nothing is open' });
     const startSec = mpvPos() || lastAvTime || 0;
     const mediaId = require('crypto').createHash('sha1').update(String(src)).digest('hex').slice(0, 16) + require('crypto').randomBytes(4).toString('hex');
-    const mediaLan = typeof receiverTransportFor === 'function' ? receiverTransportFor() : lan;
+    const mediaLan = receiverTransportFor();
     const previous = receiverPlan && receiverPlan.receiverId === receiverId ? receiverPlan : null;
     const title = (() => { try { return path.basename(decodeURIComponent(String(src).replace(/^file:\/\//, ''))); } catch (e) { return null; } })();
     return new Promise((resolve) => {
@@ -1679,8 +1679,7 @@ if (!gotLock) {
       let releaseAirplay = null, holdTimer = null;
       const holdUnusedAirplay = () => {
         holdTimer = null;
-        if (finished || !current() || castEngine !== 'mpv' || mediaLan === lan || previous && previous.transport === lan ||
-            typeof lan.holdReadyAirplayPrep !== 'function') return;
+        if (finished || !current() || castEngine !== 'mpv' || mediaLan === lan || previous && previous.transport === lan) return;
         try { releaseAirplay = lan.holdReadyAirplayPrep(); }
         catch (e) { recordErr('receiver-handoff', e.message || 'AirPlay preparation hold failed'); return; }
         if (!releaseAirplay) holdTimer = setTimeout(holdUnusedAirplay, 500);
@@ -1741,7 +1740,7 @@ if (!gotLock) {
         try { return fn(...args); }
         catch (e) { finish({ ok: false, why: e.message || 'receiver preparation failed' }); }
       };
-      deadline = setTimeout(() => finish({ ok: false, why: typeof receiverSourceWaiting === 'function' && receiverSourceWaiting(src, generation)
+      deadline = setTimeout(() => finish({ ok: false, why: receiverSourceWaiting(src, generation)
         ? 'Torrent data is still buffering; receiver preparation timed out' : 'receiver preparation timed out' }), 60000);
       holdUnusedAirplay();
       protect(() => { disposeSource = resolveCastable(src, protect((url, subtitles, metadata) => {
@@ -1754,7 +1753,7 @@ if (!gotLock) {
         // The first epoch was opened at startSec by resolveCastable, so the seek below is normally an
         // in-epoch one; if it is not (the epoch landed elsewhere), it takes the same path a viewer's
         // seek takes.
-        const ep = mediaLan.vodEpoch && mediaLan.vodEpoch();
+        const ep = mediaLan.vodEpoch();
         if (ep && ep.current) {
           const epochId = ep.current.id;
           const send = (epochId, url2, localStart) => {
@@ -1776,7 +1775,7 @@ if (!gotLock) {
           return send(epochId, url, 0);
         }
         console.log('[spritz] receiver source audio: catalog=' + (metadata && metadata.audio ? metadata.audio.length : 0));
-        const subtitleTrackId = previous && previous.src === src && typeof svc.subtitleSelection === 'function'
+        const subtitleTrackId = previous && previous.src === src
           ? svc.subtitleSelection(receiverId, previous.mediaId, previous.epoch) : undefined;
         receiverPlan = { receiverId, mediaId, title, epoch: null, url, src, subtitles, subtitleTrackId, timelineOrigin: metadata && metadata.timelineOrigin, sourceDuration: metadata && metadata.sourceDuration, audioCatalog: metadata && metadata.audio, selectedAudio: metadata && metadata.selectedAudio, transport: mediaLan, autoplay: cancel.autoplay };
         // The webOS player stalls when started late inside an HLS segment, exactly as AirPlay did:
@@ -1785,7 +1784,7 @@ if (!gotLock) {
         try { playStart = require('./airplay-start-snap').safeStartOnTimeline(startSec, mediaLan.airplayMediaPlaylist(), metadata && metadata.timelineOrigin); } catch (e) {}
         if (playStart !== startSec) console.log('[spritz] receiver start ' + startSec.toFixed(1) + 's is late in its segment; starting at ' + playStart.toFixed(1) + 's');
         finish(svc.play(receiverId, { mediaId, url, title, startSec: playStart, subtitles, subtitleTrackId, timelineOrigin: metadata && metadata.timelineOrigin, sourceDuration: metadata && metadata.sourceDuration, audioCatalog: metadata && metadata.audio, autoplay: cancel.autoplay }));
-      }), typeof svc.profile === 'function' ? svc.profile(receiverId) : null, true, { startSec, receiver: true, receiverSubtitles: true, audioHint: macAudioOrdinal(), transport: mediaLan });
+      }), svc.profile(receiverId), true, { startSec, receiver: true, receiverSubtitles: true, audioHint: macAudioOrdinal(), transport: mediaLan });
       if (finished && failed) disposePreparation();
       })();
     });
@@ -1800,9 +1799,7 @@ if (!gotLock) {
     const state = target && target.playback && target.playback.state;
     // A viewer can resume or pause while replacement startup is pending.
     if (state === 'playing' || state === 'paused') previous.autoplay = state === 'playing';
-    const selectedSubtitle = typeof svc.subtitleSelection === 'function'
-      ? svc.subtitleSelection(failed.receiverId, failed.mediaId, failed.epoch) : undefined;
-    if (selectedSubtitle !== undefined) previous.subtitleTrackId = selectedSubtitle;
+    previous.subtitleTrackId = svc.subtitleSelection(failed.receiverId, failed.mediaId, failed.epoch);
     const result = svc.play(previous.receiverId, { ...previous, startSec: previous.position || 0, forceReload: true });
     if (result.ok) {
       receiverPlan = previous; failed.transport.teardown();
@@ -1829,7 +1826,7 @@ if (!gotLock) {
     const position = seekPosition !== null ? seekPosition : Number.isFinite(owner.position) ? owner.position : playback && playback.currentTime;
     if (!Number.isFinite(position) || position < 0) return Promise.resolve({ ok: false, why: 'Wait for a receiver playback position before switching audio' });
     const intent = retireReceiverIntent(), generation = loadGen, svc = startReceivers();
-    const transport = typeof receiverTransportFor === 'function' ? receiverTransportFor() : require('./lanserver')({});
+    const transport = receiverTransportFor();
     return new Promise(resolve => {
       let finished = false, timer = null;
       const current = () => intent === receiverIntent && generation === loadGen && receiverPlan === owner && owner.src === mpvLastUrl;
@@ -1859,12 +1856,7 @@ if (!gotLock) {
           const resumePosition = seekPosition !== null ? seekPosition : Number.isFinite(owner.position) ? owner.position : position;
           // Re-read selection at commit: the viewer may change subtitles or choose
           // Off while the replacement audio is being prepared.
-          const currentPlayback = svc.targets().find(t => t.id === receiverId);
-          const reported = currentPlayback && currentPlayback.playback && currentPlayback.playback.tracks;
-          const selected = reported && reported.subtitles.find(t => t.selected);
-          const subtitleTrackId = typeof svc.subtitleSelection === 'function'
-            ? svc.subtitleSelection(receiverId, owner.mediaId, owner.epoch)
-            : selected ? selected.id : 'off';
+          const subtitleTrackId = svc.subtitleSelection(receiverId, owner.mediaId, owner.epoch);
           const next = { ...owner, timelineOrigin: metadata.timelineOrigin, sourceDuration: metadata.sourceDuration, mediaId, url, epoch: null, transport, subtitles, previous: { ...owner, subtitleTrackId: subtitleTrackId },
             audioCatalog: metadata.audio, selectedAudio: index, position: resumePosition, audioStartPosition: resumePosition, autoplay: cancel.autoplay };
           const result = svc.play(receiverId, { ...next, startSec: resumePosition,
@@ -1888,7 +1880,7 @@ if (!gotLock) {
           receiverStartSec: () => seekPosition !== null ? seekPosition : Number.isFinite(owner.position) ? owner.position : position });
       };
       try {
-        prepare(require('./receiver-preparation-policy').receiverFeatures(process.env).nearAudio && svc.supportsLogicalTimeline && svc.supportsLogicalTimeline(receiverId) ? Math.max(0, position - 20) : 0);
+        prepare(require('./receiver-preparation-policy').receiverFeatures(process.env).nearAudio && svc.supportsLogicalTimeline(receiverId) ? Math.max(0, position - 20) : 0);
       } catch (e) { finish({ ok: false, why: e.message || 'Audio preparation failed' }); }
     });
   }
@@ -1904,7 +1896,7 @@ if (!gotLock) {
     const intent = retireReceiverIntent(), generation = loadGen, owner = receiverPlan;
     const svc = startReceivers();
     const mediaLan = owner && owner.transport || lan;
-    const ep = mediaLan.vodEpoch && mediaLan.vodEpoch();
+    const ep = mediaLan.vodEpoch();
     if (!ep || !ep.current || !receiverPlan || receiverPlan.receiverId !== receiverId) {
       return svc.command(receiverId, 'seek', logicalSec);
     }
@@ -1983,11 +1975,10 @@ if (!gotLock) {
       let out = p;
       if (p.epoch) {
         const mediaLan = receiverTimelineTransport();
-        if (typeof mediaLan.vodLogical !== 'function') return;
         out = presentTargets([{ playback: p }], mediaLan.vodLogical, mediaLan.vodSourceDuration)[0].playback;
         if (!Number.isFinite(out.currentTime) || out.currentTime < 0) return;
       }
-      if (typeof receiverPlan !== 'undefined' && receiverPlan && p.receiverId === receiverPlan.receiverId &&
+      if (receiverPlan && p.receiverId === receiverPlan.receiverId &&
           p.mediaId === receiverPlan.mediaId && (p.epoch || null) === (receiverPlan.epoch || null) &&
           typeof p.paused === 'boolean') {
         // A finite clock alone does not prove that the replacement restored the film.

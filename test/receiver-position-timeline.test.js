@@ -8,7 +8,7 @@ const { presentTargets } = require('../src/main/receiver-presentation');
 const source = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
 function fixture(logical, duration) {
   let position; const sent = [];
-  const ctx = { presentTargets, receivers: { on: (_, cb) => { position = cb; } },
+  const ctx = { presentTargets, receiverPlan: null, receivers: { on: (_, cb) => { position = cb; } },
     lan: { vodLogical: logical, vodSourceDuration: duration }, send: (_, event) => sent.push(event) };
   ctx.receiverTimelineTransport = () => ctx.lan;
   vm.createContext(ctx);

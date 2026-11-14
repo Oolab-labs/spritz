@@ -12,11 +12,12 @@ function fixture() {
   const owner = { receiverId: 'tv', mediaId: 'old', epoch: null, src: '/movie.mkv', url: 'old-url', position: 42,
     autoplay: false, selectedAudio: 0, audioCatalog: [{ id: 'source-audio-0' }, { id: 'source-audio-1' }] };
   const svc = { targets: () => [{ id: 'tv', playback: { currentTime: 42, tracks: { subtitles: [{ id: '1', selected: true }] } } }],
-    profile: () => ({ hevc4k: true }), play: (_, plan) => { calls.push(plan); return { ok: true }; } };
+    // subtitleSelection stands in for receiver-service's: the session's selected subtitle track ('1' above).
+    profile: () => ({ hevc4k: true }), subtitleSelection: () => '1', supportsLogicalTimeline: () => false, play: (_, plan) => { calls.push(plan); return { ok: true }; } };
   const ctx = { process: { env: {} }, receiverPlan: owner, mpvLastUrl: '/movie.mkv', receiverIntent: 0, loadGen: 0,
     pendingReceiverOperation: null, externalSubs: [], lan: { retireReceiverHls() { calls.push('retire-old'); } },
-    startReceivers: () => svc, send: (_, e) => events.push(e), setTimeout, clearTimeout,
-    require: name => name === './lanserver' ? () => transport : require(name.startsWith('./') ? path.join(__dirname, '../src/main', name) : name) };
+    startReceivers: () => svc, receiverTransportFor: () => transport, send: (_, e) => events.push(e), setTimeout, clearTimeout,
+    require: name => require(name.startsWith('./') ? path.join(__dirname, '../src/main', name) : name) };
   owner.transport = ctx.lan;
   ctx.retireReceiverIntent = () => { ctx.receiverIntent++; if (ctx.pendingReceiverOperation) ctx.pendingReceiverOperation(); return ctx.receiverIntent; };
   vm.createContext(ctx);
