@@ -1690,13 +1690,6 @@ module.exports = function createLanServer(opts) {
         // taking 4K means giving both up: one muxed audio track, no subtitle renditions, bare media
         // playlist. That is why the ambitious profile stays opt-in — it buys native 2160p HDR10 at a
         // fraction of the CPU, and it costs the track menus. The default path is untouched.
-        // NOTE the finding this was built on is now suspect. "A master playlist is always refused for
-        // a 4K HEVC copy (-12927)" was measured while EVERY playlist still carried the spurious
-        // leading #EXT-X-DISCONTINUITY that append_list emitted — the same defect that produced -12312
-        // everywhere else. With that gone the master may well be fine, and a master is what carries
-        // the audio and subtitle renditions the TV remote switches between. So 4K now keeps its
-        // renditions by default; SPRITZ_AIRPLAY_BARE=1 restores the stripped-down playlist if the
-        // receiver really does refuse the master.
         // CONFIRMED by A/B on hardware, after the append_list discontinuity bug was fixed and could no
         // longer be the explanation: a 4K HEVC copy behind a master playlist is refused at load
         // (status=failed, EMPTY error log — nothing fetched), while the SAME copy served as a bare
@@ -1706,9 +1699,8 @@ module.exports = function createLanServer(opts) {
         // A master is what carries the audio and subtitle renditions the TV remote switches between,
         // so 4K and the track menus are mutually exclusive on this receiver. That is a real tradeoff,
         // not a bug to fix: SPRITZ_AIRPLAY_4K=1 buys native 2160p HDR10 at a fraction of the CPU and
-        // costs the menus; the default 1080p path keeps them. SPRITZ_AIRPLAY_MASTER4K=1 forces a
-        // master anyway, for re-testing this against a future receiver or firmware.
-        const bare4k = took4k && process.env.SPRITZ_AIRPLAY_MASTER4K !== '1';
+        // costs the menus; the default 1080p path keeps them.
+        const bare4k = took4k;
         if (bare4k && (info && info.audio.length > 1 || allSubSources.length)) {
           clog('AirPlay 4K: serving a bare media playlist — one audio track, no subtitle renditions ' +
             '(a master playlist is refused for a 4K HEVC copy; the variant alone plays)');
