@@ -10,6 +10,8 @@
 //   /dlna/<token>/  — DLNA-compliant proxy in front of webtorrent's server (serveDlnaProxy), for
 //                     a television and, on loopback, for the packager (createOwnedSource).
 //   /hls/<token>/   — live HLS (serveHls).
+//   /mkv/<token>    — Matroska stream for the Spritz Receiver (serveMkv / serveMkvStream).
+//   /sub/<token>/<name> — WebVTT sidecars that go with an /mkv/ stream (serveMkvSub).
 //   /vod/<token>/   — seekable VOD HLS (serveVod).
 //
 // Containers or audio the receiver can't take as-is (MKV/AVI/TS/WebM, AC3/DTS/Opus/FLAC/…) are
@@ -632,7 +634,7 @@ module.exports = function createLanServer(opts) {
   const registerSourceProducer = opts && opts.registerSourceProducer;
   // Sweep leftover transcode segments / subtitle sidecars from previous runs at startup. A long cast
   // keeps every fMP4 segment (a full transcoded copy) — crashes can orphan gigabytes here. Active
-  // sessions clean themselves (cancelHls/cancelVod); this clears the dead ones. REMUX_DIR is still
+  // sessions clean themselves (cancelHls/cancelVod/cancelMkv); this clears the dead ones. REMUX_DIR is still
   // swept: subtitle extraction writes there. Safe at construction: nothing is streaming yet.
   // THIS instance's temp media roots. Everything this lanserver produces lives under one of them,
   // and they are the only things this lanserver ever deletes.
@@ -921,7 +923,8 @@ module.exports = function createLanServer(opts) {
     //
     // VIEWER reads only. onSeekBytes leads to torrent.ensureBytes, which moves the viewer's playhead
     // — correct for a television, and precisely wrong for the packager, whose reads would otherwise
-    // impersonate the viewer. A producer's demand goes to its lease (producerOwner.noteSourceRead) below instead.
+    // impersonate the viewer. A producer's demand goes to its lease instead
+    // (producerOwner.noteSourceRead, below).
     if (reader === 'viewer' && SEEK_ENABLED() && req.headers.range) {
       const m = /^bytes=(\d+)-/.exec(String(req.headers.range));
       // Only a seek. bytes=0- is the opening request of ordinary linear playback and needs nothing.
