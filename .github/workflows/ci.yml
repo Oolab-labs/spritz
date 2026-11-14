@@ -117,7 +117,6 @@ jobs:
           CSC_FOR_PULL_REQUEST: 'true'
         run: |
           set -e
-          npm i -D electron-builder --ignore-scripts
           # bin/ holds the purpose-built ffmpeg, which is not in git and cannot be rebuilt here.
           # Stand in Homebrew's so the packaging paths are exercised; the verifier checks that the
           # binaries are present and self-contained, not which build they are.
