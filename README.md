@@ -351,18 +351,39 @@ The script picks the reference base from the file's extension — `@loader_path`
 `@executable_path` would resolve against Electron's own directory instead of the addon's.
 `otool -L` on the result should show no `/opt/homebrew` entries.
 
-### Deploying into an installed .app
+### Testing casting on a real TV
 
-`./deploy.sh` rsyncs `src/`, `vendor/` and the native *sources* into
-`/Applications/Spritz.app` and re-signs it, for fast iteration without a full repackage.
-Compiled addons and `node_modules` stay in the bundle — they are ABI-bound to the
-Electron inside it. **Never edit inside the `.app`**: an unsigned modification breaks the
-signature, and macOS then silently revokes the Local Network grant, which looks exactly
-like cast discovery being broken.
+Iterate with `npm start`; for a packaged check, build with `npm run dist` and install the
+result. **Never edit inside an installed `.app`**: the packaged app only loads its signed
+`app.asar` (the `onlyLoadAppFromAsar` and asar-integrity fuses in `package.json`), and an
+unsigned modification breaks the signature, after which macOS silently revokes the Local
+Network grant — which looks exactly like cast discovery being broken.
 
-Re-signing can also drop that grant on its own. If casting goes quiet after a deploy,
-toggle **System Settings → Privacy & Security → Local Network** off and on before
-suspecting the code.
+Installing or re-signing a new build can also drop that grant on its own. If discovery goes
+completely quiet (zero devices) while the TV answers from Terminal, toggle **System
+Settings → Privacy & Security → Local Network** off and on for Spritz, then quit (⌘Q) and
+relaunch it. Always quit and relaunch after installing a new build: a running instance
+keeps the old code in memory and gives a false pass.
+
+Before blaming the code for a cast failure, check the TV is actually there. The LG sleeps,
+moves its DLNA port on reboot and changes IP on DHCP renewal, and each of those looks like
+a regression. ICMP `ping` is unreliable on webOS, so probe TCP:
+
+```sh
+TV=192.168.1.x   # the TV's current IP
+for p in 8008 8009 7000; do
+  nc -z -G 2 -w 2 "$TV" $p && echo "$p OPEN" || echo "$p closed"
+done
+curl -s -m 8 "http://$TV:8008/setup/eureka_info?options=detail" | head -c 200; echo
+```
+
+Awake and castable: at least one of 8008/8009 open and the `curl` returns JSON with a
+`name` field. All closed, or `curl` hangs: the TV is asleep (wake it, wait ~20 s, re-probe)
+or has moved IP (`arp -a | grep -i lg`, or `dns-sd -B _googlecast._tcp`). Eureka answers
+but the DLNA device is missing from the list: webOS moved its UPnP port; restart Spritz to
+rediscover it by SSDP.
+
+### Packaging
 
 To produce a distributable `.app`/`.dmg`: `npm run dist` (electron-builder is a dev
 dependency). That runs `build/preflight-dist.js` first, which
@@ -401,6 +422,9 @@ Developer account ($99/yr):
      dist-receiver/com.spritz.receiver_<receiver-version>_all.ipk \
      Spritz-$V-corresponding-source.tar SHA256SUMS
    ```
+   Only the current version's notes file stays in the repo. Once `gh release view v<previous>
+   --json body` shows the previous release's notes are published, delete its
+   `RELEASE-NOTES-v<previous>.md`; the release page keeps the history.
 
 ## License
 

@@ -74,7 +74,7 @@ hls/
 !vendor/shaders/**
 !build/entitlements.mac.plist
 
-# The installed .app is a deploy target, not a source location (see deploy.sh).
+# node-gyp output if an addon is ever configured from the repo root.
 build/Release/
 build/Makefile
 
