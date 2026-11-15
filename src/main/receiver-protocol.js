@@ -20,7 +20,7 @@ const PROTOCOL_VERSION = 1;
 const COMMANDS = ['hello', 'load', 'play', 'pause', 'seek', 'stop', 'ping',
   // Pairing and authentication. Dotted names because they are a family rather than seven unrelated
   // verbs, and because a log line reading `pair.challenge` explains itself.
-  'select-track', 'pair.challenge', 'pair.accepted', 'pair.declined', 'auth.ok', 'auth.failed'];
+  'select-track', 'subtitles', 'pair.challenge', 'pair.accepted', 'pair.declined', 'auth.ok', 'auth.failed'];
 
 // TV -> Mac. These are OBSERVATIONS. The receiver reports what its own player did; it does not
 // assert what Spritz should do next.
@@ -40,7 +40,7 @@ const PRE_AUTH_ALLOWED = ['hello', 'ping', 'pong', 'pair.request', 'auth'];
 
 // Commands the hub must never send to a socket that has not authenticated. Media URLs are the ones
 // that matter: they are the private thing this channel hands out.
-const POST_AUTH_ONLY = ['select-track', 'load', 'play', 'pause', 'seek', 'stop'];
+const POST_AUTH_ONLY = ['select-track', 'subtitles', 'load', 'play', 'pause', 'seek', 'stop'];
 
 // The playback states a receiver may report. Kept small on purpose — a receiver that invents its
 // own vocabulary is a receiver the Mac cannot reason about generically.
@@ -57,6 +57,7 @@ const validSubtitleId = id => typeof id === 'string' && /^(?:off|(?:source|sidel
 const validSourceSubtitleId = id => typeof id === 'string' && (!id.startsWith('source-subtitle-') || validSubtitleId(id));
 const validSubtitleMetadata = t => ['forced', 'sdh', 'default', 'prepare'].every(k => !has(t, k) || typeof t[k] === 'boolean') && (!has(t, 'format') || typeof t.format === 'string' && t.format.length <= 64);
 const isFiniteNum = (n) => typeof n === 'number' && Number.isFinite(n);
+const validSubtitleList = list => Array.isArray(list) && list.length <= 128 && list.every(s => s && typeof s.url === 'string' && /^https?:\/\//.test(s.url) && (!has(s, 'id') || validSubtitleId(s.id)) && validSubtitleMetadata(s));
 
 // One envelope builder, so a field cannot be spelled two ways in two places.
 //
@@ -109,6 +110,17 @@ const load = (sessionId, { mediaId, epoch, url, title, startSec, autoplay, subti
     ...(Array.isArray(subtitles) && subtitles.length ? { subtitles: subtitles.slice() } : {}),
     ...(Array.isArray(audioCatalog) ? { audioCatalog: audioCatalog.slice(0, 32) } : {}),
     ...(typeof subtitleTrackId === 'string' ? { subtitleTrackId } : {})
+  }, now);
+
+// Subtitles for the film ALREADY loaded, learned after the load was sent. A torrent MP4 keeps its
+// track list in an index at the end of the file, which the Mac can only read cheaply once the
+// television has fetched it to start playing; see receiver-late-subtitles.js. The same list a load
+// would have carried, for the film named by mediaId/epoch — the receiver ignores it for any other.
+const subtitles = (sessionId, { mediaId, epoch, subtitles: list, now } = {}) =>
+  envelope('subtitles', sessionId, {
+    mediaId: mediaId == null ? null : String(mediaId),
+    epoch: epoch == null ? null : String(epoch),
+    subtitles: Array.isArray(list) ? list.slice() : []
   }, now);
 
 const play = (sessionId, { now } = {}) => envelope('play', sessionId, {}, now);
@@ -258,7 +270,8 @@ function parse(text) {
     if (!STATES.includes(m.state)) return { ok: false, why: 'invalid state' };
     if (has(m, 'flags') && (!Array.isArray(m.flags) || m.flags.some(flag => typeof flag !== 'string'))) return { ok: false, why: 'invalid flags' };
   }
-  if (m.type === 'load' && has(m, 'subtitles') && (!Array.isArray(m.subtitles) || m.subtitles.length > 128 || m.subtitles.some(s => !s || typeof s.url !== 'string' || !/^https?:\/\//.test(s.url) || has(s, 'id') && !validSubtitleId(s.id) || !validSubtitleMetadata(s)))) return { ok: false, why: 'invalid subtitles' };
+  if (m.type === 'load' && has(m, 'subtitles') && !validSubtitleList(m.subtitles)) return { ok: false, why: 'invalid subtitles' };
+  if (m.type === 'subtitles' && (typeof m.mediaId !== 'string' || !validSubtitleList(m.subtitles) || !m.subtitles.length)) return { ok: false, why: 'invalid subtitles' };
   if (m.type === 'select-track' && (!['audio', 'subtitle'].includes(m.kind) || typeof m.trackId !== 'string' || m.trackId.length > 32 || (m.kind === 'subtitle' && !validSubtitleId(m.trackId)) || typeof m.mediaId !== 'string')) return { ok: false, why: 'invalid track selection' };
   if (m.type === 'load' && has(m, 'audioCatalog') && (!Array.isArray(m.audioCatalog) || m.audioCatalog.length > 32 || m.audioCatalog.some(t => !t || typeof t.id !== 'string' || t.id.length > 32 || !/^source-audio-\d+$/.test(t.id) || typeof t.title !== 'string' || t.title.length > 128 || typeof t.lang !== 'string' || t.lang.length > 64 || typeof t.selected !== 'boolean'))) return { ok: false, why: 'invalid source audio catalog' };
   if (m.type === 'load' && has(m, 'subtitleTrackId') && !validSubtitleId(m.subtitleTrackId)) return { ok: false, why: 'invalid subtitle selection' };
@@ -297,6 +310,6 @@ module.exports = {
   PROTOCOL_VERSION, COMMANDS, EVENTS, STATES, PRE_AUTH_ALLOWED, POST_AUTH_ONLY,
   pairRequest, pairChallenge, pairAccepted, pairDeclined, auth, authOk, authFailed,
   envelope, parse, serialize,
-  hello, load, play, pause, seek, stop, ping,
+  hello, load, subtitles, play, pause, seek, stop, ping,
   helloFrom, ready, loaded, state, position, error, pong, capabilities
 };

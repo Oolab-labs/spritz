@@ -764,6 +764,8 @@ module.exports = function createLanServer(opts) {
     if (km) return serveMkvStream(req, res, km[1]);
     const sm = /^\/sub\/([^/]+)\/([^/?]+)/.exec(req.url || '');
     if (sm) return serveMkvSub(req, res, sm[1], decodeURIComponent(sm[2]));
+    const lm = /^\/rsub\/([^/]+)\/([^/?]+)/.exec(req.url || '');
+    if (lm) return serveLateSubtitle(req, res, lm[1], lm[2]);
     const dm = /^\/dlna\/([^/]+)/.exec(req.url || '');
     if (dm) return serveDlnaProxy(req, res, dm[1]);
     const vm = /^\/vod\/([^/]+)\/((?:epoch-[A-Za-z0-9_-]+\/)?[^/?]+)/.exec(req.url || ''); // epoch-N/ is the one nested level
@@ -2746,6 +2748,84 @@ module.exports = function createLanServer(opts) {
     return cancel;
   }
 
+  // ---- late subtitles: a torrent MP4 already playing on the Spritz Receiver ----------------------
+  // resolveCastable hands a torrent MP4 to the receiver untouched and probes nothing first, because
+  // an ordinary MP4 keeps its index (moov) at the END and a probe would wait on the last pieces of the
+  // swarm. The television reads that index itself before its first frame, so once it is playing the
+  // probe is cheap — receiver-late-subtitles.js decides when to ask. This is the asking: probe the
+  // track list, and serve the text tracks through the same prepare-on-selection machinery the HLS
+  // path uses (receiver-subtitles.js), on a token route of their own because there is no HLS session
+  // here to hang them off.
+  //
+  // cb(entries) with the subtitle entries for a `subtitles` command, cb([]) when the file has no text
+  // subtitles, or cb(null) when it could not be read yet. Returns a cancel.
+  //
+  // The extraction reads the source URL directly, with NO producer lease. A lease would make the
+  // torrent's critical window follow the extractor, which runs at disk speed from the play position
+  // forward — away from the television, which is the one actually waiting on those pieces.
+  const lateSubtitleSets = new Map(); // token → { subtitles, dir }
+  const lateSubtitleProbes = new Set();
+  function prepareLateReceiverSubtitles(input, opts, cb) {
+    const lan = lanAddress();
+    if (!lan || !input) { cb(null); return () => {}; }
+    let done = false, stopProbe = null;
+    const cancel = () => {
+      if (done) return;
+      done = true; lateSubtitleProbes.delete(cancel);
+      if (typeof stopProbe === 'function') stopProbe();
+    };
+    lateSubtitleProbes.add(cancel);
+    stopProbe = probeTracksRaw(input, 8000, (info) => {
+      if (done) return;
+      done = true; lateSubtitleProbes.delete(cancel);
+      // No video stream is not "a film without subtitles": ffprobe answers an empty stream list for an
+      // index it could not reach (an unreachable or still-missing range), and that is worth asking again.
+      if (!info || !info.vcodec) return cb(null);
+      const sources = (info.subs || []).filter((s) => !s.bitmap).map((s) => ({ ...s }))
+        .concat(((opts && opts.extraSubs) || []).map((s, i) => ({ path: s.path, lang: s.lang || 'und', name: s.name || ('Subtitle ' + (i + 1)) })));
+      let tracks;
+      try { tracks = require('./receiver-subtitle-catalog').buildReceiverSubtitleCatalog(sources); }
+      catch (e) { clog('late subtitles: ' + e.message); return cb([]); }
+      if (!tracks.length) return cb([]);
+      const token = newToken(), dir = path.join(remuxRoot, 'late-subs-' + token);
+      try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { clog('late subtitles: ' + e.message); return cb(null); }
+      const subtitles = require('./receiver-subtitles').createReceiverSubtitles({ input, tracks, dir,
+        baseUrl: `http://${lan}:${port}/rsub/${token}/`, ffmpeg: FFMPEG, duration: info.dur || 0, sniffCharenc, log: clog });
+      lateSubtitleSets.set(token, { subtitles, dir });
+      clog('late subtitles: offering ' + tracks.length + ' text track(s) for the receiver');
+      cb(subtitles.entries.map((e) => ({ id: e.id, url: e.url, lang: e.lang, name: e.name, prepare: true,
+        forced: e.forced, sdh: e.sdh, default: e.default, ...(typeof e.format === 'string' ? { format: e.format } : {}) })));
+    });
+    return cancel;
+  }
+  function serveLateSubtitle(req, res, token, rawName) {
+    const set = lateSubtitleSets.get(token);
+    let name = null;
+    try { name = decodeURIComponent(rawName); } catch (e) {}
+    if (!set || !name) { res.writeHead(404); res.end(); return; }
+    const query = new URL(req.url, 'http://localhost').searchParams;
+    if (set.subtitles.has(name) && (query.get('spritzSubPrepare') === '1' || query.get('spritzSubCancel') === '1')) {
+      const owner = query.get('spritzSubOwner') || '';
+      const body = query.get('spritzSubCancel') === '1'
+        ? { cancelled: set.subtitles.cancel(name, owner) }
+        : set.subtitles.prepare(name, owner, Number(query.get('spritzSubPosition')));
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify(body)); return;
+    }
+    // A published revision (receiver_sub_N.vtt), contained to this set's directory.
+    const f = containedPath(set.dir, name);
+    if (!f || !/\.vtt$/i.test(f)) { res.writeHead(404); res.end(); return; }
+    serveFile(req, res, f);
+  }
+  function cancelLateSubtitles() {
+    for (const cancel of [...lateSubtitleProbes]) cancel();
+    for (const { subtitles, dir } of lateSubtitleSets.values()) {
+      try { subtitles.destroy(); } catch (e) {}
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {}
+    }
+    lateSubtitleSets.clear();
+  }
+
   // Extract embedded text subtitle tracks (local file) + external .srt/.ass files to standalone
   // WebVTT served over /file/ (text/vtt), for SIDELOADING onto a direct-MP4 cast (cast.js → TEXT
   // tracks). cb([{url,lang,name}]). Torrent/remote input: skip embedded probe (would stall), but
@@ -2834,7 +2914,7 @@ module.exports = function createLanServer(opts) {
   }
 
   function teardown() {
-    cancelDirectSubJobs();
+    cancelDirectSubJobs(); cancelLateSubtitles();
     cancelTokenRegistrations();
     // cancelVod BEFORE the directory is removed: it kills the segment producers and subtitle
     // extractors still running. Without it those ffmpegs outlive teardown entirely — they keep
@@ -3696,9 +3776,9 @@ module.exports = function createLanServer(opts) {
     });
   }
 
-  function cancelActive() { cancelDirectSubJobs(); cancelTokenRegistrations(); cancelDirectPreparations(); cancelProxyRequests(); cancelHls(); cancelRemux(); cancelVod(); cancelMkv('cancelActive — the source changed or casting stopped'); files.clear(); dlnaProxies.clear(); }
+  function cancelActive() { cancelDirectSubJobs(); cancelLateSubtitles(); cancelTokenRegistrations(); cancelDirectPreparations(); cancelProxyRequests(); cancelHls(); cancelRemux(); cancelVod(); cancelMkv('cancelActive — the source changed or casting stopped'); files.clear(); dlnaProxies.clear(); }
 
-  return { retireReceiverHls: cancelHls, serve, serveDlna, serveSource, serveSubtitleForDlna, prepareCast, serveHls, serveMkv, serveVod, cancelVod, teardown, cancelActive, lanAddress, avCompatible,
+  return { retireReceiverHls: cancelHls, serve, serveDlna, prepareLateReceiverSubtitles, serveSource, serveSubtitleForDlna, prepareCast, serveHls, serveMkv, serveVod, cancelVod, teardown, cancelActive, lanAddress, avCompatible,
     // Transport epochs (SPRITZ_VOD_EPOCH=1): seek by logical position, map a reported position back.
     vodSeek, vodLogical, vodSourceDuration, vodEpoch,
     // Where the AirPlay player is. Only the orchestrator sees AVPlayer's clock, and only this module

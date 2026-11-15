@@ -843,6 +843,7 @@ function onMessage(m) {
     if (m.mediaId !== media.id || (m.epoch || null) !== (media.epoch || null)) return;
     selectMediaTrack(m.kind, m.trackId, false); return;
   }
+  if (m.type === 'subtitles') return void lateSubtitles(m);
   if (m.type === 'load') return void load(m);
   if (m.type === 'play') return void requestPlayback(true);
   if (m.type === 'pause') return void requestPlayback(false);
@@ -1141,6 +1142,50 @@ function clearMetadataLoad() {
   if (pendingMetadataLoad) video.removeEventListener('loadedmetadata', pendingMetadataLoad);
   pendingMetadataLoad = null;
 }
+/* Subtitles learned after the load. A torrent MP4 keeps its track list in an index at the end of the
+ * file, which the Mac reads only once this television has fetched it to start playing; until then
+ * the film has no subtitle bindings and the menu offers none. Only for the film on screen, and only
+ * once: rebuilding bindings could pull a track out from under a viewer who had already chosen one. */
+function lateSubtitles(m) {
+  if (!media.id || m.mediaId !== media.id || (m.epoch || null) !== (media.epoch || null)) return;
+  if (!Array.isArray(m.subtitles) || !m.subtitles.length || (media.subtitleBindings || []).length) return;
+  bindSubtitles(m.subtitles, Math.max(0, filmTime(video.currentTime) || 0), media);
+  lastTrackSnapshot = null; reportMediaTracks();
+}
+
+/* The subtitle tracks of the film on screen: a sidecar <track> each, or a binding the subtitle loader
+ * prepares on selection (prepare: true). From the load, or from a `subtitles` command that arrives
+ * after it — see onMessage. `owner` is the media record they belong to. */
+function bindSubtitles(list, startSec, owner) {
+  (list || []).slice(0, 128).forEach(function (sub, index) {
+    if (!sub || typeof sub.url !== 'string') return;
+    var id = sub.id || 'sideload-subtitle-' + index;
+    if (sub.prepare === true) {
+      media.subtitleBindings.push({ id: id, node: null, prepare: true, url: sub.url, title: sub.name || sub.lang || 'Subtitle', lang: sub.lang || 'und', selected: media.subtitleTrackId === id });
+      return;
+    }
+    var track = document.createElement('track'); track.setAttribute('data-spritz', '1');
+    track.kind = 'subtitles'; track.label = sub.name || sub.lang || 'Subtitle';
+    track.srclang = sub.lang || 'und'; track.setAttribute('data-source-url', sub.url);
+    track.src = sub.url + (sub.url.indexOf('?') === -1 ? '?' : '&') + 'spritzSubPosition=' + Math.max(0, startSec || 0);
+    track.addEventListener('load', function () {
+      if (media !== owner) return;
+      shiftSubtitleCues(track, Number(owner.timelineOrigin) || 0);
+      if (media.subtitleTrackId !== id) return;
+      el('err').textContent = track.track && track.track.cues && track.track.cues.length ? '' : 'No subtitle cues available';
+    });
+    track.addEventListener('error', function () {
+      if (media !== owner || media.subtitleTrackId !== id) return;
+      el('err').textContent = 'Subtitles unavailable. Select the track again to retry.';
+    });
+    media.subtitleBindings.push({ id: id, node: track, title: sub.name || sub.lang || 'Subtitle', lang: sub.lang || 'und' });
+    video.appendChild(track);
+    if (track.track) track.track.mode = media.subtitleTrackId === id ? 'showing' : 'disabled';
+  });
+  var preparedSelected = media.subtitleBindings.find(function (binding) { return binding.prepare && binding.id === media.subtitleTrackId; });
+  if (preparedSelected && subtitleLoader) subtitleLoader.select(preparedSelected, Math.max(0, startSec || 0));
+}
+
 function load(m) {
   if (subtitleLoader) subtitleLoader.stop();
   clearMetadataLoad();
@@ -1164,33 +1209,7 @@ function load(m) {
   report('loading');
   video.querySelectorAll('track[data-spritz]').forEach(function (track) { track.remove(); });
   video.src = media.url;
-  (m.subtitles || []).slice(0, 128).forEach(function (sub, index) {
-    if (!sub || typeof sub.url !== 'string') return;
-    var id = sub.id || 'sideload-subtitle-' + index;
-    if (sub.prepare === true) {
-      media.subtitleBindings.push({ id: id, node: null, prepare: true, url: sub.url, title: sub.name || sub.lang || 'Subtitle', lang: sub.lang || 'und', selected: media.subtitleTrackId === id });
-      return;
-    }
-    var track = document.createElement('track'); track.setAttribute('data-spritz', '1');
-    track.kind = 'subtitles'; track.label = sub.name || sub.lang || 'Subtitle';
-    track.srclang = sub.lang || 'und'; track.setAttribute('data-source-url', sub.url);
-    track.src = sub.url + (sub.url.indexOf('?') === -1 ? '?' : '&') + 'spritzSubPosition=' + Math.max(0, Number(m.startSec) || 0);
-    track.addEventListener('load', function () {
-      if (media !== owner) return;
-      shiftSubtitleCues(track, Number(owner.timelineOrigin) || 0);
-      if (media.subtitleTrackId !== id) return;
-      el('err').textContent = track.track && track.track.cues && track.track.cues.length ? '' : 'No subtitle cues available';
-    });
-    track.addEventListener('error', function () {
-      if (media !== owner || media.subtitleTrackId !== id) return;
-      el('err').textContent = 'Subtitles unavailable. Select the track again to retry.';
-    });
-    media.subtitleBindings.push({ id: id, node: track, title: sub.name || sub.lang || 'Subtitle', lang: sub.lang || 'und' });
-    video.appendChild(track);
-    if (track.track) track.track.mode = media.subtitleTrackId === id ? 'showing' : 'disabled';
-  });
-  var preparedSelected = media.subtitleBindings.find(function (binding) { return binding.prepare && binding.id === media.subtitleTrackId; });
-  if (preparedSelected && subtitleLoader) subtitleLoader.select(preparedSelected, Math.max(0, Number(m.startSec) || 0));
+  bindSubtitles(m.subtitles, Number(m.startSec), owner);
   var rawStart = Number(m.startSec);
   var start = isFinite(rawStart) && rawStart >= 0 ? rawStart : 0;
   /* Re-asserted once the player exposes a usable position — see start-seek.js for the live-edge

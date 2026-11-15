@@ -1269,7 +1269,10 @@ if (!gotLock) {
     // AVPlayer range-reads the moov itself. MKV/etc can't be cast (no AV container) → null.
     const tor = s.match(/^http:\/\/(?:localhost|127\.0\.0\.1)(:\d+)(\/webtorrent\/.*)$/i);
     if (tor) {
-      if (mediaLan.avCompatible(s)) return mediaLan.serveDlna(s, ctypeFor(s), cb);
+      // For the Spritz Receiver the subtitles come later, once the TV has read the MP4 index this
+      // skips (playToReceiver → receiver-late-subtitles.js); `lateSubtitles` names the source to probe.
+      if (mediaLan.avCompatible(s)) return mediaLan.serveDlna(s, ctypeFor(s), extra && extra.receiver
+        ? (u) => cb(u, undefined, { lateSubtitles: s }) : cb);
       // mkv/avi/ts/etc (H.264/HEVC) → live HLS remux so AVPlayer/Chromecast can play it as it streams
       if (/\.(mkv|avi|ts|m2ts|webm|wmv|flv|mpg|mpeg|ogv)(\?|#|$)/i.test(s)) return mediaLan.serveHls(s, cb, hlsOpts());
       return cb(null);
@@ -1784,7 +1787,23 @@ if (!gotLock) {
         let playStart = startSec;
         try { playStart = require('./airplay-start-snap').safeStartOnTimeline(startSec, mediaLan.airplayMediaPlaylist(), metadata && metadata.timelineOrigin); } catch (e) {}
         if (playStart !== startSec) console.log('[spritz] receiver start ' + startSec.toFixed(1) + 's is late in its segment; starting at ' + playStart.toFixed(1) + 's');
-        finish(svc.play(receiverId, { mediaId, url, title, startSec: playStart, subtitles, subtitleTrackId, timelineOrigin: metadata && metadata.timelineOrigin, sourceDuration: metadata && metadata.sourceDuration, audioCatalog: metadata && metadata.audio, autoplay: cancel.autoplay }));
+        const played = svc.play(receiverId, { mediaId, url, title, startSec: playStart, subtitles, subtitleTrackId, timelineOrigin: metadata && metadata.timelineOrigin, sourceDuration: metadata && metadata.sourceDuration, audioCatalog: metadata && metadata.audio, autoplay: cancel.autoplay });
+        if (played.ok && metadata && metadata.lateSubtitles && typeof mediaLan.prepareLateReceiverSubtitles === 'function') {
+          // A torrent MP4: its track list arrives with the TV's own read of the index at the end of the
+          // file. Ask for it in the background; the cast has already started without waiting.
+          const plan = receiverPlan;
+          require('./receiver-late-subtitles').startLateSubtitles({
+            alive: () => receiverPlan === plan,
+            prepare: (done) => mediaLan.prepareLateReceiverSubtitles(metadata.lateSubtitles, { extraSubs: externalSubs }, done),
+            deliver: (subs) => {
+              plan.subtitles = subs;
+              const r = svc.addSubtitles(receiverId, { mediaId, epoch: null, subtitles: subs });
+              console.log('[spritz] receiver late subtitles: ' + subs.length + ' track(s) ' + (r.ok ? 'sent' : 'not sent (' + r.why + ')'));
+            },
+            log: (m) => console.log('[spritz] receiver ' + m)
+          });
+        }
+        finish(played);
       }), typeof svc.profile === 'function' ? svc.profile(receiverId) : null, true, { startSec, receiver: true, receiverSubtitles: true, audioHint: macAudioOrdinal(), transport: mediaLan });
       if (finished && failed) disposePreparation();
       })();

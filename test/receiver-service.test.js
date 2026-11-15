@@ -1235,3 +1235,51 @@ test('rollback reloads the old transport even before replacement loaded updates 
     c.close();
   }, { seed: 'lg-1' });
 });
+
+// ---- late subtitles (torrent MP4: the index arrives after the load) --------------------------
+
+const LATE_SUBS = [{ id: 'source-subtitle-0', url: 'http://mac/rsub/t/sub_0_eng.vtt', lang: 'eng', name: 'ENG', prepare: true }];
+
+test('subtitles learned after the load are sent for the film the receiver is holding', async () => {
+  await withService(async ({ svc, port, token }) => {
+    const { c } = await authed(port, token, 'lg-1', null);
+    svc.play('lg-1', { mediaId: 'm1', url: 'http://mac/dlna/t/film.mp4' });
+    const load = await c.next('load');
+    assert.equal(load.subtitles, undefined, 'the load itself carries none');
+    const r = svc.addSubtitles('lg-1', { mediaId: 'm1', subtitles: LATE_SUBS });
+    assert.equal(r.ok, true);
+    const late = await c.next('subtitles');
+    assert.equal(late.mediaId, 'm1');
+    assert.deepEqual(late.subtitles, LATE_SUBS);
+    c.close();
+  }, { seed: 'lg-1' });
+});
+
+test('late subtitles for a film that is no longer wanted are not sent', async () => {
+  await withService(async ({ svc, port, token }) => {
+    const { c } = await authed(port, token, 'lg-1', null);
+    svc.play('lg-1', { mediaId: 'm1', url: 'http://mac/dlna/t/a.mp4' });
+    await c.next('load');
+    svc.play('lg-1', { mediaId: 'm2', url: 'http://mac/dlna/t/b.mp4' });
+    await c.next('load');
+    assert.equal(svc.addSubtitles('lg-1', { mediaId: 'm1', subtitles: LATE_SUBS }).ok, false);
+    assert.equal(await c.quiet('subtitles'), true);
+    c.close();
+  }, { seed: 'lg-1' });
+});
+
+test('a receiver that reconnects holding the film is sent its late subtitles again, not reloaded', async () => {
+  await withService(async ({ svc, port, token }) => {
+    const first = await authed(port, token, 'lg-1', null);
+    svc.play('lg-1', { mediaId: 'm1', url: 'http://mac/dlna/t/film.mp4' });
+    await first.c.next('load');
+    svc.addSubtitles('lg-1', { mediaId: 'm1', subtitles: LATE_SUBS });
+    await first.c.next('subtitles');
+    first.c.close();
+    const again = await authed(port, token, 'lg-1', { mediaId: 'm1', currentTime: 2511, state: 'playing' });
+    const late = await again.c.next('subtitles');
+    assert.deepEqual(late.subtitles, LATE_SUBS);
+    assert.equal(await again.c.quiet('load'), true, 'the reconnect restarted the film');
+    again.c.close();
+  }, { seed: 'lg-1' });
+});

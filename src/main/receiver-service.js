@@ -308,6 +308,13 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
         log(R.short(s.receiverId) + ' adopted existing playback at ' +
           (d.adopt.currentTime == null ? 'an unknown position' : d.adopt.currentTime.toFixed(1) + 's'));
         emitTargets();
+        // Subtitles learned after the load (addSubtitles) may never have reached this television — it
+        // could have been reconnecting when they were sent. They are not in the film it is holding,
+        // and adopting means no load will carry them, so send them again. A receiver that already has
+        // them ignores a second list.
+        if (want && want.lateSubtitles && want.mediaId === d.adopt.mediaId && (want.epoch || null) === (d.adopt.epoch || null)) {
+          h.send(sessionId, proto.subtitles(sessionId, { mediaId: want.mediaId, epoch: want.epoch, subtitles: want.subtitles }));
+        }
       }
     });
 
@@ -513,6 +520,25 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
     return { ok: true, loaded: true, why: d.why };
   }
 
+  // Subtitles for the film a receiver was already sent, learned afterwards (a torrent MP4's track
+  // list sits in an index at the end of the file; see receiver-late-subtitles.js). Only for the film
+  // still wanted: a list that arrives after the viewer moved on is dropped here, not on the TV. The
+  // intent records them, so a reconnect — whether it reloads or adopts — still carries them.
+  function addSubtitles(receiverId, { mediaId, epoch, subtitles: list } = {}) {
+    if (!hub) return { ok: false, why: 'receiver service not started' };
+    const want = desired.get(receiverId);
+    const ep = epoch == null ? null : String(epoch);
+    if (!want || want.mediaId !== String(mediaId || '') || want.epoch !== ep) return { ok: false, why: 'subtitles superseded' };
+    if (Array.isArray(want.subtitles) && want.subtitles.length) return { ok: false, why: 'the film already has subtitles' };
+    const found = sessionFor(receiverId);
+    const msg = proto.subtitles(found ? found.sessionId : null, { mediaId: want.mediaId, epoch: ep, subtitles: list });
+    if (!proto.parse(proto.serialize(msg)).ok) return { ok: false, why: 'invalid subtitles' };
+    want.subtitles = msg.subtitles.slice(); want.lateSubtitles = true;
+    log(R.short(receiverId) + ' late subtitles: ' + want.subtitles.length + ' track(s)');
+    if (!found) return { ok: false, why: 'receiver is not connected; sent on reconnect' };
+    return { ok: hub.send(found.sessionId, msg) };
+  }
+
   // Close a receiver's CONTROL socket, and nothing else. The television keeps its media connection,
   // notices, reconnects, and is judged by shouldLoad like any reconnect — which is the point: this
   // is the production lever for exercising the adopt-on-reconnect behaviour that used to need the
@@ -604,6 +630,7 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
   ev.start = start;
   ev.stop = stop;
   ev.play = play;
+  ev.addSubtitles = addSubtitles;
   ev.command = command;
   ev.dropControl = dropControl;
   ev.confirmPairing = confirmPairing;
