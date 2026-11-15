@@ -31,6 +31,25 @@ function safeAirplayStart(pos, playlist, { maxOffset = MAX_OFFSET } = {}) {
   return pos - seg.start > maxOffset ? seg.start : pos;
 }
 
+// Whether the playlist reaches far enough to start the TV at `pos`. The AirPlay remux starts at 0:00
+// when the file loads and runs at a few times real time, so a viewer who seeks ahead and casts soon
+// after asks for a position that does not exist yet. AVPlayer on an open EVENT playlist then lands at
+// the end of what is produced and plays on from there — on the LG, 302s for a 631s handoff
+// (2026-11-14). LOOKAHEAD covers the segment holding `pos` (a stream copy cuts at keyframes: 8.333s on
+// the test file) plus the next one or two the TV fetches before it starts. No playlist means nothing
+// to wait on (a non-HLS source), and a finished playlist reaches everywhere.
+const LOOKAHEAD = 12;
+function producedEnd(playlist) {
+  const segs = segmentStarts(playlist);
+  const last = segs[segs.length - 1];
+  return last ? last.start + last.duration : 0;
+}
+function startIsProduced(pos, playlist, { lookahead = LOOKAHEAD } = {}) {
+  if (typeof playlist !== 'string') return true;
+  if (/#EXT-X-ENDLIST/.test(playlist)) return true;
+  return producedEnd(playlist) >= pos + lookahead;
+}
+
 // The same rule for a playlist that starts partway into the film (receiver HLS with a timeline
 // origin): positions are film time, the playlist counts from `origin`. Spritz Receiver on the LG froze
 // the same way (#EXT-X-START 24.823 = 8.16s into an 8.333s segment, 2026-10-10).
@@ -40,4 +59,4 @@ function safeStartOnTimeline(startSec, playlist, origin = 0) {
   return o + safeAirplayStart(startSec - o, playlist);
 }
 
-module.exports = { segmentStarts, safeAirplayStart, safeStartOnTimeline, MAX_OFFSET };
+module.exports = { segmentStarts, safeAirplayStart, safeStartOnTimeline, producedEnd, startIsProduced, MAX_OFFSET, LOOKAHEAD };

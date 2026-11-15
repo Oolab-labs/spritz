@@ -62,6 +62,8 @@ const st = {
 };
 // engine: 'mpv' (local) or 'airplay' (casting). Plus AirPlay availability flags.
 let engine = 'mpv', routesAvailable = false, castable = false, pickerShown = false, torrentActive = false;
+// True while main holds an AirPlay start until the remux reaches the Mac's position ('preparing').
+let airPreparing = false;
 let playbackTargetIntent = 0;
 function setPlaybackEngine(value) { clearErrorStop(); ++playbackTargetIntent; engine = value; applyRouteHints(); }
 function subtitleOwner() { return { source: sourceIntent, target: playbackTargetIntent }; }
@@ -327,7 +329,7 @@ function stop() {
   clearErrorStop(); hideResume();
   if (engine === 'receiver') leaveReceiver(false);
   ++sourceIntent; ++folderIntent;
-  if (engine === 'airplay') { soda.airplay.stop(); soda.airplay.hideButton(); setPlaybackEngine('mpv'); document.body.classList.remove('casting'); castOverlay.classList.add('hidden'); pickerShown = false; }
+  if (engine === 'airplay') { soda.airplay.stop(); soda.airplay.hideButton(); setPlaybackEngine('mpv'); document.body.classList.remove('casting'); castOverlay.classList.add('hidden'); pickerShown = false; airPreparing = false; }
   if (engine === 'chromecast') { soda.cast.stop(); exitChromecast(); }
   if (engine === 'dlna') { soda.dlna.stop(); exitChromecast(); }
   soda.player.stop();
@@ -1317,7 +1319,7 @@ function refreshAir() { refreshCast(); } // the single button + picker are drive
 function repositionPicker() { placePicker(); }
 function enterCasting() {
   setPlaybackEngine('airplay'); document.body.classList.add('casting');
-  castOverlay.querySelector('.cast-text').textContent = 'Playing on AirPlay';
+  castOverlay.querySelector('.cast-text').textContent = airPreparing ? 'Getting the TV ready…' : 'Playing on AirPlay';
   castStop.textContent = 'Stop AirPlay';
   castOverlay.classList.remove('hidden'); hideSpinner();
   // Hide the DOM menus, but do NOT hide the native AVRoutePickerView — hiding it mid-handshake (a
@@ -1376,6 +1378,7 @@ async function populateAirTracks() {
   }
 }
 function exitCasting() {
+  airPreparing = false;
   if (engine !== 'airplay') return;
   setPlaybackEngine('mpv'); document.body.classList.remove('casting'); castOverlay.classList.add('hidden');
   pickerShown = false; soda.airplay.hideButton(); // fully drop the parked picker now the cast ended
@@ -1401,6 +1404,12 @@ soda.airplay.onEvent((ev) => {
       if (castable && castAdvanceHost) { const h = castAdvanceHost; castAdvanceHost = null; showSpinner(); soda.cast.load(h); }
       break;
     case 'external': ev.active ? enterCasting() : exitCasting(); break;
+    // Sent before 'external' when the handoff has to wait for the remux, so enterCasting reads it.
+    case 'preparing':
+      airPreparing = !!ev.active;
+      if (engine === 'airplay') castOverlay.querySelector('.cast-text').textContent = airPreparing ? 'Getting the TV ready…' : 'Playing on AirPlay';
+      if (!ev.active && ev.message) toast(ev.message, 6000);
+      break;
     case 'time': if (engine === 'airplay') updateRemoteTime(ev.cur, ev.dur); break;
     case 'status': if (engine === 'airplay' && btnAudio.classList.contains('hidden') && btnSubs.classList.contains('hidden')) populateAirTracks(); break; // ready-to-play → groups likely arrived
     case 'ended': if (engine === 'airplay') onEnded(); break;

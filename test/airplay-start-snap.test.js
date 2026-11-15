@@ -39,13 +39,15 @@ test('positions the playlist cannot vouch for are left alone', () => {
 function handoffHarness({ statCur }) {
   const src = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
   const start = src.indexOf('  function handOffToAirplay(');
-  const body = src.slice(start, src.indexOf('\n  }\n', start) + 4);
+  // Through startAirplayAt, which does the seek once the start position is produced.
+  const body = src.slice(start, src.indexOf('  // The second file of a session never played', start));
   const seeks = [], timers = [];
   const ctx = { require: require('module').createRequire(path.join(__dirname, '../src/main/main.js')), console: { log() {}, error() {} },
     setEngine() {}, captureTracks() {}, mpvPos: () => 31.9, castEngine: 'airplay', apExternalActive: true,
     mpvAddon: { command() {} }, lan: { airplayMediaPlaylist: () => playlist },
     apAddon: { seek: (t) => seeks.push(t), play() {}, stat: () => ({ cur: statCur(), externalActive: true }) },
-    setTimeout: (fn, ms) => { timers.push(fn); return timers.length; }, Date };
+    setTimeout: (fn, ms) => { timers.push(fn); return timers.length; }, Date,
+    apStartWait: null, lastAvTime: 0, send() {} };
   vm.createContext(ctx);
   vm.runInContext(body + '\nthis.handOffToAirplay = handOffToAirplay;', ctx);
   return { ctx, seeks, timers };
