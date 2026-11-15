@@ -23,10 +23,10 @@
 // position must not depend on the answer, so each epoch has its own playlist and Spritz keeps the
 // logicalStart itself.
 //
-// PRODUCER LIFECYCLE belongs to the RUN and to nothing else. This is the first production caller of
-// setProducerActive (through onActive): spawning the epoch's ffmpeg makes the producer active; its
-// exit, error, explicit stop or supersession makes it inactive. Never an HTTP request — a real
-// ffmpeg was measured making several Range requests per run and closing each before the next.
+// PRODUCER LIFECYCLE belongs to the RUN and to nothing else (active()): spawning the epoch's ffmpeg
+// makes the producer active; its exit, error, explicit stop or supersession makes it inactive. Never
+// an HTTP request — a real ffmpeg was measured making several Range requests per run and closing
+// each before the next.
 //
 // INPUT is opaque to this module. Today it is always a local path — serveVod is reached for local
 // files only (main.js resolveCastable) — but ffmpeg treats a URL the same as `-i`, and nothing here
@@ -138,21 +138,16 @@ function planSeek({ epoch, toLogical: target, clock } = {}) {
 // spawn / ffmpeg   — injected so lifecycle is testable without a real process.
 // root             — the session directory; each epoch owns exactly one subdirectory of it, and
 //                    retire()/close() remove only those.
-// onActive(bool)   — the producer lifecycle, to be forwarded to torrent.setProducerActive.
 // probeFirstPts(file, cb) — reads the first segment's first timestamp, so the keyframe lead-in is
 //                    a measurement. Injected because ffprobe is not available in every test.
-function createEpochs({ spawn, ffmpeg, root, namespace = null, onActive = () => {}, probeFirstPts = (f, cb) => cb(null), log = () => {} } = {}) {
+function createEpochs({ spawn, ffmpeg, root, namespace = null, probeFirstPts = (f, cb) => cb(null), log = () => {} } = {}) {
   if (typeof spawn !== 'function' || !ffmpeg || !root) throw new Error('createEpochs needs spawn, ffmpeg and root');
   if (namespace != null && !/^[A-Za-z0-9_-]+$/.test(namespace)) throw new Error('invalid epoch namespace');
   const prefix = namespace == null ? 'epoch-' : 'epoch-' + namespace + '-';
   const epochs = new Map();
   let seq = 0, currentId = null, active = false;
 
-  function setActive(a) {
-    if (active === !!a) return;
-    active = !!a;
-    try { onActive(active); } catch (e) {}
-  }
+  function setActive(a) { active = !!a; }
   // The producer is active while the CURRENT epoch's run is alive. Superseding kills the old run
   // and starts the new one in the same breath, so production never reads as having stopped.
   function reconsider() {

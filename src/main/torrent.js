@@ -197,14 +197,14 @@ module.exports = function createTorrent(send, opts = {}) {
   // Where the critical window is aimed and by whom — the viewer's playhead, or the packager's
   // source-read demand while a packaging run is active. The two positions, the authority rule and
   // the marking all live in critical-aim.js so they can be tested against a fake torrent; this
-  // module feeds it facts (setPlayhead from the players, noteSourceRead from the source proxy,
-  // setProducerActive from the packaging run) and hands it the live torrent on every progress tick.
+  // module feeds it facts (setPlayhead from the players; a registerProducer lease per packaging run,
+  // fed by the source proxy) and hands it the live torrent on every progress tick.
   //
   // History, so the shape is not undone: the window used to be marked ONCE over the file head at
   // handoff and never moved, so past the prebuffer nothing was urgent and a marginal swarm
   // underran mpv. Then it followed playFrac every tick. Now it follows whoever criticalAuthority
   // says — which for plain playback is still the viewer, exactly as before.
-  const aim = createCriticalAim({ tlog });
+  const aim = createCriticalAim();
   function setPlayhead(frac, durationSec) { aim.setPlayhead(frac, durationSec); }
   function refreshCritical() { aim.refresh(active, activeFile); }
 
@@ -497,7 +497,7 @@ module.exports = function createTorrent(send, opts = {}) {
 
     // Move the VIEWER's play head, because this IS the viewer: the only caller is the DLNA proxy
     // relaying a television's ranged GET (main.js onSeekBytes), and the proxy fires it for viewer
-    // reads only — a packager's reads arrive as producer demand through noteSourceRead and never
+    // reads only — a packager's reads arrive as producer demand through its lease and never
     // come here. So moving the playhead is the honest record of a viewer seek, not an
     // impersonation; and it is still what keeps the tick from re-aiming at where the receiver used
     // to be, since with no active producer the tick follows the viewer.
@@ -544,10 +544,10 @@ module.exports = function createTorrent(send, opts = {}) {
     cleanInstance();
   }
 
-  // The packager's side of the critical window. noteSourceRead takes the source proxy's
-  // observations (only reader:'producer' ones count; see critical-aim.js); setProducerActive is
-  // the packaging run's lifecycle, to be called by the transport epoch that owns the ffmpeg.
-  // aimState is for the log: who is in charge, where everyone is, what was marked.
+  // The packager's side of the critical window: one lease per packaging run (lanserver
+  // createOwnedSource). Its noteSourceRead takes the source proxy's observations of that run's reads,
+  // setActive is the run's lifecycle, dispose ends it. aimState is for the log: who is in charge,
+  // where everyone is, what was marked.
   return { add, selectFile, cancel, teardown, setPlayhead, ensureIndexForCast, ensureBytes,
     registerProducer: () => {
       const lease = aim.registerProducer();
@@ -563,6 +563,5 @@ module.exports = function createTorrent(send, opts = {}) {
         dispose: () => { lease.dispose(); refreshCritical(); logPriority(true); }
       };
     },
-    noteSourceRead: (o) => aim.noteSourceRead(o), setProducerActive: (a) => aim.setProducerActive(a),
     aimState: () => aim.state() };
 };

@@ -12,13 +12,13 @@
 // The rule these tests hold: producer LIFECYCLE belongs to the packaging run, never to HTTP
 // requests. A real ffmpeg was measured making several Range requests per run — header, container
 // index at the tail, the seek target, then one long read — and closing each before the next. A
-// Range closing therefore says nothing about whether the producer stopped; only setProducerActive
-// does.
+// Range closing therefore says nothing about whether the producer stopped; only the run's lease
+// (setActive / dispose) does. Every producer here is a registerProducer lease, the way the
+// packager's reads reach the aim in production (lanserver createOwnedSource).
 
 const { test } = require('node:test');
 const assert = require('assert');
 const { createCriticalAim } = require('../src/main/critical-aim');
-const { PRODUCER_FRESH_MS } = require('../src/main/critical-authority');
 
 const PIECE = 1024 * 1024;
 const FILE_BYTES = 200 * PIECE; // 200 pieces of a 1 MiB piece length
@@ -52,7 +52,8 @@ test('the viewer alone aims the window', () => {
 test('producer demand alone does NOT win unless the producer is active', () => {
   const r = rig();
   r.aim.setPlayhead(0.1, 6000);
-  r.aim.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE });
+  const p = r.aim.registerProducer();
+  p.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE });
   r.refresh();
   assert.ok(r.last().at < 30, 'still the viewer (at=' + r.last().at + ')');
 });
@@ -60,56 +61,47 @@ test('producer demand alone does NOT win unless the producer is active', () => {
 test('an active producer wins over the viewer', () => {
   const r = rig();
   r.aim.setPlayhead(0.1, 6000);
-  r.aim.setProducerActive(true);
-  r.aim.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE });
+  const p = r.aim.registerProducer(); p.setActive(true);
+  p.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE });
   r.refresh();
   assert.ok(r.last().at >= 146 && r.last().at <= 150, 'the producer (at=' + r.last().at + ')');
 });
 
 test('viewer progress ticks cannot erase active producer authority', () => {
   const r = rig();
-  r.aim.setProducerActive(true);
-  r.aim.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE });
+  const p = r.aim.registerProducer(); p.setActive(true);
+  p.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE });
   for (const frac of [0.10, 0.11, 0.12, 0.13]) { r.aim.setPlayhead(frac, 6000); r.refresh(); }
   assert.ok(r.last().at >= 146, 'four ticks later the window is still at the producer (at=' + r.last().at + ')');
 });
 
 test('advancing producer reads move the window forward', () => {
   const r = rig();
-  r.aim.setProducerActive(true);
-  r.aim.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 100 * PIECE, position: 100 * PIECE }); r.refresh();
+  const p = r.aim.registerProducer(); p.setActive(true);
+  p.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 100 * PIECE, position: 100 * PIECE }); r.refresh();
   const a = r.last().at;
-  r.aim.noteSourceRead({ reader: 'producer', event: 'progress', byteStart: 100 * PIECE, position: 120 * PIECE }); r.refresh();
+  p.noteSourceRead({ reader: 'producer', event: 'progress', byteStart: 100 * PIECE, position: 120 * PIECE }); r.refresh();
   assert.ok(r.last().at > a, 'moved forward (' + a + ' → ' + r.last().at + ')');
 });
 
 test('backward producer movement is legitimate', () => {
   const r = rig();
-  r.aim.setProducerActive(true);
-  r.aim.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE }); r.refresh();
+  const p = r.aim.registerProducer(); p.setActive(true);
+  p.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE }); r.refresh();
   const a = r.last().at;
   // A new Range further back — the container index is behind you, or the viewer sought backwards.
-  r.aim.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 40 * PIECE, position: 40 * PIECE }); r.refresh();
+  p.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 40 * PIECE, position: 40 * PIECE }); r.refresh();
   assert.ok(r.last().at < a, 'moved back (' + a + ' → ' + r.last().at + ')');
 });
 
 test('the producer stopping returns authority to the viewer immediately', () => {
   const r = rig();
   r.aim.setPlayhead(0.1, 6000);
-  r.aim.setProducerActive(true);
-  r.aim.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE }); r.refresh();
+  const p = r.aim.registerProducer(); p.setActive(true);
+  p.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE }); r.refresh();
   assert.ok(r.last().at >= 146);
-  r.aim.setProducerActive(false); r.refresh();
+  p.setActive(false); r.refresh();
   assert.ok(r.last().at < 30, 'back with the viewer at once, no timeout (at=' + r.last().at + ')');
-});
-
-test('a stale producer falls back to the viewer', () => {
-  const r = rig({ now: 1000 });
-  r.aim.setPlayhead(0.1, 6000);
-  r.aim.setProducerActive(true);
-  r.aim.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE });
-  r.clock.now = 1000 + PRODUCER_FRESH_MS + 1; r.refresh();
-  assert.ok(r.last().at < 30, 'the viewer (at=' + r.last().at + ')');
 });
 
 test('null or transient positions do not snap the window to piece zero', () => {
@@ -122,11 +114,11 @@ test('null or transient positions do not snap the window to piece zero', () => {
   assert.deepEqual({ at: r.last().at, end: r.last().end }, { at: settled.at, end: settled.end }, 'the window did not move');
   // A bad PRODUCER reading is refused the same way, and does not dislodge an active producer's
   // last good position either.
-  r.aim.setProducerActive(true);
-  r.aim.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE }); r.refresh();
+  const p = r.aim.registerProducer(); p.setActive(true);
+  p.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE }); r.refresh();
   const held = r.last();
-  r.aim.noteSourceRead({ reader: 'producer', event: 'progress', byteStart: 150 * PIECE, position: NaN });
-  r.aim.noteSourceRead({ reader: 'producer', event: 'progress', byteStart: -1, position: -1 }); r.refresh();
+  p.noteSourceRead({ reader: 'producer', event: 'progress', byteStart: 150 * PIECE, position: NaN });
+  p.noteSourceRead({ reader: 'producer', event: 'progress', byteStart: -1, position: -1 }); r.refresh();
   assert.deepEqual({ at: r.last().at, end: r.last().end }, { at: held.at, end: held.end }, 'the producer window did not move');
   // Frac 0 IS a real position — the head of the film, where every new file starts — so a fresh
   // aim legitimately marks the head. The no-position case is a file whose geometry is not known:
@@ -151,12 +143,12 @@ test('several producer Range closes do not deactivate the producer', () => {
   // The measured ffmpeg shape: header read closes, index read closes, then the real read.
   const r = rig();
   r.aim.setPlayhead(0.1, 6000);
-  r.aim.setProducerActive(true);
-  r.aim.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 0, position: 0 });
-  r.aim.noteSourceRead({ reader: 'producer', event: 'close', byteStart: 0, position: 2 * PIECE, complete: false });
-  r.aim.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 199 * PIECE, position: 199 * PIECE });
-  r.aim.noteSourceRead({ reader: 'producer', event: 'close', byteStart: 199 * PIECE, position: FILE_BYTES, complete: true });
-  r.aim.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE });
+  const p = r.aim.registerProducer(); p.setActive(true);
+  p.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 0, position: 0 });
+  p.noteSourceRead({ reader: 'producer', event: 'close', byteStart: 0, position: 2 * PIECE, complete: false });
+  p.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 199 * PIECE, position: 199 * PIECE });
+  p.noteSourceRead({ reader: 'producer', event: 'close', byteStart: 199 * PIECE, position: FILE_BYTES, complete: true });
+  p.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE });
   r.refresh();
   assert.ok(r.last().at >= 146, 'still the producer after two closes (at=' + r.last().at + ')');
   assert.equal(r.aim.state().producer.active, true);
@@ -173,27 +165,27 @@ test('a viewer seek still moves the window (the DLNA path)', () => {
 test('producer observations never mutate the viewer playhead', () => {
   const r = rig();
   r.aim.setPlayhead(0.1, 6000);
-  r.aim.setProducerActive(true);
-  r.aim.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE });
-  r.aim.noteSourceRead({ reader: 'producer', event: 'progress', byteStart: 150 * PIECE, position: 160 * PIECE });
+  const p = r.aim.registerProducer(); p.setActive(true);
+  p.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE });
+  p.noteSourceRead({ reader: 'producer', event: 'progress', byteStart: 150 * PIECE, position: 160 * PIECE });
   assert.equal(r.aim.state().viewer.frac, 0.1, 'the viewer is where the viewer was');
 });
 
 test('viewer reads on the DLNA route are not producer demand', () => {
   const r = rig();
   r.aim.setPlayhead(0.1, 6000);
-  r.aim.setProducerActive(true);
-  r.aim.noteSourceRead({ reader: 'viewer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE });
+  const p = r.aim.registerProducer(); p.setActive(true);
+  p.noteSourceRead({ reader: 'viewer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE });
   r.refresh();
   assert.ok(r.last().at < 30, 'a television reading through the proxy is the viewer, not the packager (at=' + r.last().at + ')');
-  assert.equal(r.aim.state().producer.byteStart, null);
+  assert.equal(r.aim.state().producer, null, 'no producer holds a position');
 });
 
 test('ordinary non-torrent behaviour is unchanged: no torrent, no marks, no throw', () => {
   const aim = createCriticalAim({ now: () => 0 });
   aim.setPlayhead(0.5, 100);
-  aim.setProducerActive(true);
-  aim.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 5, position: 5 });
+  const p = aim.registerProducer(); p.setActive(true);
+  p.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 5, position: 5 });
   assert.doesNotThrow(() => aim.refresh(null, null));
   assert.doesNotThrow(() => aim.refresh(fakeTorrent(), null));
 });
@@ -201,8 +193,8 @@ test('ordinary non-torrent behaviour is unchanged: no torrent, no marks, no thro
 test('the state is inspectable, because a far-seek log has to show who is in charge and why', () => {
   const r = rig();
   r.aim.setPlayhead(0.1, 6000);
-  r.aim.setProducerActive(true);
-  r.aim.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE });
+  const p = r.aim.registerProducer(); p.setActive(true);
+  p.noteSourceRead({ reader: 'producer', event: 'open', byteStart: 150 * PIECE, position: 150 * PIECE });
   r.refresh();
   const s = r.aim.state();
   assert.equal(s.decision.source, 'producer');

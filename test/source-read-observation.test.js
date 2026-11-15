@@ -81,8 +81,8 @@ async function untilSeen(seen, pred, ms = 2000) {
 }
 
 // The packager's source is a createOwnedSource proxy (what serveHls hands ffmpeg for a torrent).
-// Its reads are reported to the producer lease registerSourceProducer returned, not to the global
-// onSourceRead hook — the lease is what forwards them to the torrent scheduler in main.js.
+// Its reads are reported to the producer lease registerSourceProducer returned — the lease is what
+// forwards them to the torrent scheduler in main.js, and the only place reads are reported to.
 function producerLease(seen) {
   return () => ({ noteSourceRead: (o) => seen.push(Object.assign({ t: Date.now() }, o)), setActive() {}, dispose() {} });
 }
@@ -155,19 +155,24 @@ test('closing reports the final position and whether the reader let go early', a
   });
 });
 
-test('the television\'s DLNA proxy reads are attributed to the viewer, not the producer', async () => {
+test('the television\'s DLNA proxy reads never reach a producer lease', async () => {
+  // A TV reading the same torrent through the DLNA route is the VIEWER: its position arrives as
+  // playhead status. Were its reads reported as demand, a television would impersonate the packager
+  // and drag the swarm with it — so with a lease registered and live, the TV's read still reports
+  // nothing, while the read itself is served.
   const up = await upstream(0);
   const seen = [];
-  const lan = createLanServer({ onSourceRead: (o) => seen.push(o) });
+  const lan = createLanServer({ registerSourceProducer: producerLease(seen) });
   try {
+    const owned = await ownedSourceUrl(lan, up.url);
+    assert.ok(owned, 'a producer lease exists for this source');
     const url = await new Promise((resolve) => lan.serveDlna(up.url, 'video/x-matroska', resolve));
     if (!url) return; // no LAN address on this machine
     const p = new URL(url);
-    await read('http://127.0.0.1:' + p.port + p.pathname, { range: 'bytes=4096-' });
-    const open = seen.find((o) => o.event === 'open');
-    assert.ok(open, 'the DLNA route reports too — the arbiter needs the viewer side as well');
-    assert.equal(open.reader, 'viewer');
-    assert.equal(open.byteStart, 4096);
+    const r = await read('http://127.0.0.1:' + p.port + p.pathname, { range: 'bytes=4096-' });
+    assert.equal(r.status, 206, 'the television is served');
+    assert.ok(r.got > 0);
+    assert.deepEqual(seen, [], 'and nothing is reported to the producer lease');
   } finally {
     try { lan.teardown(); } catch (e) {}
     up.srv.close();

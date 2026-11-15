@@ -558,11 +558,7 @@ if (!gotLock) {
     // A receiver seeking inside a still-downloading torrent. The DLNA proxy calls this the moment a
     // ranged GET arrives and does not wait for it; all it does is move the torrent's urgency to
     // where the viewer just jumped. Opt-in — see dlna-flags.js.
-    onSeekBytes: (byteStart) => { try { torrent.ensureBytes(byteStart, () => {}); } catch (e) {} },
-    // A source read observed at the proxy. Forwarded as a fact; torrent.js decides what it means.
-    onSourceRead: (o) => { try { torrent.noteSourceRead(o); } catch (e) {} },
-    // A packaging run started or ended. The one caller of setProducerActive; see transport-epoch.js.
-    onProducerActive: (a) => { try { torrent.setProducerActive(a); } catch (e) {} }
+    onSeekBytes: (byteStart) => { try { torrent.ensureBytes(byteStart, () => {}); } catch (e) {} }
   }); // LAN file server for local-file AirPlay
   const cast = require('./cast')();     // Google Cast (Chromecast / LG webOS)
   const dlna = require('./dlna')();     // DLNA / UPnP "play to"
