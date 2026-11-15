@@ -202,6 +202,9 @@ if (!gotLock) {
   // at the point of user intent (before the multi-second resolve) — that's what closes the races the
   // three independent, post-resolve booleans left open. (Audit M4.)
   let castEngine = 'mpv'; // 'mpv' | 'pending' | 'airplay' | 'chromecast' | 'dlna'
+  // An AirPlay handoff held until the remux has produced the Mac's position: { at, play }, else
+  // null. See handOffToAirplay. Cleared by every engine change away from 'airplay'.
+  let apStartWait = null;
   // Every engine change goes through setEngine(). The transitions used to be 16 bare assignments
   // scattered across the file, and the bugs in this area were all state bugs wearing a networking
   // costume: playback resuming locally while a TV was still playing, two engines briefly live at
@@ -227,6 +230,7 @@ if (!gotLock) {
     engineLog.push({ t: Date.now(), from: prev, to: next, reason: reason || '' });
     if (engineLog.length > 12) engineLog.shift();
     castEngine = next;
+    if (next !== 'airplay') apStartWait = null; // a held AirPlay start dies with the cast
     // Chromecast and DLNA do not use the AirPlay HLS remux, but it keeps running through their
     // casts — burning a third of the CPU and pulling the same torrent from the front of the file
     // while the cast reads from the middle, at equal priority. Suspend it for the duration and let
@@ -258,15 +262,57 @@ if (!gotLock) {
   function handOffToAirplay(why) {
     console.log('[airplay] handing off to AirPlay (' + why + ')');
     setEngine('airplay');
-    // The LG stalls when started late in an HLS segment (19/19 handoffs: <=5.3s in played, >=6s in
-    // stalled) — move such a start back to its segment's start. See airplay-start-snap.js.
     const at = mpvPos();
-    let pos = at;
-    try { pos = require('./airplay-start-snap').safeAirplayStart(at, lan.airplayMediaPlaylist()); } catch (e) {}
-    if (pos !== at) console.log('[airplay] ' + at.toFixed(1) + 's is late in its segment; starting the TV at ' + pos.toFixed(1) + 's');
     captureTracks();                        // remember language/subtitle for the return
     try { mpvAddon.command('stop'); } catch (e) {}
-    try { apAddon.seek(pos); apAddon.play(); } catch (e) {}
+    const snap = require('./airplay-start-snap');
+    // The remux may not have reached the Mac's position yet (it starts at 0:00 when the file loads). A
+    // seek there lands at the end of what is produced and the TV plays on from minutes earlier — on the
+    // LG, 302s for a 631s handoff, and the retries below asked for the same missing spot. So hold the
+    // TV paused until the playlist covers the position, then start it there. At the ~9x the remux runs,
+    // each minute of gap is ~7s of waiting. Past AP_START_WAIT_MS, start at the furthest produced point
+    // rather than leave the viewer looking at a paused TV, and say why.
+    let playlist = null; try { playlist = lan.airplayMediaPlaylist(); } catch (e) {}
+    if (snap.startIsProduced(at, playlist)) return startAirplayAt(at, playlist);
+    const wait = apStartWait = { at, play: true };
+    const t0 = Date.now();
+    console.log('[airplay] ' + at.toFixed(1) + 's is not produced yet (playlist reaches ' + snap.producedEnd(playlist).toFixed(1) + 's): holding the TV until it is');
+    try { apAddon.pause(); } catch (e) {}
+    lastAvTime = at;                        // a Stop while waiting resumes the Mac where it was
+    try { lan.noteAirplayPosition(at); } catch (e) {}
+    send('airplay-event', { type: 'preparing', active: true });
+    const poll = () => setTimeout(() => {
+      if (apStartWait !== wait || castEngine !== 'airplay') return; // stopped, or superseded by a newer handoff
+      let pl = null; try { pl = lan.airplayMediaPlaylist(); } catch (e) {}
+      if (snap.startIsProduced(wait.at, pl)) {
+        console.log('[airplay] ' + wait.at.toFixed(1) + 's is produced after ' + ((Date.now() - t0) / 1000).toFixed(1) + 's: starting the TV');
+        apStartWait = null;
+        send('airplay-event', { type: 'preparing', active: false });
+        return startAirplayAt(wait.at, pl, wait.play);
+      }
+      if (Date.now() - t0 >= AP_START_WAIT_MS) {
+        const from = Math.max(0, Math.min(wait.at, snap.producedEnd(pl) - snap.LOOKAHEAD));
+        console.log('[airplay] gave up waiting for ' + wait.at.toFixed(1) + 's after ' + AP_START_WAIT_MS / 1000 + 's: starting the TV at ' + from.toFixed(1) + 's');
+        apStartWait = null;
+        send('airplay-event', { type: 'preparing', active: false,
+          message: 'The TV started at ' + clock(from) + ' — ' + clock(wait.at) + ' wasn’t ready yet' });
+        return startAirplayAt(from, pl, wait.play);
+      }
+      poll();
+    }, 1000);
+    poll();
+  }
+  const AP_START_WAIT_MS = 180000;
+  const clock = (s) => { s = Math.max(0, Math.floor(s)); const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = String(s % 60).padStart(2, '0'); return h ? h + ':' + String(m).padStart(2, '0') + ':' + x : m + ':' + x; };
+  // Seek the TV to `at` and play it (unless the viewer paused during a held start), then check it got
+  // there.
+  function startAirplayAt(at, playlist, play = true) {
+    // The LG stalls when started late in an HLS segment (19/19 handoffs: <=5.3s in played, >=6s in
+    // stalled) — move such a start back to its segment's start. See airplay-start-snap.js.
+    let pos = at;
+    try { pos = require('./airplay-start-snap').safeAirplayStart(at, playlist); } catch (e) {}
+    if (pos !== at) console.log('[airplay] ' + at.toFixed(1) + 's is late in its segment; starting the TV at ' + pos.toFixed(1) + 's');
+    try { apAddon.seek(pos); if (play) apAddon.play(); } catch (e) {}
     // The hidden player free-runs from the moment the picker opens, and this seek has been observed
     // not to reach the TV (Mac at 33.1s, TV started at 20.0s; 40.6s -> 7.1s). Check, and correct.
     const t0 = Date.now();
@@ -1453,6 +1499,9 @@ if (!gotLock) {
       if (apAddon && apAddon.setEventListener) {
         apAddon.setEventListener((ev) => {            // listener BEFORE attachPicker (TSFN invariant)
           if (ev.type !== 'time') console.log('[airplay]', JSON.stringify(ev)); // diag
+          // While a handoff is held for the remux (handOffToAirplay), the paused player's clock is not the
+          // viewer's position: it must not become the resume point or move the remote scrubber.
+          if (ev.type === 'time' && apStartWait) return;
           if (ev.type === 'time' && typeof ev.cur === 'number') {
             // Time events are the ONLY evidence that the player is actually advancing, and they were
             // suppressed entirely — so a session that loaded cleanly, engaged the route and then sat
@@ -2196,9 +2245,14 @@ if (!gotLock) {
     send('toast', { message: 'AirPlay picker unavailable. Close and reopen the Cast menu, then try again.' });
   });
   ipcMain.on('airplay:hideButton', () => { try { if (apAddon) apAddon.updatePickerRect(0, 0, 0, 0, false); } catch (e) {} });
-  ipcMain.on('airplay:play', () => { try { if (apAddon) apAddon.play(); } catch (e) {} });
-  ipcMain.on('airplay:pause', () => { try { if (apAddon) apAddon.pause(); } catch (e) {} });
-  ipcMain.on('airplay:seek', (_e, { t } = {}) => { try { if (apAddon) apAddon.seek(t); } catch (e) {} });
+  // During a held start (handOffToAirplay) the controls change what the TV will do once it starts:
+  // playing it now would play from the end of what is produced, and a seek there would land short.
+  ipcMain.on('airplay:play', () => { if (apStartWait) { apStartWait.play = true; return; } try { if (apAddon) apAddon.play(); } catch (e) {} });
+  ipcMain.on('airplay:pause', () => { if (apStartWait) { apStartWait.play = false; return; } try { if (apAddon) apAddon.pause(); } catch (e) {} });
+  ipcMain.on('airplay:seek', (_e, { t } = {}) => {
+    if (apStartWait && Number.isFinite(t) && t >= 0) { apStartWait.at = t; lastAvTime = t; try { lan.noteAirplayPosition(t); } catch (e) {} return; }
+    try { if (apAddon) apAddon.seek(t); } catch (e) {}
+  });
   ipcMain.on('airplay:setVolume', (_e, { f } = {}) => { try { if (apAddon) apAddon.setVolume(f); } catch (e) {} });
   ipcMain.on('airplay:stop', () => {
     try { if (apAddon) apAddon.stopAirplay(); } catch (e) {}

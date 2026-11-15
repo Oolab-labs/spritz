@@ -15,7 +15,7 @@ const listener = src.slice(listenerStart, src.indexOf('        // Start route de
 function harness({ external = true } = {}) {
   let now = 0, next = 0, cb; const timers = new Map(); const events = []; const resumes = [];
   const c = vm.createContext({ castEngine: 'airplay', apExternalActive: external, apTimeSeen: 0, apLastLoggedTime: 0,
-    lastAvTime: 40, avItemFailed: false, castUrl: 'http://fixture/master.m3u8',
+    lastAvTime: 40, avItemFailed: false, castUrl: 'http://fixture/master.m3u8', apStartWait: null,
     console: { log() {}, error() {} },
     setTimeout(fn, delay) { const id = ++next; timers.set(id, { at: now + delay, fn }); return id; },
     clearTimeout(id) { timers.delete(id); },
