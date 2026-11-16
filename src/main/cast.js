@@ -293,6 +293,16 @@ module.exports = function createCast() {
     }, STATUS_POLL_MS);
     if (statusTimer.unref) statusTimer.unref();
   }
+  // Is the control connection still open? The TV can close it cleanly, and when it does castv2 nulls
+  // its socket and castv2-client's PlatformSender drops its inner client — and neither emits anything
+  // on the object held here (senders/platform.js onclose). Measured on an LG webOS TV: the next seek
+  // reused the dead pair, p.load threw "Cannot read properties of null (reading 'send')" as an
+  // uncaught exception, and the TV sat frozen on the old stream until the 30 s load timeout.
+  const connectionAlive = (c) => !!(c && c.client && c.client.socket);
+  // The latest load, so a connection that dies under it can be recovered with what is playing NOW. A
+  // reused session outlives the load that opened it, so that load's closure would recover old media.
+  let current = null; // { myGen, host, media, settled, fail }
+
   function teardownClient() {
     stopStatusPoll();
     const retiredPlayer = player, retiredClient = client;
@@ -311,7 +321,8 @@ module.exports = function createCast() {
     let settled = false;
     let to = null;
     let _wokeOnce = false; // one wake-and-retry per load attempt
-    const done = (e, s) => { if (settled) return; settled = true; clearTimeout(to); cb && cb(e, s); };
+    const done = (e, s) => { if (settled) return; settled = true; if (current && current.myGen === myGen) current.settled = true; clearTimeout(to); cb && cb(e, s); };
+    current = { myGen, host, media, settled: false, fail: (e) => failConnection(e) };
 
     // Build the LOAD payload. Split out so the fast path below can reuse it verbatim.
     const mediaInfo = () => {
@@ -350,7 +361,7 @@ module.exports = function createCast() {
       // A live pipe starts AT the position the viewer asked for (the server seeks before it streams), so
       // the receiver's own clock starts at zero. Asking it to seek to the film time as well sent the LG
       // looking for a point the stream does not have yet. The app adds the stream's origin back.
-      p.load(mediaInfo(), { autoplay: true, currentTime: (hls || media.livePipe) ? 0 : (media.currentTime || 0) }, (e2, status) => {
+      const onLoaded = (e2, status) => {
         if (myGen !== castGen || loadCompleted) return; // superseded or duplicate completion
         loadCompleted = true;
         if (e2 && onStale) return onStale(e2);
@@ -371,14 +382,24 @@ module.exports = function createCast() {
         if (status) { lastStatus = status; noteTracks(status); reconnectTries = 0; ev.emit('status', status); } // fresh session → reset retries
         if (myGen !== castGen) return;
         done(e2, status);
-      });
+      };
+      // A connection can die between the liveness check and the send. Then castv2 throws from inside
+      // load() rather than answering, and that must become a reconnect, not an uncaught exception.
+      try {
+        p.load(mediaInfo(), { autoplay: true, currentTime: (hls || media.livePipe) ? 0 : (media.currentTime || 0) }, onLoaded);
+      } catch (e) {
+        if (myGen !== castGen || loadCompleted) return;
+        loadCompleted = true;
+        if (onStale) return onStale(e);
+        failConnection(e);
+      }
     };
 
     // FAST PATH — the receiver is already connected and running DefaultMediaReceiver for this host.
     // recastMkv() comes through here on every seek / audio-language change / burn toggle / subDelay
     // nudge; tearing the socket down and re-running connect+launch each time costs seconds of
     // handshake against a session that is already exactly where we want it. Just LOAD the new item.
-    if (!_isReconnect && client && player && connectedHost === host) {
+    if (!_isReconnect && client && player && connectedHost === host && connectionAlive(client)) {
       const p = player;
       to = setTimeout(() => { if (myGen !== castGen) return; ev.emit('error', { message: 'Chromecast load timed out' }); done(new Error('load timeout')); }, 30000);
       sendLoad(p, () => {
@@ -447,11 +468,26 @@ module.exports = function createCast() {
     c.connect(host, () => {
       if (myGen !== castGen) { clearTimeout(to); try { c.removeAllListeners(); c.close(); } catch (x) {} return; } // a newer load/stop won — abandon
       connectedHost = host;
+      // The TV closing the socket reaches only castv2's own client. Our teardown nulls `client` before
+      // it closes anything, so `c !== client` there means we closed it ourselves.
+      const socketClient = c.client;
+      if (socketClient && typeof socketClient.once === 'function') socketClient.once('close', () => { if (c === client) connectionDropped(); });
       c.launch(castLib().DefaultMediaReceiver, (err, p) => {
         if (myGen !== castGen) { clearTimeout(to); try { c.removeAllListeners(); c.close(); } catch (x) {} return; }
         if (err) { ev.emit('error', { message: err.message }); return done(err); }
         player = p;
         startStatusPoll(p);
+        // The TV closed the Cast app: Home on the remote, another input, or another phone casting.
+        // castv2-client reports the receiver's CLOSE as 'close' on the player, and nothing else fires
+        // — the platform heartbeat keeps the socket itself alive — so without this the cast screen
+        // waits on a clock that will never move again. Our own teardown removes this listener before
+        // it closes anything, so only the TV's close reaches here.
+        p.on('close', () => {
+          if (p !== player) return;
+          const at = (lastStatus && Number.isFinite(lastStatus.currentTime)) ? lastStatus.currentTime : null;
+          teardownClient();
+          ev.emit('receiver-closed', { at });
+        });
         p.on('status', (s) => {
           // Guard on identity, NOT on the generation this closure was created with: a reused
           // session (fast path) outlives its original load, so a captured myGen would go stale
@@ -471,6 +507,28 @@ module.exports = function createCast() {
       });
     });
     }
+  }
+
+  // The TV closed the control connection with no error. While a load is still waiting, it fails over
+  // to the load's own error path. Once the cast is playing, it is a dropped connection like any other:
+  // the same bounded silent reconnect at the last position as the 'error' handler in fullConnect.
+  function connectionDropped() {
+    const cur = current;
+    const at = (lastStatus && Number.isFinite(lastStatus.currentTime)) ? lastStatus.currentTime : null;
+    // Said out loud: why the TV drops this connection is not known yet, and only a log will tell.
+    ev.emit('connection-closed', { at, during: !cur || cur.myGen !== castGen ? 'a superseded load' : cur.settled ? 'playback' : 'a load', retries: reconnectTries });
+    if (!cur || cur.myGen !== castGen) { teardownClient(); return; }
+    if (!cur.settled) return cur.fail(new Error('the TV closed the Cast connection'));
+    if (reconnectTries >= 2) {
+      teardownClient();
+      ev.emit('error', { message: 'Cast connection lost.' });
+      return;
+    }
+    reconnectTries++;
+    const pos = at != null ? at : (cur.media.currentTime || 0);
+    teardownClient();
+    if (cur.media.livePipe || /x-matroska/i.test(cur.media.contentType || '')) { ev.emit('reconnect', { at: pos }); return; }
+    setTimeout(() => { if (cur.myGen === castGen) load(cur.host, Object.assign({}, cur.media, { currentTime: pos }), () => {}, true); }, 1500);
   }
 
   // --- track selection (Chromecast EDIT_TRACKS_INFO) ---

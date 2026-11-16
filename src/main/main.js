@@ -624,6 +624,8 @@ if (!gotLock) {
   const CASTLOG = '/tmp/spritz-cast.log';
   const castLog = (m) => { if (!process.env.SPRITZ_DEBUG) return; try { fs.appendFileSync(CASTLOG, '[' + new Date().toISOString().slice(11, 23) + '] ' + m + '\n'); } catch (e) {} };
   let lastPlayerState = null;
+  // Why the receiver last went IDLE, for this cast. Recovery reads it: see castRecovery.endedByViewer.
+  let lastIdleReason = null;
   // An observation waiting on proof. Set when a cast starts, converted to a recorded success only
   // once the receiver has demonstrably decoded and advanced through the stream — see castStatus.
   let pendingObservation = null;
@@ -1128,6 +1130,11 @@ if (!gotLock) {
         (castMkv && castMkv.dur ? ' of ' + Math.round(castMkv.dur) + 's' : ''));
       lastPlayerState = s.playerState;
     }
+    if (s.playerState === 'IDLE') lastIdleReason = s.idleReason || null;
+    else if (s.playerState) lastIdleReason = null;
+    // Stop on the TV's remote. A direct-file cast has no stream to lose, so nothing else would notice,
+    // and the cast screen would sit on a session that has nothing loaded.
+    if (castEngine === 'chromecast' && s.playerState === 'IDLE' && castRecovery.endedByViewer(s.idleReason)) return endCastByViewer(s.idleReason);
     confirmObservation(s);
     // Subtitles can also be changed on the TV's own remote, which never reaches our IPC. Since every
     // track but the selected one is served as a stub, not noticing that would hand the remote a list
@@ -1178,6 +1185,9 @@ if (!gotLock) {
   // A LIVE Chromecast session dropped (Wi-Fi blip) on the non-seekable MKV pipe → re-cast a fresh stream
   // from the live position (cast.js can't just re-GET the URL). Bounded so a dead TV can't loop forever.
   let mkvReconnects = 0, mkvReconnectAt = 0;
+  cast.on('connection-closed', ({ at, during, retries } = {}) => {
+    castLog('the TV closed the Cast connection during ' + during + (Number.isFinite(at) ? ' at ' + Math.round(at) + 's (stream clock)' : '') + ', ' + retries + ' reconnect(s) so far');
+  });
   cast.on('reconnect', ({ at } = {}) => {
     if (castEngine !== 'chromecast' || !castMkv) return;
     const now = Date.now();
@@ -1186,6 +1196,14 @@ if (!gotLock) {
     mkvReconnects++; mkvReconnectAt = now;
     // `at` is the receiver's own clock, which counts from the start of the stream; lastCastPos is film time.
     recastMkv(lastCastPos || lastAvTime || at || 0, castMkv.audioTrack); // fresh MKV stream from the live position
+  });
+  // The TV closed the Cast app — Home, another input, or another phone casting. The session is gone;
+  // waiting on it is the hang. Carry on locally from the TV's last position.
+  cast.on('receiver-closed', ({ at } = {}) => {
+    if (castEngine !== 'chromecast') return;
+    castLog('the TV closed the Cast app' + (Number.isFinite(at) ? ' at ' + Math.round(at) + 's' : '') + ' — returning to local playback');
+    resumeLocalFromChromecast();
+    send('cast-event', { type: 'error', message: 'The TV closed the cast.' });
   });
   function resumeLocalFromChromecast() {
     setEngine('mpv'); castMkv = null;
@@ -2338,6 +2356,7 @@ if (!gotLock) {
       ? { key: obsKey, from: pos || 0, traits: Object.assign({ label: devLabel }, info.sent) }
       : null;
     subGuard.begin(); // the receiver reports its own default selection while the first LOAD settles
+    lastIdleReason = null;
     cast.load(host, { url, title: lastCastTitle, contentType: isLivePipe ? lan.castMime() : ctypeFor(url), livePipe: isLivePipe, currentTime: pos, subs: subs || [] }, (err) => {
       // The source changed (or a cast was cancelled) during the ~12s handshake → don't resurrect. (Audit M3)
       subGuard.end(4000);
@@ -2373,6 +2392,7 @@ if (!gotLock) {
     lan.serveMkv(castMkv.input, { caps: castMkv.caps, extraSubs: externalSubs, audioTrack: at, startSec: Math.max(0, startSec || 0), burnSub: bs, subDelay: castMkv.subDelay || 0, subPick: (castMkv.subPick != null ? castMkv.subPick : -1) }, (u, sideloadSubs, audioTracks, aTrack, dur, menuSubs) => {
       if (gen !== loadGen || castEngine !== 'chromecast' || !u) { subGuard.end(0); return; }
       castMkv.audioTrack = aTrack; castMkv.burnSub = (bs != null && bs >= 0) ? bs : null; castMkv.menuSubs = menuSubs || [];
+      lastIdleReason = null;
       cast.load(host, { url: u, title: lastCastTitle, contentType: lan.castMime(), livePipe: true, currentTime: Math.max(0, startSec || 0), subs: sideloadSubs || [] }, (err) => {
         if (err) { subGuard.end(0); send('cast-event', { type: 'error', message: err.message }); return; }
         send('cast-event', { type: 'started', host, audioTracks: audioTracks || [], audioActive: aTrack, isMkv: true, subTracks: menuSubs || [], burnActive: castMkv.burnSub });
@@ -2384,8 +2404,17 @@ if (!gotLock) {
   // Re-establish a cast whose stream died under it. Deliberately narrow: only while a Chromecast
   // session is genuinely still live, only when the receiver has not said the film finished, and
   // bounded — a source that cannot be streamed must be allowed to fail rather than loop.
+  // The viewer ended the cast on the TV (Stop on its remote). Leave the TV alone and carry on locally
+  // from where it stopped.
+  function endCastByViewer(reason) {
+    castLog('ending the cast: the receiver went idle (' + reason + ') — stopped on the TV');
+    resumeLocalFromChromecast();
+    send('cast-event', { type: 'error', message: 'Stopped on the TV.' });
+  }
+
   function recoverCast(why) {
     if (castEngine !== 'chromecast' || !castMkv) return;
+    if (castRecovery.endedByViewer(lastIdleReason)) return endCastByViewer(lastIdleReason);
     // A RATE limit, not a lifetime one. The budget exists to stop a loop, and a loop is dense in
     // time; a film that drops once every twenty minutes and recovers each time is not looping. The
     // old lifetime count ended a 63-minute episode four minutes in, after three recoveries that had
@@ -2409,6 +2438,8 @@ if (!gotLock) {
     // cast recovered on its own and the best thing to do is nothing.
     setTimeout(() => {
       if (castEngine !== 'chromecast' || !castMkv) return;
+      // The IDLE report and the socket close race; the reason can land in this grace period.
+      if (castRecovery.endedByViewer(lastIdleReason)) { castRecoveries = castRecovery.refund(castRecoveries); return endCastByViewer(lastIdleReason); }
       if (lan.hasLiveCastStream()) {
         castRecoveries = castRecovery.refund(castRecoveries); // it healed itself; don't spend an attempt
         castLog('recovery not needed — the receiver re-requested the stream itself');

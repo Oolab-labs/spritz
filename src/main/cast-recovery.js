@@ -53,4 +53,12 @@ function refund(state) {
 
 const fresh = () => ({ used: 0, lastAt: 0 });
 
-module.exports = { allowRecovery, refund, fresh, MAX_IN_WINDOW, WINDOW_MS };
+// Did the viewer end the cast on the TV? The receiver says why it went IDLE, and CANCELLED is a STOP —
+// the TV's own remote, since our own stop detaches before it sends one. The receiver then closes the
+// live pipe's socket, which looks exactly like a Wi-Fi drop, and recovering it re-cast the film the
+// viewer had just stopped. ERROR is a failure, and is what recovery is for; FINISHED has its own path.
+// INTERRUPTED (a LOAD replaced the item) is deliberately NOT here: every seek on the live pipe is our
+// own re-LOAD over the session, so the item it replaces reports exactly that.
+const endedByViewer = (idleReason) => idleReason === 'CANCELLED';
+
+module.exports = { allowRecovery, refund, fresh, endedByViewer, MAX_IN_WINDOW, WINDOW_MS };
