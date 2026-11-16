@@ -467,5 +467,5 @@ module.exports = function createDlna() {
 
   function teardown() { try { if (current) stop(); } catch (e) {} stopDiscovery(); current = null; } // stop the TV, not just discovery
 
-  return { on: (e, fn) => ev.on(e, fn), startDiscovery, stopDiscovery, load, play, pause, stop, seek, setVolume, position, transportState, teardown, setManualHosts, discoveryState: health.snapshot };
+  return { on: (e, fn) => ev.on(e, fn), startDiscovery, load, play, pause, stop, seek, setVolume, position, transportState, teardown, setManualHosts, discoveryState: health.snapshot };
 };

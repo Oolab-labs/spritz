@@ -7,8 +7,8 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron'); // all ava
 
 contextBridge.exposeInMainWorld('soda', {
   player: {
-    // url = absolute path or http(s) URL; opts.start = resume seconds
-    load: (url, opts) => ipcRenderer.send('player:load', { url, start: opts && opts.start, referer: opts && opts.referer }),
+    // url = absolute path or http(s) URL; opts.referer = optional Referer for hotlink-protected links
+    load: (url, opts) => ipcRenderer.send('player:load', { url, referer: opts && opts.referer }),
     openSite: (url) => ipcRenderer.send('player:openSite', { url }), // yt-dlp resolve in main
     onNotice: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('player:notice', h); return () => ipcRenderer.removeListener('player:notice', h); },
     setProperty: (name, value) => ipcRenderer.send('player:setProperty', { name, value }),
@@ -19,11 +19,8 @@ contextBridge.exposeInMainWorld('soda', {
     pause: () => ipcRenderer.send('player:setProperty', { name: 'pause', value: true }),
     seek: (t) => ipcRenderer.send('player:setProperty', { name: 'time-pos', value: t }),
     stop: () => ipcRenderer.send('player:command', { args: ['stop'] }),
-    frameStep: () => ipcRenderer.send('player:command', { args: ['frame-step'] }),
     setVolume: (frac) => ipcRenderer.send('player:setProperty', { name: 'volume', value: frac * 100 }), // ×100
     setMuted: (b) => ipcRenderer.send('player:setProperty', { name: 'mute', value: !!b }),
-    setAudioTrack: (i) => ipcRenderer.send('player:setProperty', { name: 'aid', value: i + 1 }),       // n+1
-    setSubtitleTrack: (i) => ipcRenderer.send('player:setProperty', { name: 'sid', value: i === null ? 'no' : i + 1 }),
     addSubtitleFile: (p, opts) => { // select it immediately in mpv AND register it so casts carry it
       ipcRenderer.send('player:command', { args: ['sub-add', p, 'select'] });
       ipcRenderer.send('subtitle:external', { path: p, lang: opts && opts.lang, name: opts && opts.name });
@@ -71,7 +68,6 @@ contextBridge.exposeInMainWorld('soda', {
     seek: (t) => ipcRenderer.send('airplay:seek', { t }),
     setVolume: (f) => ipcRenderer.send('airplay:setVolume', { f }),
     stop: () => ipcRenderer.send('airplay:stop'),
-    stat: () => ipcRenderer.invoke('airplay:stat'),
     mediaTracks: () => ipcRenderer.invoke('airplay:mediaTracks'), // {audio:[{name,selected}], subs:[...]}
     selectAudio: (i) => ipcRenderer.send('airplay:selectMedia', { kind: 'audio', index: i }),
     selectSubtitle: (i) => ipcRenderer.send('airplay:selectMedia', { kind: 'subs', index: i }), // -1 = off
@@ -169,7 +165,6 @@ contextBridge.exposeInMainWorld('soda', {
   },
 
   pathForFile: (file) => webUtils.getPathForFile(file), // drag-drop → absolute path
-  getVersions: () => ipcRenderer.invoke('app:getVersions'),
   // Magnet/link auto-paste. The clipboard is read in the main process: a sandboxed preload cannot touch it.
   readClipboard: () => { try { return String(ipcRenderer.sendSync('clipboard:readText') || ''); } catch (e) { return ''; } },
   vpnStatus: () => ipcRenderer.invoke('vpn:status') // {active, name} — kill-switch check

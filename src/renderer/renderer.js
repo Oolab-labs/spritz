@@ -30,16 +30,6 @@ function isDirectMedia(u) {
   try { return /\.(mp4|mkv|webm|mov|avi|m4v|flv|ts|wmv|mpg|mpeg|ogv|m3u8|mpd|m2ts|mp3|aac|flac|wav|ogg|opus)$/i.test(new URL(u).pathname); }
   catch (e) { return false; }
 }
-// Synchronous "this source is plausibly castable" check — lets the cast/AirPlay buttons appear the
-// instant a local/direct file loads, WITHOUT waiting on the async serveHls/probe to flip `castable`
-// (the cast button shows on source+device, never on a per-file resolution). Excludes
-// torrents (the head must download first → rely on real `castable` + the retry) and stream-site pages.
-function pathLooksCastable(src) {
-  const s = String(src || '');
-  if (!s || isTorrentSrc(s)) return false;
-  if (/^https?:\/\//i.test(s)) return isDirectMedia(s);
-  return /\.(mp4|m4v|mov|mkv|avi|ts|m2ts|webm|wmv|flv|mpg|mpeg|ogv)$/i.test(s.replace(/^file:\/\//, '').split(/[?#]/)[0]);
-}
 
 // ---- elements ----
 const home = $('#home'), player = $('#player'), controls = $('#controls'), spinner = $('#spinner');
