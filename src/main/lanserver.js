@@ -1678,13 +1678,6 @@ module.exports = function createLanServer(opts) {
         // taking 4K means giving both up: one muxed audio track, no subtitle renditions, bare media
         // playlist. That is why the ambitious profile stays opt-in — it buys native 2160p HDR10 at a
         // fraction of the CPU, and it costs the track menus. The default path is untouched.
-        // NOTE the finding this was built on is now suspect. "A master playlist is always refused for
-        // a 4K HEVC copy (-12927)" was measured while EVERY playlist still carried the spurious
-        // leading #EXT-X-DISCONTINUITY that append_list emitted — the same defect that produced -12312
-        // everywhere else. With that gone the master may well be fine, and a master is what carries
-        // the audio and subtitle renditions the TV remote switches between. So 4K now keeps its
-        // renditions by default; SPRITZ_AIRPLAY_BARE=1 restores the stripped-down playlist if the
-        // receiver really does refuse the master.
         // CONFIRMED by A/B on hardware, after the append_list discontinuity bug was fixed and could no
         // longer be the explanation: a 4K HEVC copy behind a master playlist is refused at load
         // (status=failed, EMPTY error log — nothing fetched), while the SAME copy served as a bare
@@ -1694,9 +1687,8 @@ module.exports = function createLanServer(opts) {
         // A master is what carries the audio and subtitle renditions the TV remote switches between,
         // so 4K and the track menus are mutually exclusive on this receiver. That is a real tradeoff,
         // not a bug to fix: SPRITZ_AIRPLAY_4K=1 buys native 2160p HDR10 at a fraction of the CPU and
-        // costs the menus; the default 1080p path keeps them. SPRITZ_AIRPLAY_MASTER4K=1 forces a
-        // master anyway, for re-testing this against a future receiver or firmware.
-        const bare4k = took4k && process.env.SPRITZ_AIRPLAY_MASTER4K !== '1';
+        // costs the menus; the default 1080p path keeps them.
+        const bare4k = took4k;
         if (bare4k && (info && info.audio.length > 1 || allSubSources.length)) {
           clog('AirPlay 4K: serving a bare media playlist — one audio track, no subtitle renditions ' +
             '(a master playlist is refused for a 4K HEVC copy; the variant alone plays)');
@@ -1714,10 +1706,8 @@ module.exports = function createLanServer(opts) {
           ? ['-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5', '-rw_timeout', String(HTTP_READ_TIMEOUT_US)]
           : [];
         const finalizeReceiver = !!(sourceAudio && opts && opts.receiverSubtitles === true);
-        const inputStart = sourceAudio && opts ? require('./receiver-audio-plan').nearInputStart(opts.receiverInputStartSec, info && info.dur, transcode) : 0;
-        if (inputStart > 0) inOpts.push('-ss', String(inputStart), '-copyts');
         if (finalizeReceiver) inOpts.unshift('-xerror');
-        const hlsOpts = [...(inputStart > 0 ? ['-avoid_negative_ts', 'disabled'] : []), '-hls_segment_type', 'fmp4', '-hls_time', '2', '-hls_list_size', '0',
+        const hlsOpts = ['-hls_segment_type', 'fmp4', '-hls_time', '2', '-hls_list_size', '0',
           // NO append_list. Measured against the bundled ffmpeg: on a COMPLETELY FRESH directory,
           // append_list emits a leading #EXT-X-DISCONTINUITY before segment 0, where omit_endlist
           // alone emits none. That tag sets segment 0's discontinuity sequence to 1, and AVFoundation
@@ -1827,9 +1817,12 @@ module.exports = function createLanServer(opts) {
         const myDir = hlsDir, tok = myToken, m3u8 = path.join(myDir, playlist);
         const primaryMode = transcode ? 'hw' : 'copy';
         let settled = false, triedFallback = false;
-        let timelineOrigin = inputStart > 0 ? null : 0, originPending = false, producerExit = null;
+        // Preparation always starts at the head of the source, so the transport timeline begins at 0.
+        // It is still announced: Spritz Receiver 0.4.0 validates timelineOrigin in the load message.
+        const timelineOrigin = 0;
+        let producerExit = null;
         const finalizePlaylist = () => {
-          if (!finalizeReceiver || !producerExit || timelineOrigin === null || hlsToken !== tok) return;
+          if (!finalizeReceiver || !producerExit || hlsToken !== tok) return;
           try {
             const complete = require('./receiver-hls-finalize').completedPlaylist(fs.readFileSync(m3u8, 'utf8'), info.dur - timelineOrigin, producerExit.code, producerExit.signal);
             if (complete) { fs.writeFileSync(m3u8 + '.complete', complete); fs.renameSync(m3u8 + '.complete', m3u8); }
@@ -1839,17 +1832,6 @@ module.exports = function createLanServer(opts) {
 
         const ready = () => {
           if (!(countSegs(myDir) > 0 && safeStat(m3u8))) return false;
-          if (timelineOrigin === null) {
-            if (!originPending) {
-              originPending = true;
-              cancelTracks = probeFirstPts('concat:' + path.join(myDir, 'init.mp4') + '|' + path.join(myDir, 'seg00000.m4s'), pts => {
-                if (cancelled || finished || hlsToken !== tok) return;
-                if (!Number.isFinite(pts) || pts < 0 || pts > inputStart + 2) { cancel(); return; }
-                timelineOrigin = pts; finalizePlaylist();
-              });
-            }
-            return false;
-          }
           finalizePlaylist();
           if (!opts || typeof opts.receiverStartSec !== 'function') return true;
           try { return require('./hls-start-position').coversPosition(fs.readFileSync(m3u8, 'utf8'), opts.receiverStartSec() - timelineOrigin); }
@@ -1900,24 +1882,12 @@ module.exports = function createLanServer(opts) {
           const fail = (reason, code, signal) => {
             if (settled || hlsToken !== tok) return;
             if (sourceAudio) clog('receiver HLS preparation failed ' + JSON.stringify({
-              reason, mode, audioIndex: sourceAudio.index, inputStart,
+              reason, mode, audioIndex: sourceAudio.index,
               elapsedMs: Date.now() - hlsStartedAt, firstSegmentMs, segments: lastSegs,
               idleMs: Date.now() - lastProgressAt,
               ...preparationDiagnostics.summarize({ timedOut: reason === 'no-segment-progress', bytes: 0, code, signal })
             }));
             clearInterval(tick);
-            if (inputStart > 0) {
-              const failure = preparationDiagnostics.summarize({ code, signal, bytes: 0 });
-              if (failure.category === 'timestamp-or-mux-error') {
-                // Dispose this candidate before the caller starts the origin retry. The
-                // receiver's previous producer belongs to a different transport instance.
-                settled = true;
-                if (hlsPreparation === cancel) hlsPreparation = null;
-                cancelHls();
-                cb(null, [], { retryFromOrigin: true });
-              } else cancel();
-              return;
-            } // retain prior stream; no unmapped encoder fallback
             // A 4K copy that wedged must go back to the proven profile, NOT to a 4K software encode.
             // This retry re-plans first, so the relaunch is the ordinary 1080p H.264 path.
             if (retreatFrom4k()) {
@@ -1956,9 +1926,6 @@ module.exports = function createLanServer(opts) {
           ff.stderr.on('data', chunk => {
             if (ff !== hlsProc || settled || hlsToken !== tok) return;
             preparationDiagnostics.capture(chunk);
-            // A failed mux thread can leave FFmpeg's input thread alive. Do not
-            // wait for the progress watchdog when this candidate is already fatal.
-            if (inputStart > 0 && preparationDiagnostics.hasTerminalMuxFailure()) fail('mux-error');
           });
           // A SUPERSEDED process (e.g. the hw ffmpeg SIGKILLed when launching the sw fallback) must NOT
           // re-enter fail()/cancelHls() — that would tear down the brand-new process. Gate on the event
@@ -1979,7 +1946,7 @@ module.exports = function createLanServer(opts) {
             if (settled || hlsToken !== tok) return;
             // ffmpeg exited before we observed readiness. If it actually finished writing (a short
             // clip), the segments exist → let the next tick settle it; otherwise it failed → fail().
-            try { if (ready() || originPending && timelineOrigin === null) return; } catch (e) {}
+            try { if (ready()) return; } catch (e) {}
             fail('producer-exit', code, signal);
           });
         }

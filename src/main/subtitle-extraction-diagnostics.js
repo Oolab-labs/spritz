@@ -14,13 +14,11 @@ function classify(stderr, { timedOut, bytes, code, signal }) {
   return 'no-output';
 }
 function createDiagnostics(redactions = []) {
-  let tail = '', terminalMuxFailure = false;
+  let tail = '';
   return {
     capture(chunk) {
       tail = (tail + String(chunk)).slice(-4096);
-      if (/error muxing a packet|error submitting a packet to the muxer/i.test(tail)) terminalMuxFailure = true;
     },
-    hasTerminalMuxFailure() { return terminalMuxFailure; },
     summarize(facts) {
       let safe = tail;
       for (const value of redactions) if (value) safe = safe.split(String(value)).join('[source]');

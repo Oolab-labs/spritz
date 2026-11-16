@@ -1807,12 +1807,11 @@ if (!gotLock) {
       timer = setTimeout(() => finish({ ok: false, why: 'Audio preparation timed out; previous stream retained' }), 60000);
       send('receiver-event', { type: 'track-pending', receiverId, pending: true });
       let preparationAttempt = 0;
-      const prepare = inputStart => {
+      const prepare = () => {
         const attempt = ++preparationAttempt;
         transport.serveHls(owner.src, (url, subtitles, metadata) => {
           if (finished || attempt !== preparationAttempt) return;
           if (!current()) return cancel();
-          if (!url && metadata && metadata.retryFromOrigin === true && inputStart > 0) return prepare(0);
           if (!url || !metadata) return finish({ ok: false, why: 'Audio preparation failed; previous stream retained' });
           // A fresh presentation identity rejects delayed reports/commands from the previous URL.
           const mediaId = require('crypto').randomBytes(8).toString('hex');
@@ -1843,12 +1842,11 @@ if (!gotLock) {
           finish({ ok: true, mediaId });
         }, { caps: svc.profile(receiverId), sourceSelectedAudio: true, audioTrack: index,
           sideloadSubs: true, receiverSubtitles: true, extraSubs: externalSubs,
-          receiverInputStartSec: inputStart,
           receiverSourceWaiting: () => receiverSourceWaiting(owner.src, generation),
           receiverStartSec: () => seekPosition !== null ? seekPosition : Number.isFinite(owner.position) ? owner.position : position });
       };
       try {
-        prepare(require('./receiver-preparation-policy').receiverFeatures(process.env).nearAudio && svc.supportsLogicalTimeline && svc.supportsLogicalTimeline(receiverId) ? Math.max(0, position - 20) : 0);
+        prepare();
       } catch (e) { finish({ ok: false, why: e.message || 'Audio preparation failed' }); }
     });
   }
@@ -1858,9 +1856,6 @@ if (!gotLock) {
   // moved to the new transport — through svc.play, so shouldLoad decides the LOAD, as always.
   function seekReceiver(receiverId, logicalSec) {
     if (!Number.isFinite(logicalSec) || logicalSec < 0) return { ok: false, why: 'invalid seek position' };
-    if (receiverPlan && receiverPlan.receiverId === receiverId && Number.isFinite(receiverPlan.timelineOrigin) && logicalSec < receiverPlan.timelineOrigin) {
-      return switchReceiverAudio(receiverId, { mediaId: receiverPlan.mediaId, epoch: receiverPlan.epoch, trackId: 'source-audio-' + receiverPlan.selectedAudio, seekSec: logicalSec });
-    }
     const intent = retireReceiverIntent(), generation = loadGen, owner = receiverPlan;
     const svc = startReceivers();
     const mediaLan = owner && owner.transport || lan;

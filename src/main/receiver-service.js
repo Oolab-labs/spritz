@@ -258,7 +258,6 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
     h.on('capabilities', ({ sessionId, msg }) => {
       const s = sessions.get(sessionId);
       if (!s || !s.authenticated) return;
-      s.logicalTimeline = msg.reported && msg.reported.logicalTimeline === 1;
       s.profile = require('./device-profile').fromReceiver(msg.reported, s.receiverId);
       log(R.short(s.receiverId) + ' reported decoder profile: ' + s.profile.maxHeight + 'p, HEVC4K=' + s.profile.hevc4k);
     });
@@ -600,7 +599,6 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
     const selected = s.tracks && s.tracks.subtitles.find(t => t.selected);
     return selected ? selected.id : 'off';
   };
-  ev.supportsLogicalTimeline = id => { const live = sessionFor(id); return !!(live && live.s.logicalTimeline); };
   ev.profile = (id) => { const live = sessionFor(id); return live ? live.s.profile || null : null; };
   ev.targets = list;
   ev.pending = () => (hub ? targets.pendingFrom({ pending: hub.pending() }) : []);
