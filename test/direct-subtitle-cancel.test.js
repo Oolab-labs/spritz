@@ -19,31 +19,34 @@ function fixture() {
   vm.createContext(ctx);
   vm.runInContext(source.slice(source.indexOf('  const directSubJobs ='), source.indexOf('  function teardown()')) + '\nthis.prepare = prepareDirectSubs; this.cancel = cancelDirectSubJobs;', ctx);
   return { ctx, probes, children, results, serves, disposed, registrations, removed, cancel: ctx.cancel,
-    prepare: (isFile, extra = []) => ctx.prepare('/movie', isFile, extra, (tracks) => results.push(tracks)) };
+    prepare: (extra = []) => ctx.prepare('/movie', extra, (tracks) => results.push(tracks)),
+    // External files only: the track probe answers with no embedded text subs, so every producer
+    // below is an external .srt conversion.
+    prepareExternal: (extra) => { const cancel = ctx.prepare('/movie', extra, (tracks) => results.push(tracks)); probes[0]({ subs: [] }); return cancel; } };
 }
 test('subtitle cancel during track probing prevents extraction', () => {
-  const f = fixture(); f.prepare(true); f.cancel(); f.probes[0]({ subs: [{ idx: 0 }] });
+  const f = fixture(); f.prepare(); f.cancel(); f.probes[0]({ subs: [{ idx: 0 }] });
   assert.equal(f.children.length, 0); assert.equal(f.disposed.length, 1); assert.equal(f.results.length, 0);
 });
 test('subtitle cancellation kills all owned children and suppresses publication', () => {
-  const f = fixture(); f.prepare(false, [{ path: '/a.srt' }, { path: '/b.srt' }]); f.cancel();
+  const f = fixture(); f.prepareExternal([{ path: '/a.srt' }, { path: '/b.srt' }]); f.cancel();
   assert.deepEqual(f.children.map((c) => c.kills), [1, 1]);
   f.children[0].emit('close', 0); assert.equal(f.serves.length, 0); assert.equal(f.results.length, 0);
 });
 test('error followed by close cannot prematurely finish a multi-track job', () => {
-  const f = fixture(); f.prepare(false, [{ path: '/a.srt' }, { path: '/b.srt' }]);
+  const f = fixture(); f.prepareExternal([{ path: '/a.srt' }, { path: '/b.srt' }]);
   f.children[0].emit('error', new Error('failed')); f.children[0].emit('close', 1);
   assert.equal(f.results.length, 0);
   f.children[1].emit('close', 0); f.serves[0]('subtitle-url');
   assert.equal(f.results.length, 1); assert.equal(f.results[0].length, 1);
 });
 test('cancel while file registration waits rejects its late URL', () => {
-  const f = fixture(); f.prepare(false, [{ path: '/a.srt' }]); f.children[0].emit('close', 0);
+  const f = fixture(); f.prepareExternal([{ path: '/a.srt' }]); f.children[0].emit('close', 0);
   f.cancel(); f.serves[0]('late-url'); assert.equal(f.results.length, 0);
 });
 
 test('subtitle cancellation retires every pending file registration', () => {
-  const f = fixture(); f.prepare(false, [{ path: '/a.srt' }, { path: '/b.srt' }]);
+  const f = fixture(); f.prepareExternal([{ path: '/a.srt' }, { path: '/b.srt' }]);
   for (const child of f.children) child.emit('close', 0);
   f.cancel();
   assert.deepEqual(f.registrations.map(job => job.cancelled), [true, true]);
@@ -51,7 +54,7 @@ test('subtitle cancellation retires every pending file registration', () => {
 });
 
 test('duplicate producer close during registration cannot publish a second track', () => {
-  const f = fixture(); f.prepare(false, [{ path: '/a.srt' }, { path: '/b.srt' }]);
+  const f = fixture(); f.prepareExternal([{ path: '/a.srt' }, { path: '/b.srt' }]);
   f.children[0].emit('close', 0); f.children[0].emit('close', 0);
   assert.equal(f.serves.length, 1);
   f.serves[0]('a-url'); f.serves[0]('duplicate-url');
@@ -61,7 +64,7 @@ test('duplicate producer close during registration cannot publish a second track
 });
 
 test('late producer error after successful close cannot settle pending registration', () => {
-  const f = fixture(); f.prepare(false, [{ path: '/a.srt' }, { path: '/b.srt' }]);
+  const f = fixture(); f.prepareExternal([{ path: '/a.srt' }, { path: '/b.srt' }]);
   f.children[0].emit('close', 0); f.children[0].emit('error', new Error('late'));
   f.children[1].emit('close', 0); f.serves[1]('b-url');
   assert.equal(f.results.length, 0);
@@ -72,19 +75,19 @@ test('late producer error after successful close cannot settle pending registrat
 test('reentrant retirement disposes a subtitle probe handle returned after cancellation', () => {
   const f = fixture(); let disposed = 0;
   f.ctx.probeTracks = (_, cb) => { f.cancel(); cb({ subs: [{ idx: 0 }] }); return () => disposed++; };
-  f.prepare(true);
+  f.prepare();
   assert.equal(disposed, 1); assert.equal(f.children.length, 0); assert.equal(f.results.length, 0);
 });
 
 test('synchronous successful subtitle completion does not cancel its returned probe handle', () => {
   const f = fixture(); let disposed = 0;
   f.ctx.probeTracks = (_, cb) => { cb({ subs: [] }); return () => disposed++; };
-  const cancel = f.prepare(true); cancel();
+  const cancel = f.prepare(); cancel();
   assert.equal(disposed, 0); assert.equal(f.results.length, 1);
 });
 
 test('duplicate track probe results cannot start a second subtitle extraction batch', () => {
-  const f = fixture(); f.prepare(true);
+  const f = fixture(); f.prepare();
   f.probes[0]({ subs: [{ idx: 0, name: 'first' }] });
   f.probes[0]({ subs: [{ idx: 1, name: 'duplicate' }] });
   assert.equal(f.children.length, 1);
@@ -94,7 +97,7 @@ test('duplicate track probe results cannot start a second subtitle extraction ba
 });
 
 test('failed subtitle output is removed without deleting a successful completed track', () => {
-  const f = fixture(); f.prepare(false, [{ path: '/a.srt' }, { path: '/b.srt' }]);
+  const f = fixture(); f.prepareExternal([{ path: '/a.srt' }, { path: '/b.srt' }]);
   f.children[0].emit('close', 1);
   assert.deepEqual(f.removed, ['/owned/subs/1.vtt']);
   f.children[1].emit('close', 0); f.serves[0]('b-url');
@@ -109,13 +112,13 @@ test('subtitle retirement terminates a real local producer and removes its parti
   let child, closed = false, results = 0, publications = 0;
   t.after(() => { if (child && !closed) child.kill('SIGKILL'); fs.rmSync(root, { recursive: true, force: true }); });
   const ctx = { path, fs, remuxRoot: root, FFMPEG: 'controlled-producer', newToken: () => 'owned',
-    sniffCharenc: () => 'UTF-8', serve: () => publications++, spawn: (_, args) => {
+    sniffCharenc: () => 'UTF-8', serve: () => publications++, probeTracks: (_, cb) => { cb({ subs: [] }); return () => {}; }, spawn: (_, args) => {
       child = spawn(process.execPath, ['-e', 'require("fs").writeFileSync(process.argv[1], "partial subtitle"); process.stdout.write("ready"); setInterval(() => {}, 1000);', args.at(-1)]);
       child.once('close', () => { closed = true; }); return child;
     } };
   vm.createContext(ctx);
   vm.runInContext(source.slice(source.indexOf('  const directSubJobs ='), source.indexOf('  function teardown()')) + '\nthis.prepare = prepareDirectSubs;', ctx);
-  const cancel = ctx.prepare('/film', false, [{ path: '/subtitle.srt' }], () => results++);
+  const cancel = ctx.prepare('/film', [{ path: '/subtitle.srt' }], () => results++);
   await once(child.stdout, 'data');
   const output = path.join(root, 'subs', 'owned.vtt');
   assert.equal(fs.existsSync(output), true);

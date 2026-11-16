@@ -133,24 +133,3 @@ test('native AirPlay resolves a torrent through the token proxy', () => {
   ctx.resolve(input, url => results.push(url));
   assert.deepEqual(results, [issued]); assert.deepEqual(calls, [{ url: input, type: 'video/mp4' }]);
 });
-
-test('probed direct casts also use the token proxy and cancel pending registration', () => {
-  const lanSource = fs.readFileSync(path.join(appRoot, 'src/main/lanserver.js'), 'utf8');
-  const input = 'http://localhost:1234/webtorrent/' + 'a'.repeat(40) + '/movie.mp4';
-  const results = [], registrations = [], probes = [];
-  let disposed = 0;
-  const ctx = { path, VIDEO_OK: new Set(['h264']), AUDIO_OK: new Set(['aac']),
-    lanAddress: () => '192.0.2.1', probe: (_, cb) => { probes.push(cb); },
-    serveDlna: (url, type, cb) => { registrations.push({ url, type, cb }); return () => disposed++; } };
-  vm.createContext(ctx);
-  vm.runInContext(lanSource.slice(lanSource.indexOf('  const directPreparations ='), lanSource.indexOf('  // Extract embedded text subtitle tracks')) + '\nthis.prepare = prepareCast;', ctx);
-  const cancel = ctx.prepare(input, false, url => results.push(url));
-  probes[0]({ vcodec: 'h264', acodec: 'aac' });
-  assert.equal(registrations.length, 1); assert.equal(registrations[0].url, input);
-  cancel(); registrations[0].cb('late-token-url');
-  assert.equal(disposed, 1); assert.deepEqual(results, [null]);
-  ctx.prepare(input, false, url => results.push(url));
-  probes[1]({ vcodec: 'h264', acodec: 'aac' });
-  registrations[1].cb('token-url');
-  assert.deepEqual(results, [null, 'token-url']);
-});

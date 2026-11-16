@@ -1280,7 +1280,7 @@ if (!gotLock) {
       }
       // MP4/MOV: direct-serve if already compatible, else live HLS (fast) instead of a slow full
       // remux — so a 4K MP4 with TrueHD/DTS audio still becomes castable in seconds, not minutes.
-      return mediaLan.prepareCast(filePath, true, cb, (input, c) => mediaLan.serveHls(input, c, hlsOpts()), { extraSubs: externalSubs, directSubs: !!forCast });
+      return mediaLan.prepareCast(filePath, cb, (input, c) => mediaLan.serveHls(input, c, hlsOpts()), { extraSubs: externalSubs, directSubs: !!forCast });
     }
     cb(null);
   }
