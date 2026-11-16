@@ -822,6 +822,21 @@ test('service Stop preserves a corrupt store when quarantine fails', (t) => {
   } finally { svc.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Nothing in the application listens for an 'error' event on the service, and an EventEmitter
+// throws when 'error' is emitted with no listener. A full or read-only disk must be logged and
+// shrugged off, not turned into an exception out of stop() (or out of any future persist caller).
+test('a failed trust-store write is logged, and Stop neither throws nor skips its own log', (t) => {
+  const dir = tmpdir(), file = path.join(dir, 'receivers.json'), logs = [];
+  const svc = createReceiverService({ storePath: file, beaconPort: 0, onLog: (m) => logs.push(m) });
+  try {
+    svc.start();
+    t.mock.method(store, 'save', () => { throw new Error('disk full'); });
+    assert.doesNotThrow(() => svc.stop());
+    assert.ok(logs.some((m) => /could not save the trust store — disk full/.test(m)), 'the failure is logged');
+    assert.equal(logs[logs.length - 1], 'receiver: stopped');
+  } finally { t.mock.restoreAll(); svc.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 
 test('retired LAN subscription cannot attach the restarted receiver service', () => {
   const { EventEmitter } = require('events');
