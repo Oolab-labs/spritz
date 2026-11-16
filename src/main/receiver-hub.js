@@ -162,11 +162,6 @@ function createReceiverHub({ onLog, registry, onRegistryChange, maxConnections =
     // ping failed to write — measured at 20,004ms, two ping intervals, during which the Mac still
     // believed a film was playing on a television that had gone.
     socket.on('end', () => drop(sessionId, 'receiver ended the connection'));
-    // 'end' as well as 'close', and this is not belt-and-braces. A socket taken from an HTTP
-    // upgrade is half-open capable: the peer's FIN raises 'end', and with the writable side still
-    // open 'close' does not follow. Without this the departure was only noticed when a keepalive
-    // ping failed to write — measured at 20,004ms, two ping intervals, during which the Mac still
-    // believed a film was playing on a television that had gone.
 
     hub.emit('connected', { sessionId, send: (m) => send(sessionId, m) });
     send(sessionId, proto.hello(sessionId, { nonce: conn.nonce }));
@@ -184,9 +179,6 @@ function createReceiverHub({ onLog, registry, onRegistryChange, maxConnections =
       log('receiver: refused ' + msg.type + ' from unauthenticated session ' + sessionId.slice(0, 8));
       return;
     }
-
-    if (msg.type === 'ping') return void send(sessionId, proto.pong(sessionId, { nonce: msg.nonce }));
-    if (msg.type === 'pong') return;
 
     if (msg.type === 'hello') {
       if (conn.state === STATE.AUTHENTICATED && msg.receiverId && msg.receiverId !== conn.receiverId) {
@@ -208,7 +200,6 @@ function createReceiverHub({ onLog, registry, onRegistryChange, maxConnections =
     if (msg.type === 'auth') return void handleAuth(conn, msg);
     if (msg.type === 'pair.request') return void handlePairRequest(conn, msg);
 
-    hub.emit('message', { sessionId, msg, receiver: conn.receiver });
     hub.emit(msg.type, { sessionId, msg, receiver: conn.receiver });
   }
 
@@ -250,11 +241,15 @@ function createReceiverHub({ onLog, registry, onRegistryChange, maxConnections =
     hub.emit('authenticated', { sessionId, receiverId: r.receiverId, receiver: conn.receiver });
     // Only now is the greeting worth acting on. Replaying it here means the controller's normal
     // hello path — including shouldLoad's do-not-reload rule — runs exactly once, after trust.
-    if (conn.receiver) {
-      const greeting = Object.assign({ v: proto.PROTOCOL_VERSION, type: 'hello', sid: sessionId, t: Date.now(), role: 'receiver' }, conn.receiver);
-      hub.emit('message', { sessionId, msg: greeting, receiver: conn.receiver });
-      hub.emit('hello', { sessionId, msg: greeting, receiver: conn.receiver });
-    }
+    replayHello(conn);
+  }
+
+  // The greeting a socket sent before it was trusted, delivered once trust exists. One helper for
+  // both ways of earning trust (a proof, or a human approving a pairing) so the two cannot drift.
+  function replayHello(conn) {
+    if (!conn.receiver) return;
+    const greeting = Object.assign({ v: proto.PROTOCOL_VERSION, type: 'hello', sid: conn.sessionId, t: Date.now(), role: 'receiver' }, conn.receiver);
+    hub.emit('hello', { sessionId: conn.sessionId, msg: greeting, receiver: conn.receiver });
   }
 
   function handlePairRequest(conn, msg) {
@@ -313,10 +308,7 @@ function createReceiverHub({ onLog, registry, onRegistryChange, maxConnections =
     send(r.sessionId, proto.pairAccepted(r.sessionId, { receiverId: r.receiverId, token: r.token,
       displayName: (conn.receiver && conn.receiver.name) || null }));
     hub.emit('paired', { sessionId: r.sessionId, receiverId: r.receiverId });
-    if (conn.receiver) {
-      const greeting = Object.assign({ v: proto.PROTOCOL_VERSION, type: 'hello', sid: r.sessionId, t: Date.now(), role: 'receiver' }, conn.receiver);
-      hub.emit('hello', { sessionId: r.sessionId, msg: greeting, receiver: conn.receiver });
-    }
+    replayHello(conn);
     return { ok: true, receiverId: r.receiverId };
   }
 
@@ -343,11 +335,8 @@ function createReceiverHub({ onLog, registry, onRegistryChange, maxConnections =
 
   hub.confirmPairing = confirmPairing;
   hub.revoke = revoke;
-  hub.registry = reg;
   hub.pending = () => R.pendingList(reg);
-  hub.receivers = () => R.listReceivers(reg);
   hub.isAuthenticated = (sessionId) => (conns.get(sessionId) || {}).state === STATE.AUTHENTICATED;
-  hub.stateOf = (sessionId) => (conns.get(sessionId) || {}).state || null;
   hub.attach = attach;
   hub.handleUpgrade = handleUpgrade;
   hub.send = send;
@@ -365,4 +354,3 @@ function createReceiverHub({ onLog, registry, onRegistryChange, maxConnections =
 
 module.exports = createReceiverHub;
 module.exports.PATH = PATH;
-module.exports.STATE = STATE;

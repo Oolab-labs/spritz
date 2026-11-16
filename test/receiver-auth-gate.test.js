@@ -143,16 +143,6 @@ test('the hub refuses to send playback commands to an unauthenticated receiver',
   });
 });
 
-test('an unpaired receiver may still ping', async () => {
-  await withHub(async ({ port }) => {
-    const { c, hello } = await greet(port, 'intruder-1');
-    c.send(proto.ping(hello.sid, { nonce: 'n1' }));
-    const pong = await c.next('pong');
-    assert.equal(pong.nonce, 'n1');
-    c.close();
-  });
-});
-
 // ---- pairing over the wire --------------------------------------------------------------------
 
 test('pairing: request, code, confirm, credential', async () => {

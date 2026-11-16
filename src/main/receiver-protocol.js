@@ -17,14 +17,14 @@ const PROTOCOL_VERSION = 1;
 
 // Mac -> TV. The Mac is authoritative for media preparation, so every one of these is an
 // instruction about playback, never about how to obtain or decode the media.
-const COMMANDS = ['hello', 'load', 'play', 'pause', 'seek', 'stop', 'ping',
+const COMMANDS = ['hello', 'load', 'play', 'pause', 'seek', 'stop',
   // Pairing and authentication. Dotted names because they are a family rather than seven unrelated
   // verbs, and because a log line reading `pair.challenge` explains itself.
   'select-track', 'pair.challenge', 'pair.accepted', 'pair.declined', 'auth.ok', 'auth.failed'];
 
 // TV -> Mac. These are OBSERVATIONS. The receiver reports what its own player did; it does not
 // assert what Spritz should do next.
-const EVENTS = ['hello', 'ready', 'loaded', 'state', 'position', 'error', 'pong', 'capabilities',
+const EVENTS = ['hello', 'ready', 'loaded', 'state', 'position', 'error', 'capabilities',
   'tracks', 'select-track', 'pair.request', 'auth'];
 
 // What an UNAUTHENTICATED socket may say. Everything else is refused before it reaches a listener.
@@ -33,10 +33,11 @@ const EVENTS = ['hello', 'ready', 'loaded', 'state', 'position', 'error', 'pong'
 // in the hub: a reader deciding whether a new message type is safe pre-authentication should find
 // the answer next to the message definitions, not buried in a socket handler.
 //
-// `hello` and the pairing exchange are the point. `ping`/`pong` are here because liveness must work
-// before trust — an unpaired television sitting on the pairing screen still has to be detectable as
-// present or gone.
-const PRE_AUTH_ALLOWED = ['hello', 'ping', 'pong', 'pair.request', 'auth'];
+// `hello` and the pairing exchange are the point. Liveness is deliberately NOT a message here: it runs
+// on the WebSocket's own ping/pong control frames, which receiver-hub answers before any JSON is
+// parsed, so an unpaired television sitting on the pairing screen is still detectable as present or
+// gone without widening this list.
+const PRE_AUTH_ALLOWED = ['hello', 'pair.request', 'auth'];
 
 // Commands the hub must never send to a socket that has not authenticated. Media URLs are the ones
 // that matter: they are the private thing this channel hands out.
@@ -77,12 +78,10 @@ function envelope(type, sessionId, fields, now) {
 // The Mac greets first, naming the protocol it speaks. A receiver that cannot speak this major
 // version should say so in its own hello rather than failing silently.
 // `nonce` is per-connection and single-use: it is what makes a captured proof worthless on the next
-// socket. `auth: 'required'` states the expectation explicitly rather than leaving a receiver to
-// infer it, so a future receiver on another platform cannot quietly skip authenticating.
+// socket.
 const hello = (sessionId, { name, nonce, now } = {}) =>
   envelope('hello', sessionId, {
-    role: 'controller', name: name || 'Spritz', accepts: EVENTS.slice(),
-    auth: 'required', nonce: nonce == null ? null : String(nonce)
+    role: 'controller', name: name || 'Spritz', nonce: nonce == null ? null : String(nonce)
   }, now);
 
 // `url` is an HLS media or master playlist the Mac is already serving. The receiver is not told how
@@ -120,8 +119,6 @@ const stop = (sessionId, { now } = {}) => envelope('stop', sessionId, {}, now);
 // is — see the receiver app.
 const seek = (sessionId, { toSec, now } = {}) =>
   envelope('seek', sessionId, { toSec: isFiniteNum(toSec) ? toSec : 0 }, now);
-
-const ping = (sessionId, { nonce, now } = {}) => envelope('ping', sessionId, { nonce: nonce == null ? null : String(nonce) }, now);
 
 // ---- TV -> Mac -------------------------------------------------------------------------------
 
@@ -181,8 +178,6 @@ const error = (sessionId, { mediaId, epoch, code, message, fatal, now } = {}) =>
     message: message == null ? null : String(message),
     fatal: !!fatal
   }, now);
-
-const pong = (sessionId, { nonce, now } = {}) => envelope('pong', sessionId, { nonce: nonce == null ? null : String(nonce) }, now);
 
 // What the receiver believes it can do. REPORTED, in device-profile.js's ranking — weaker than
 // `observed`, and the hub must never file it as the latter. Only media that actually played writes
@@ -286,6 +281,6 @@ module.exports = {
   PROTOCOL_VERSION, STATES, PRE_AUTH_ALLOWED, POST_AUTH_ONLY,
   pairChallenge, pairAccepted, pairDeclined, auth, authOk, authFailed,
   envelope, parse, serialize,
-  hello, load, play, pause, seek, stop, ping,
-  helloFrom, loaded, state, position, error, pong, capabilities
+  hello, load, play, pause, seek, stop,
+  helloFrom, loaded, state, position, error, capabilities
 };

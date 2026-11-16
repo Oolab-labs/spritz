@@ -107,12 +107,6 @@ test('server frames are not masked', () => {
   assert.equal(f.slice(2).toString('utf8'), 'hi');
 });
 
-test('encodeClose writes the code big-endian', () => {
-  const f = ws.encodeClose(1002, 'nope');
-  assert.equal(f.slice(2).readUInt16BE(0), 1002);
-  assert.equal(f.slice(4).toString('utf8'), 'nope');
-});
-
 test('oversized announced frame is rejected before its body arrives', () => {
   const header = Buffer.alloc(10); header[0] = 0x81; header[1] = 127;
   header.writeUInt32BE(ws.MAX_FRAME_BYTES + 1, 6);

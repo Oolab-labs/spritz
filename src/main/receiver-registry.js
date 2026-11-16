@@ -166,9 +166,9 @@ function confirmPairing(reg, { code, at } = {}) {
     token,                       // see proofFor for why the secret is held rather than hashed
     pairedAt: t,
     lastSeen: t,
-    revokedAt: null,
-    protocolVersion: existing.protocolVersion || null,
-    observed: existing.observed || null   // reserved; capability evidence is device-memory's job
+    revokedAt: null
+    // No capability field: what a panel can decode is device-memory.js's evidence, keyed on the
+    // same stable id. Pairing proves identity and trust, nothing about codecs.
   };
   return { ok: true, sessionId, receiverId: p.receiverId, token };
 }
