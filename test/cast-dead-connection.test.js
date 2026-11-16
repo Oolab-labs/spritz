@@ -115,3 +115,23 @@ test('closing the connection ourselves is not a drop', () => withFakeCast(async 
   assert.deepEqual(errors, []);
   assert.equal(made.clients.length, 1);
 }));
+
+// Measured on the LG with rc.17's candidate: the TV closed the connection after a seek, Spritz reconnected,
+// the TV fetched the new stream — and closed the connection again before answering the LOAD. Failing
+// that load sent the film back to the Mac. The TV was by then already reading the new stream.
+test('the TV closing the socket while a live-pipe LOAD is in flight reconnects instead of failing it', () => withFakeCast(async (cast, made) => {
+  const reconnects = [], errors = [];
+  cast.on('reconnect', (e) => reconnects.push(e));
+  cast.on('error', (e) => errors.push(e));
+  assert.equal(await load(cast, pipe('http://mac/mkv/a', 600)), null);
+  // The next LOAD is delivered but never answered: the TV closes the socket first.
+  made.players.at(-1).load = function (info) { made.loads.push({ client: this.owner, url: info.contentId }); };
+  const pending = load(cast, pipe('http://mac/mkv/b', 900));
+  await new Promise((r) => setImmediate(r));
+  made.clients.at(-1).tvClosesSocket();
+  const err = await pending;
+  assert.ok(err && err.reconnecting === true, 'the waiting caller is told the cast is reconnecting, not that it failed: ' + err);
+  assert.deepEqual(errors, [], 'no cast error reaches the window');
+  assert.deepEqual(reconnects, [{ at: 900, duringLoad: true }], 'reconnect at the position that load was taking the TV to');
+}));
+
