@@ -149,7 +149,7 @@ if (!gotLock) {
   function invalidateLoad() {
     ++loadGen;
     retireReceiverIntent();
-    if (typeof receiverPlan !== 'undefined' && receiverPlan) {
+    if (receiverPlan) {
       if (receiverPlan.pendingClockTimer) clearTimeout(receiverPlan.pendingClockTimer);
       if (receiverPlan.retirePrevious) receiverPlan.retirePrevious();
       if (receiverPlan.transport && receiverPlan.transport !== lan) receiverPlan.transport.teardown();
@@ -614,7 +614,7 @@ if (!gotLock) {
   }
   ipcMain.handle('diag:get', () => { try { return diagSnapshot(); } catch (e) { return null; } });
   const { trustPosition, effectiveState } = require('./resume-point'); // which receiver clocks are worth believing
-  const { playheadUpdate } = require('./receiver-playhead'); // aiming the torrent window at the RECEIVER's position
+  const { playheadUpdate, isTorrentSource } = require('./receiver-playhead'); // aiming the torrent window at the RECEIVER's position; what is a torrent stream URL
   const history = require('./history')(); // resume positions / recents
   const deviceMemory = require('./device-memory-store')(); // what each receiver has been seen to play
   // The receiver's own opinion, which the app records nowhere. Until now the only trace of what the
@@ -1232,17 +1232,32 @@ if (!gotLock) {
     // copy costs roughly twice the airtime of the transcode it replaces. Worth it for the picture —
     // the copy is native 2160p HDR10 at 46ms of CPU per 8s, against a 1080p re-encode at ~345% — but
     // not something to switch on for everyone without the hardware evidence.
-    const hlsOpts = () => (!caps && AIRPLAY_4K && !(extra && extra.receiver))
-      ? { caps: airplayCaps(AIRPLAY_CAPS_4K), capsFallback: airplayCaps(AIRPLAY_CAPS), extraSubs: externalSubs }
-      : { ...(extra && extra.receiver && require('./receiver-preparation-policy').receiverFeatures(process.env).sourceAudio && Number.isFinite(extra.startSec) ? { receiverStartSec: () => extra.startSec } : {}), ...(extra && Number.isInteger(extra.audioHint) ? { audioHint: extra.audioHint } : {}), receiverSourceWaiting: () => receiverSourceWaiting(s, resolutionGen), sourceSelectedAudio: !!(extra && extra.receiver && require('./receiver-preparation-policy').receiverFeatures(process.env).sourceAudio), sideloadSubs: !!(extra && extra.receiver), receiverSubtitles: !!(extra && extra.receiverSubtitles), caps: caps || airplayCaps(AIRPLAY_CAPS), ...(caps && caps.hevc4k ? { capsFallback: require('./device-profile').defaultProfile() } : {}), extraSubs: externalSubs };
+    const hlsOpts = () => {
+      // Every Spritz Receiver preparation sideloads subtitles and hands them to lanserver's receiver
+      // subtitle path, so both flags follow `receiver`. Source-selected audio is a receiver feature
+      // with an env kill switch (receiver-preparation-policy), read once here.
+      const receiver = !!(extra && extra.receiver);
+      if (!caps && AIRPLAY_4K && !receiver) return { caps: airplayCaps(AIRPLAY_CAPS_4K), capsFallback: airplayCaps(AIRPLAY_CAPS), extraSubs: externalSubs };
+      const sourceAudio = receiver && require('./receiver-preparation-policy').receiverFeatures(process.env).sourceAudio;
+      return {
+        ...(sourceAudio && Number.isFinite(extra.startSec) ? { receiverStartSec: () => extra.startSec } : {}),
+        ...(extra && Number.isInteger(extra.audioHint) ? { audioHint: extra.audioHint } : {}),
+        receiverSourceWaiting: () => receiverSourceWaiting(s, resolutionGen),
+        sourceSelectedAudio: sourceAudio,
+        sideloadSubs: receiver,
+        receiverSubtitles: receiver,
+        caps: caps || airplayCaps(AIRPLAY_CAPS),
+        ...(caps && caps.hevc4k ? { capsFallback: require('./device-profile').defaultProfile() } : {}),
+        extraSubs: externalSubs,
+      };
+    };
     // Remote https (yt-dlp / direct): no probe/remux — use as-is when it's an AV container.
     if (/^https:\/\//i.test(s)) return cb(mediaLan.avCompatible(s) ? s : null);
     // Torrent localhost stream: expose only this file through the token-scoped LAN proxy.
     // NO ffprobe/remux here — probing a torrent stream stalls
     // (moov may be at the tail / whole file not downloaded), which would block the cast button.
     // AVPlayer range-reads the moov itself. MKV/etc can't be cast (no AV container) → null.
-    const tor = s.match(/^http:\/\/(?:localhost|127\.0\.0\.1)(:\d+)(\/webtorrent\/.*)$/i);
-    if (tor) {
+    if (isTorrentSource(s)) {
       if (mediaLan.avCompatible(s)) return mediaLan.serveDlna(s, ctypeFor(s), cb);
       // mkv/avi/ts/etc (H.264/HEVC) → live HLS remux so AVPlayer/Chromecast can play it as it streams
       if (/\.(mkv|avi|ts|m2ts|webm|wmv|flv|mpg|mpeg|ogv)(\?|#|$)/i.test(s)) return mediaLan.serveHls(s, cb, hlsOpts());
@@ -1307,7 +1322,7 @@ if (!gotLock) {
   function resolveChromecast(url, caps, audioTrack, startSec, cb) {
     const s = String(url || '');
     if (/^https:\/\//i.test(s)) return cb(lan.avCompatible(s) ? s : null, { subs: [], audioTracks: [], dur: 0, isMkv: false });
-    const tor = /^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\//i.test(s);
+    const tor = isTorrentSource(s);
     const filePath = decodeURIComponent(s.replace(/^file:\/\//, ''));
     const input = tor ? s : filePath;
     if (!tor && !/^\//.test(filePath)) return cb(null);
@@ -1333,8 +1348,7 @@ if (!gotLock) {
     const s = String(url || '');
     if (/\.m3u8(\?|#|$)/i.test(s)) return cb(null);              // remote HLS → DLNA can't play it
     if (/^https:\/\//i.test(s)) return cb(lan.avCompatible(s) ? s : null);
-    const tor = s.match(/^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\/.*/i);
-    if (tor) {
+    if (isTorrentSource(s)) {
       // Serve the ORIGINAL torrent stream (any container) to the LG through our DLNA-AWARE PROXY.
       // webOS decodes MKV/HEVC/HDR/Dolby Vision natively + gives its own scrubber/subtitle/audio
       // menus, but it's a STRICT renderer: it HEADs the URL and needs contentFeatures.dlna.org /
@@ -1439,7 +1453,7 @@ if (!gotLock) {
         if (mpvLog.handle(ev)) return; // libmpv error lines go to userData/mpv.log, not the renderer
         // Temp torrent diag: log mpv's load lifecycle for a torrent URL so we can see whether mpv actually
         // opened the stream (file-loaded) or failed (end-file reason=4=ERROR). Remove once "press twice" is solved.
-        if (process.env.SPRITZ_DEBUG && ev && (ev.type === 'file-loaded' || ev.type === 'end-file') && /^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\//i.test(mpvLastUrl || '')) {
+        if (process.env.SPRITZ_DEBUG && ev && (ev.type === 'file-loaded' || ev.type === 'end-file') && isTorrentSource(mpvLastUrl)) {
           try { fs.appendFileSync('/tmp/spritz-torrent.log', '[' + new Date().toISOString().slice(11, 23) + '] mpv ' + ev.type + (ev.type === 'end-file' ? ' reason=' + ev.reason : '') + '\n'); } catch (e) {}
         }
         // Feed the play position to the torrent engine so it can keep its CRITICAL piece window
@@ -1645,7 +1659,7 @@ if (!gotLock) {
     if (!src) return Promise.resolve({ ok: false, why: 'nothing is open' });
     const startSec = mpvPos() || lastAvTime || 0;
     const mediaId = require('crypto').createHash('sha1').update(String(src)).digest('hex').slice(0, 16) + require('crypto').randomBytes(4).toString('hex');
-    const mediaLan = typeof receiverTransportFor === 'function' ? receiverTransportFor() : lan;
+    const mediaLan = receiverTransportFor();
     const previous = receiverPlan && receiverPlan.receiverId === receiverId ? receiverPlan : null;
     const title = (() => { try { return path.basename(decodeURIComponent(String(src).replace(/^file:\/\//, ''))); } catch (e) { return null; } })();
     return new Promise((resolve) => {
@@ -1653,8 +1667,7 @@ if (!gotLock) {
       let releaseAirplay = null, holdTimer = null;
       const holdUnusedAirplay = () => {
         holdTimer = null;
-        if (finished || !current() || castEngine !== 'mpv' || mediaLan === lan || previous && previous.transport === lan ||
-            typeof lan.holdReadyAirplayPrep !== 'function') return;
+        if (finished || !current() || castEngine !== 'mpv' || mediaLan === lan || previous && previous.transport === lan) return;
         try { releaseAirplay = lan.holdReadyAirplayPrep(); }
         catch (e) { recordErr('receiver-handoff', e.message || 'AirPlay preparation hold failed'); return; }
         if (!releaseAirplay) holdTimer = setTimeout(holdUnusedAirplay, 500);
@@ -1715,7 +1728,7 @@ if (!gotLock) {
         try { return fn(...args); }
         catch (e) { finish({ ok: false, why: e.message || 'receiver preparation failed' }); }
       };
-      deadline = setTimeout(() => finish({ ok: false, why: typeof receiverSourceWaiting === 'function' && receiverSourceWaiting(src, generation)
+      deadline = setTimeout(() => finish({ ok: false, why: receiverSourceWaiting(src, generation)
         ? 'Torrent data is still buffering; receiver preparation timed out' : 'receiver preparation timed out' }), 60000);
       holdUnusedAirplay();
       protect(() => { disposeSource = resolveCastable(src, protect((url, subtitles, metadata) => {
@@ -1728,7 +1741,7 @@ if (!gotLock) {
         // The first epoch was opened at startSec by resolveCastable, so the seek below is normally an
         // in-epoch one; if it is not (the epoch landed elsewhere), it takes the same path a viewer's
         // seek takes.
-        const ep = mediaLan.vodEpoch && mediaLan.vodEpoch();
+        const ep = mediaLan.vodEpoch();
         if (ep && ep.current) {
           const epochId = ep.current.id;
           const send = (epochId, url2, localStart) => {
@@ -1750,7 +1763,7 @@ if (!gotLock) {
           return send(epochId, url, 0);
         }
         console.log('[spritz] receiver source audio: catalog=' + (metadata && metadata.audio ? metadata.audio.length : 0));
-        const subtitleTrackId = previous && previous.src === src && typeof svc.subtitleSelection === 'function'
+        const subtitleTrackId = previous && previous.src === src
           ? svc.subtitleSelection(receiverId, previous.mediaId, previous.epoch) : undefined;
         receiverPlan = { receiverId, mediaId, title, epoch: null, url, src, subtitles, subtitleTrackId, timelineOrigin: metadata && metadata.timelineOrigin, sourceDuration: metadata && metadata.sourceDuration, audioCatalog: metadata && metadata.audio, selectedAudio: metadata && metadata.selectedAudio, transport: mediaLan, autoplay: cancel.autoplay };
         // The webOS player stalls when started late inside an HLS segment, exactly as AirPlay did:
@@ -1759,7 +1772,7 @@ if (!gotLock) {
         try { playStart = require('./airplay-start-snap').safeStartOnTimeline(startSec, mediaLan.airplayMediaPlaylist(), metadata && metadata.timelineOrigin); } catch (e) {}
         if (playStart !== startSec) console.log('[spritz] receiver start ' + startSec.toFixed(1) + 's is late in its segment; starting at ' + playStart.toFixed(1) + 's');
         finish(svc.play(receiverId, { mediaId, url, title, startSec: playStart, subtitles, subtitleTrackId, timelineOrigin: metadata && metadata.timelineOrigin, sourceDuration: metadata && metadata.sourceDuration, audioCatalog: metadata && metadata.audio, autoplay: cancel.autoplay }));
-      }), typeof svc.profile === 'function' ? svc.profile(receiverId) : null, true, { startSec, receiver: true, receiverSubtitles: true, audioHint: macAudioOrdinal(), transport: mediaLan });
+      }), svc.profile(receiverId), true, { startSec, receiver: true, audioHint: macAudioOrdinal(), transport: mediaLan });
       if (finished && failed) disposePreparation();
       })();
     });
@@ -1774,9 +1787,7 @@ if (!gotLock) {
     const state = target && target.playback && target.playback.state;
     // A viewer can resume or pause while replacement startup is pending.
     if (state === 'playing' || state === 'paused') previous.autoplay = state === 'playing';
-    const selectedSubtitle = typeof svc.subtitleSelection === 'function'
-      ? svc.subtitleSelection(failed.receiverId, failed.mediaId, failed.epoch) : undefined;
-    if (selectedSubtitle !== undefined) previous.subtitleTrackId = selectedSubtitle;
+    previous.subtitleTrackId = svc.subtitleSelection(failed.receiverId, failed.mediaId, failed.epoch);
     const result = svc.play(previous.receiverId, { ...previous, startSec: previous.position || 0, forceReload: true });
     if (result.ok) {
       receiverPlan = previous; failed.transport.teardown();
@@ -1803,7 +1814,7 @@ if (!gotLock) {
     const position = seekPosition !== null ? seekPosition : Number.isFinite(owner.position) ? owner.position : playback && playback.currentTime;
     if (!Number.isFinite(position) || position < 0) return Promise.resolve({ ok: false, why: 'Wait for a receiver playback position before switching audio' });
     const intent = retireReceiverIntent(), generation = loadGen, svc = startReceivers();
-    const transport = typeof receiverTransportFor === 'function' ? receiverTransportFor() : require('./lanserver')({});
+    const transport = receiverTransportFor();
     return new Promise(resolve => {
       let finished = false, timer = null;
       const current = () => intent === receiverIntent && generation === loadGen && receiverPlan === owner && owner.src === mpvLastUrl;
@@ -1832,12 +1843,7 @@ if (!gotLock) {
           const resumePosition = seekPosition !== null ? seekPosition : Number.isFinite(owner.position) ? owner.position : position;
           // Re-read selection at commit: the viewer may change subtitles or choose
           // Off while the replacement audio is being prepared.
-          const currentPlayback = svc.targets().find(t => t.id === receiverId);
-          const reported = currentPlayback && currentPlayback.playback && currentPlayback.playback.tracks;
-          const selected = reported && reported.subtitles.find(t => t.selected);
-          const subtitleTrackId = typeof svc.subtitleSelection === 'function'
-            ? svc.subtitleSelection(receiverId, owner.mediaId, owner.epoch)
-            : selected ? selected.id : 'off';
+          const subtitleTrackId = svc.subtitleSelection(receiverId, owner.mediaId, owner.epoch);
           const next = { ...owner, timelineOrigin: metadata.timelineOrigin, sourceDuration: metadata.sourceDuration, mediaId, url, epoch: null, transport, subtitles, previous: { ...owner, subtitleTrackId: subtitleTrackId },
             audioCatalog: metadata.audio, selectedAudio: index, position: resumePosition, audioStartPosition: resumePosition, autoplay: cancel.autoplay };
           const result = svc.play(receiverId, { ...next, startSec: resumePosition,
@@ -1873,7 +1879,7 @@ if (!gotLock) {
     const intent = retireReceiverIntent(), generation = loadGen, owner = receiverPlan;
     const svc = startReceivers();
     const mediaLan = owner && owner.transport || lan;
-    const ep = mediaLan.vodEpoch && mediaLan.vodEpoch();
+    const ep = mediaLan.vodEpoch();
     if (!ep || !ep.current || !receiverPlan || receiverPlan.receiverId !== receiverId) {
       return svc.command(receiverId, 'seek', logicalSec);
     }
@@ -1952,11 +1958,10 @@ if (!gotLock) {
       let out = p;
       if (p.epoch) {
         const mediaLan = receiverTimelineTransport();
-        if (typeof mediaLan.vodLogical !== 'function') return;
         out = presentTargets([{ playback: p }], mediaLan.vodLogical, mediaLan.vodSourceDuration)[0].playback;
         if (!Number.isFinite(out.currentTime) || out.currentTime < 0) return;
       }
-      if (typeof receiverPlan !== 'undefined' && receiverPlan && p.receiverId === receiverPlan.receiverId &&
+      if (receiverPlan && p.receiverId === receiverPlan.receiverId &&
           p.mediaId === receiverPlan.mediaId && (p.epoch || null) === (receiverPlan.epoch || null) &&
           typeof p.paused === 'boolean') {
         // A finite clock alone does not prove that the replacement restored the film.
@@ -2099,8 +2104,8 @@ if (!gotLock) {
     // mpv 0.38+ loadfile signature: <url> [<flags> [<index> [<options>]]] — the
     // 'index' slot was inserted before 'options', so pass '-1' (default) or the
     // opts land in the index slot and the file silently fails to load.
-    const isTorLoad = /^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\//i.test(url || '');
-    if (isTorLoad && process.env.SPRITZ_DEBUG) { try { fs.appendFileSync('/tmp/spritz-torrent.log', '[' + new Date().toISOString().slice(11, 23) + '] player:load -> mpv loadfile ' + String(url).slice(0, 90) + '\n'); } catch (e) {} }
+    const isTor = isTorrentSource(url);
+    if (isTor && process.env.SPRITZ_DEBUG) { try { fs.appendFileSync('/tmp/spritz-torrent.log', '[' + new Date().toISOString().slice(11, 23) + '] player:load -> mpv loadfile ' + String(url).slice(0, 90) + '\n'); } catch (e) {} }
     try {
       mpvAddon.command('loadfile', url, 'replace', '-1', loadOpts());
       mpvLastUrl = url;
@@ -2113,7 +2118,6 @@ if (!gotLock) {
       // newer source's castUrl (cross-source contamination → cast plays the wrong title).
       // Torrents: the HLS remux can't produce a segment until enough is downloaded, so a
       // just-started torrent resolves to null. Retry as it buffers so the cast button appears.
-      const isTor = /^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\//i.test(url || '');
       let tries = 0;
       const tryResolve = () => resolveCastable(url, (av, subs) => {
         if (gen !== loadGen || receiverPlan && receiverPlan.src === url) return;

@@ -40,6 +40,7 @@ const { createEpochs, planSeek, toLogical: epochToLogical, toLocal: epochToLocal
 const { segmentArgs, segmentRunArgs, runSegmentReady, presegmentArgs, presegmentPackageArgs, keyframeArgs, parseKeyframes, segmentPath, vodEligible,
   subPlaylist, subExtractArgs, buildVodMaster, VTT_HEAD } = require('./vod-segment');                      // one segment, on demand
 
+const { isTorrentSource } = require('./receiver-playhead'); // the one definition of a torrent stream URL
 const { binPath: findBin } = require('./bin-path'); // packaged → bundled only
 const FFPROBE = findBin('ffprobe');
 const FFMPEG = findBin('ffmpeg');
@@ -974,7 +975,7 @@ module.exports = function createLanServer(opts) {
   // Nested subdirs are allowed (multi-rendition output: stream_0/…, stream_1/…), but no `..`.
   // How master.m3u8 must be shaped for the CURRENT session (set when it is announced). Null = serve as written.
   let hlsMasterShape = null;
-  // Set when the current session's producer exits: lets the media playlists be served as FINISHED (see hls-finish).
+  // Set when the current session's producer exits: lets the media playlists be served as FINISHED (see receiver-hls-finalize).
   let hlsFinish = null;
   function serveHlsFile(req, res, token, name) {
     try { name = decodeURIComponent(name); } catch (e) { res.writeHead(404); res.end(); return; }
@@ -1055,7 +1056,7 @@ module.exports = function createLanServer(opts) {
     const start = startParam === null ? NaN : Number(startParam);
     if (hlsFinish && hlsFinish.token === token && /^(stream_\d+\/)?index\.m3u8$/.test(name) && !(Number.isFinite(start) && start >= 0)) {
       try {
-        const done = require('./hls-finish').finishedVariant(fs.readFileSync(f, 'utf8'), hlsFinish.duration, hlsFinish.code, hlsFinish.signal);
+        const done = require('./receiver-hls-finalize').completedPlaylist(fs.readFileSync(f, 'utf8'), hlsFinish.duration, hlsFinish.code, hlsFinish.signal, { vod: true });
         if (done) {
           res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache', 'Content-Length': Buffer.byteLength(done) });
           res.end(req.method === 'HEAD' ? undefined : done);
@@ -1584,7 +1585,7 @@ module.exports = function createLanServer(opts) {
         }
         let producerInput = input;
         if (sourceAudio && typeof registerSourceProducer === 'function' &&
-            /^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\/webtorrent\//i.test(input)) {
+            isTorrentSource(input)) {
           hlsProducer = createOwnedSource(input);
           if (!hlsProducer) { cancel(); return; }
           producerInput = hlsProducer.url;

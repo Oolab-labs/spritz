@@ -17,7 +17,7 @@ function fixture() {
     '\n}\nthis.init = initReceivers;', view);
   view.init();
   const raw = [{ id: 'lg', playback: { epoch: 'e1', currentTime: 2, durationSec: 20 } }];
-  const ctx = { presentTargets, lan: { vodLogical: (epoch, t) => epoch === 'e1' ? 600 + t : null },
+  const ctx = { presentTargets, receiverPlan: null, lan: { vodLogical: (epoch, t) => epoch === 'e1' ? 600 + t : null },
     receivers: { on: (type, cb) => { handlers[type] = cb; } },
     ipcMain: { handle: (type, cb) => { ipc[type] = cb; } }, startReceivers: () => ({ targets: () => raw }),
     send: (_, event) => deliver(event) };
