@@ -12,10 +12,8 @@
         "-lmpv",
         "-Wl,-rpath,/opt/homebrew/opt/mpv/lib",
         "-framework Cocoa",
-        "-framework QuartzCore",
         "-framework OpenGL",
-        "-framework CoreVideo",
-        "-framework IOSurface"
+        "-framework CoreVideo"
       ],
       "defines": [ "NAPI_CPP_EXCEPTIONS", "GL_SILENCE_DEPRECATION" ],
       "xcode_settings": {
