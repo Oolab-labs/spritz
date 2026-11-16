@@ -322,7 +322,7 @@ module.exports = function createCast() {
     let to = null;
     let _wokeOnce = false; // one wake-and-retry per load attempt
     const done = (e, s) => { if (settled) return; settled = true; if (current && current.myGen === myGen) current.settled = true; clearTimeout(to); cb && cb(e, s); };
-    current = { myGen, host, media, settled: false, fail: (e) => failConnection(e) };
+    current = { myGen, host, media, settled: false, fail: (e) => failConnection(e), settle: (e) => done(e) };
 
     // Build the LOAD payload. Split out so the fast path below can reuse it verbatim.
     const mediaInfo = () => {
@@ -518,6 +518,19 @@ module.exports = function createCast() {
     // Said out loud: why the TV drops this connection is not known yet, and only a log will tell.
     ev.emit('connection-closed', { at, during: !cur || cur.myGen !== castGen ? 'a superseded load' : cur.settled ? 'playback' : 'a load', retries: reconnectTries });
     if (!cur || cur.myGen !== castGen) { teardownClient(); return; }
+    // Mid-LOAD on the live pipe. Measured on the LG: the TV had already fetched the new stream when it
+    // closed the connection, so failing the load sent a film that was playing back to the Mac. Tell the
+    // waiting caller it is reconnecting (not failed) and reconnect at the position this load was taking
+    // the TV to. The app bounds how often this can happen (main.js mkvReconnects).
+    if (!cur.settled && cur.media.livePipe && reconnectTries < 2) {
+      reconnectTries++;
+      teardownClient();
+      const e = new Error('the TV closed the Cast connection; reconnecting');
+      e.reconnecting = true;
+      cur.settle(e);
+      ev.emit('reconnect', { at: cur.media.currentTime || 0, duringLoad: true });
+      return;
+    }
     if (!cur.settled) return cur.fail(new Error('the TV closed the Cast connection'));
     if (reconnectTries >= 2) {
       teardownClient();
