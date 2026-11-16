@@ -343,17 +343,19 @@ window.
 ## Protocol changes (envelope unchanged)
 
 `{v, type, sid, t}` is untouched. Added: `pair.request`, `pair.challenge`, `pair.accepted`,
-`pair.declined`, `auth`, `auth.ok`, `auth.failed`. The controller's `hello` gained `nonce` and
-`auth: 'required'`.
+`pair.declined`, `auth`, `auth.ok`, `auth.failed`. The controller's `hello` gained `nonce`.
 
 **Where authentication happens, and why:** an authenticated FIRST MESSAGE, not the URL and not a
 header. The URL is out because URLs are logged. A header is out because the browser WebSocket API
 cannot set one — decisive, since the receiver is a web application — and smuggling it through
 `Sec-WebSocket-Protocol` is exactly the non-standard cleverness worth avoiding.
 
-`PRE_AUTH_ALLOWED = ['hello','ping','pong','pair.request','auth']` lives beside the message
+`PRE_AUTH_ALLOWED = ['hello','pair.request','auth']` lives beside the message
 definitions rather than inside a socket handler, so someone deciding whether a NEW message type is
-safe before authentication finds the answer where the messages are.
+safe before authentication finds the answer where the messages are. Liveness is not on that list
+because it is not a message: it runs on WebSocket ping/pong control frames, which the hub answers
+before any JSON is parsed. (A JSON `ping`/`pong` pair once existed beside them; nothing ever sent
+it, and it was removed.)
 
 ## Security boundaries
 
@@ -442,13 +444,11 @@ then a red run of that one test here means the dice, not a regression.
 - **The Mac-side confirm path is the code's only guessing surface.** It is loopback-only in the
   harness; production must keep it behind the Electron UI, not an open endpoint.
 - Nothing has been written into `observed` capability state. Still deliberate.
-- The harness control endpoint returns 200 for a command the hub then refuses — cosmetic, but it
-  would mislead someone reading only the HTTP response.
 
 ## Next milestone
 
 **Production wiring**, not another receiver feature: move the hub and registry out of
-`tools/receiver-dev.js` into `lanserver`/`main.js`, put the pairing prompt and the receiver list in
+`tools/receiver-dev.js` (the first-hardware-round harness, since deleted) into `lanserver`/`main.js`, put the pairing prompt and the receiver list in
 the Electron UI, and add the receiver as a real cast target alongside AirPlay/Chromecast/DLNA. That
 is what makes any of this reachable by a user. Only after that: observed-capability learning, which
 now has a trustworthy identity to hang evidence on.
@@ -482,7 +482,8 @@ Spritz UI -> Cast Target abstraction -> LG Spritz Receiver -> receiver hub/sessi
 
 Four things, and only these four:
 
-1. Start the hub and registry from the real Spritz lifecycle rather than `tools/receiver-dev.js`.
+1. Start the hub and registry from the real Spritz lifecycle rather than `tools/receiver-dev.js`
+   (done; that harness has since been deleted, and hardware rounds drive the real application).
 2. Surface paired and online receivers in the Electron UI beside the existing playback targets.
 3. Move pairing confirmation into a real Spritz UI flow (out of the loopback control endpoint —
    note the harness endpoint is NOT a production surface and must not become one).
@@ -555,23 +556,26 @@ What the TV *can* do:
 
 1. **Remember.** The address of the Spritz that last authenticated it, in localStorage. This is the
    common case after first run and costs one connection attempt.
-2. **Ask the platform where it is.** webOS exposes the television's own IP through
-   `luna://com.webos.service.connectionmanager/getStatus`. That gives the /24, which turns "search
-   the internet" into "probe 254 addresses on one port" with bounded concurrency. LG-specific, and
-   therefore confined to the TV application where platform specifics are allowed to live.
+2. **Find out where it is.** WebRTC ICE gathering exposes the television's own IP when Chromium does
+   not hide it behind an mDNS name. That gives the /24, which turns "search the internet" into
+   "probe 254 addresses on one port" with bounded concurrency; failing that, a few common home
+   subnets are swept. (`luna://com.webos.service.connectionmanager/getStatus` would be authoritative,
+   but needs LG's webOSTV.js, which the package does not bundle, so it is not attempted.)
 3. **Ask the human**, as a last resort, on the pairing screen.
 
-So: remembered host, then a bounded subnet probe, then manual entry. `host.json` stays a development
-convenience that is tried FIRST when present and is absent in a real install — it is no longer the
-only way to find Spritz, which is what made it product configuration by accident.
+So: remembered host, then a bounded subnet probe, then manual entry. The development-only
+`host.json` that a dev script once baked into the package, and that was tried first, is gone: a
+release .ipk could never contain it, so every customer TV paid a guaranteed miss for it, and a
+developer TV skipped the first-run discovery customers actually use.
 
 A probe endpoint is needed that an unauthenticated stranger may safely hit. It answers only "a Spritz
 is here, and this is its name" — no media, no library, no receiver list.
 
 ## What is NOT in this milestone
 
-Everything in the brief's exclusion list. Additionally, `registry.observed` stays `null`: pairing
-establishes identity and trust, and says nothing about what the panel can decode.
+Everything in the brief's exclusion list. Additionally, the registry record carries no capability
+field at all: pairing establishes identity and trust, and says nothing about what the panel can
+decode. Capability evidence is device-memory.js's, keyed on the same stable receiver id.
 
 ## `lanserver.test.js` cannot be run one test at a time
 
@@ -601,8 +605,8 @@ neither is a defect in this milestone:
 1. **`SPRITZ_VOD` is off by default.** The pre-segmented VOD path — finite playlist, stream copy,
    instant seeks — lives on the frozen `vod-seekable-playback` branch and is not in this worktree's
    HEAD. `resolveCastable` therefore falls through to `serveHls`.
-2. **The receiver is handed the CONSERVATIVE capability profile**, because `registry.observed` stays
-   null this milestone. Pairing proves identity, not codecs, so the plan assumes 1080p H.264 and
+2. **The receiver is handed the CONSERVATIVE capability profile**, because nothing has written
+   observed capability evidence for it this milestone. Pairing proves identity, not codecs, so the plan assumes 1080p H.264 and
    re-encodes.
 
 The costs are real and worth naming rather than discovering later:

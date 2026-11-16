@@ -4,8 +4,15 @@
 // on the GitHub release.
 //   node build/package-receiver.js        (needs LG's webOS CLI: `ares-package` on PATH)
 //
-// It packages a COPY of the git-tracked files only. webos-receiver/host.json holds a developer's TV
-// address and is deliberately untracked; packaging the working directory would have published it.
+// It packages a COPY of the git-tracked files only, so stray local files in webos-receiver/ can never
+// be published. The flip side for development: a new receiver file is not in the .ipk until it has
+// been `git add`ed.
+//
+// This is also the development loop, so a TV is tested with exactly the artifact that ships:
+//   ares-install -d <device> dist-receiver/com.spritz.receiver_<version>_all.ipk
+//   ares-launch -d <device> --close com.spritz.receiver; ares-launch -d <device> com.spritz.receiver
+// Close first: ares-launch on a running app brings it forward WITHOUT reloading, which silently tests
+// the previous build. Measured during the VOD work; it wasted a hardware round.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');

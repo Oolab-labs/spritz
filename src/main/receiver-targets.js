@@ -62,12 +62,8 @@ function targetsFrom({ registry, sessions } = {}) {
         mediaId: s.mediaId || null,
         epoch: s.epoch == null ? null : String(s.epoch),
         currentTime: Number.isFinite(s.currentTime) ? s.currentTime : null,
-        durationSec: Number.isFinite(s.durationSec) ? s.durationSec : null,
-        // How stale the reading is. A position without its age is not knowledge — the whole point of
-        // this channel is that the Mac stops guessing where the television is.
-        ageMs: Number.isFinite(s.at) ? Math.max(0, (s.now || Date.now()) - s.at) : null
+        durationSec: Number.isFinite(s.durationSec) ? s.durationSec : null
       } : null,
-      pairedAt: r.pairedAt || null,
       lastSeen: r.lastSeen || null
     });
   }

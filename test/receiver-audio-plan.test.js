@@ -28,15 +28,6 @@ test('explicit selection requires a verified inventory and valid source ordinal'
   assert.equal(selectSourceAudio(null).index, 0);
 });
 
-test('near-position preparation falls back to zero for unqualified sources', () => {
-  const { nearInputStart } = require('../src/main/receiver-audio-plan');
-  assert.equal(nearInputStart(100, 3000, false), 100);
-  assert.equal(nearInputStart(100, 3000, true), 0);
-  assert.equal(nearInputStart(100, null, false), 0);
-  assert.equal(nearInputStart(100, 50, false), 0);
-  assert.equal(nearInputStart(NaN, 3000, false), 0);
-});
-
 // The first cast must start on the language the Mac is playing. mpv's aid is 1-based per type and
 // FFmpeg's 0:a:N is 0-based, so the ordinal is aid - 1.
 test('audioOrdinalFromAid maps mpv aid to a source audio ordinal, or null when there is no explicit track', () => {

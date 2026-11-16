@@ -102,19 +102,6 @@ test('audio rollback preserves pause/resume and subtitle intent changed during s
   assert.equal(ctx.receiverPlan, previous);
 });
 
-test('near preparation requires opt-in and receiver support, and commits measured origin', async () => {
-  const f = fixture();
-  f.ctx.process.env.SPRITZ_RECEIVER_NEAR_AUDIO = '1';
-  f.ctx.startReceivers().supportsLogicalTimeline = () => true;
-  f.owner.position = 120;
-  const pending = f.request();
-  assert.equal(f.calls[0].opts.receiverInputStartSec, 100);
-  f.complete('mapped', { timelineOrigin: 98.098, sourceDuration: 3122 });
-  assert.equal((await pending).ok, true);
-  assert.equal(f.ctx.receiverPlan.timelineOrigin, 98.098);
-  assert.equal(f.calls[1].startSec, 120);
-  clearTimeout(f.ctx.receiverPlan.pendingClockTimer);
-});
 test('same-audio range replacement holds requested seek despite old stream advancing', async () => {
   const f = fixture(); f.owner.timelineOrigin = 100;
   const pending = f.ctx.switchAudio('tv', { mediaId: 'old', trackId: 'source-audio-0', seekSec: 10 });
@@ -140,46 +127,8 @@ test('out-of-range recovery accepts only the current media owner', async () => {
   assert.equal(requests[0].arg.trackId, 'source-audio-1');
 });
 
-function nearFixture() {
-  const f = fixture(); f.ctx.process.env.SPRITZ_RECEIVER_NEAR_AUDIO = '1';
-  f.ctx.startReceivers().supportsLogicalTimeline = () => true; f.owner.position = 75;
-  return f;
-}
-test('timestamp failure retries once from origin with latest subtitle and pause intent', async () => {
-  const f = nearFixture(), pending = f.request();
-  assert.equal(f.calls[0].opts.receiverInputStartSec, 55);
-  f.complete(null, { retryFromOrigin: true });
-  assert.equal(f.calls[1].opts.receiverInputStartSec, 0);
-  assert.equal(f.ctx.receiverPlan, f.owner);
-  f.owner.position = 80; f.ctx.pendingReceiverOperation.autoplay = false;
-  f.ctx.startReceivers().subtitleSelection = () => 'off';
-  f.complete(); assert.equal((await pending).ok, true);
-  const load = f.calls.find(c => c && c.mediaId);
-  assert.equal(load.startSec, 80); assert.equal(load.autoplay, false); assert.equal(load.subtitleTrackId, 'off');
-  assert.equal(load.timelineOrigin, undefined);
-  clearTimeout(f.ctx.receiverPlan.pendingClockTimer);
-});
-test('late callback from failed near candidate cannot commit over origin retry', async () => {
-  const f = nearFixture(), pending = f.request(); f.complete(null, { retryFromOrigin: true });
-  f.preparations[0]('stale', [], { audio: [], timelineOrigin: 55 });
-  assert.equal(f.calls.some(c => c && c.mediaId), false);
-  f.complete('origin'); assert.equal((await pending).ok, true);
-  assert.equal(f.ctx.receiverPlan.url, 'origin'); clearTimeout(f.ctx.receiverPlan.pendingClockTimer);
-});
-test('cancelled origin retry rejects late success and retains previous plan', async () => {
-  const f = nearFixture(), pending = f.request(); f.complete(null, { retryFromOrigin: true });
-  f.ctx.retireReceiverIntent(); f.complete(); assert.equal((await pending).ok, false);
-  assert.equal(f.ctx.receiverPlan, f.owner); assert.equal(f.calls.some(c => c && c.mediaId), false);
-});
-test('origin failure never repeats the fallback or extends the deadline', async () => {
-  const f = nearFixture(), deadlines = [];
-  f.ctx.setTimeout = (fn, ms) => { deadlines.push(ms); return setTimeout(fn, ms); };
-  const pending = f.request(); f.complete(null, { retryFromOrigin: true }); f.complete(null, { retryFromOrigin: true });
-  assert.equal((await pending).ok, false); assert.equal(f.preparations.length, 2);
-  assert.deepEqual(deadlines, [60000]); assert.equal(f.ctx.receiverPlan, f.owner);
-});
-test('ordinary preparation failure does not trigger an origin retry', async () => {
-  const f = nearFixture(), pending = f.request(); f.complete(null);
+test('a preparation failure is final: one attempt, previous stream retained', async () => {
+  const f = fixture(), pending = f.request(); f.complete(null);
   assert.equal((await pending).ok, false); assert.equal(f.preparations.length, 1);
 });
 test('audio and seek replacement use the receiver producer-aware transport factory', async () => {

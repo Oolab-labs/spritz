@@ -14,7 +14,7 @@
 //   2. Unbounded reads. readFileSync on a renderer-named path will happily allocate a 10GB file
 //      into the main process and take the app down with it.
 //
-// All three callers (thumb:at, subtitle:generate, subtitle:online) pass `currentLocalPath`, which
+// Both callers (thumb:at, subtitle:online) pass `currentLocalPath`, which
 // the renderer only sets for paths beginning with '/'. So requiring a local regular file matches
 // what the app genuinely does — a guard stricter than real usage gets loosened until it stops
 // guarding, and one looser than real usage is not a guard.

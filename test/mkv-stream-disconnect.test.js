@@ -8,7 +8,7 @@ function fixture() {
   const ctx = { mkvEntry: { token: 't', startSec: 0, livePos: 0, dur: 100 }, mkvProc: null, mkvRes: null, clog() {}, MKV_MIME: 'video/x-matroska', resumePosition: () => 0, resolveOrigin: (e, from, cb) => cb(0), mkvArgs: () => [], FFMPEG: 'controlled', Date, classifyFailure: () => 'source', shouldRetryInSoftware: () => false, onCastStreamLost: () => lost++, spawn: () => {
     const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdout.pipe = () => {}; child.unpipes = 0; child.stdout.unpipe = () => child.unpipes++; child.kills = 0; child.kill = () => child.kills++; children.push(child); return child;
   } };
-  vm.createContext(ctx); vm.runInContext(source.slice(source.indexOf('  function serveMkvStream('), source.indexOf('  // Remux `src`')), ctx);
+  vm.createContext(ctx); vm.runInContext(source.slice(source.indexOf('  function serveMkvStream('), source.indexOf('  // (Removed: setMasterDefaultAudio')), ctx);
   const connect = () => { const req = new EventEmitter(), res = new EventEmitter(); req.method = 'GET'; res.writeHead = () => {}; res.end = () => {}; res.destroy = () => res.emit('close'); ctx.serveMkvStream(req, res, 't'); return { req, res }; };
   return { ctx, children, connect, lost: () => lost };
 }

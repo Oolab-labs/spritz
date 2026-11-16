@@ -1,6 +1,6 @@
 'use strict';
 
-// External helper binaries (yt-dlp/ffmpeg/ffprobe/whisper).
+// External helper binaries (yt-dlp/ffmpeg/ffprobe).
 //
 // Packaged: ONLY Contents/Resources/bin. Falling back to /opt/homebrew made a package with a
 // missing or broken bundled binary work perfectly on the build machine and fail everywhere else —
@@ -27,10 +27,4 @@ function binPath(name) {
   return resolveBin(name, { packaged: isPackaged(process), resourcesPath: process.resourcesPath, exists: fs.existsSync });
 }
 
-// Optional tools the user installs themselves (whisper.cpp) are never bundled, so even a packaged
-// app looks for them on the system. Not for anything the release ships.
-function userBinPath(name) {
-  return resolveBin(name, { packaged: false, resourcesPath: process.resourcesPath, exists: fs.existsSync });
-}
-
-module.exports = { binPath, userBinPath, resolveBin, isPackaged };
+module.exports = { binPath, resolveBin, isPackaged };

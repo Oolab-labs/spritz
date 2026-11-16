@@ -74,13 +74,10 @@ hls/
 !vendor/shaders/**
 !build/entitlements.mac.plist
 
-# The installed .app is a deploy target, not a source location (see deploy.sh).
+# node-gyp output if an addon is ever configured from the repo root.
 build/Release/
 build/Makefile
 
-# The receiver harness bakes the developer machine LAN address in at package time.
-# Machine-specific dev state, never product configuration — see tools/package-receiver.sh.
-webos-receiver/host.json
 build/Spritz.iconset/
 dist-receiver/
 !build/icon.icns
