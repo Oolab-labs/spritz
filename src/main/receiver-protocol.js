@@ -48,9 +48,9 @@ const POST_AUTH_ONLY = ['select-track', 'load', 'play', 'pause', 'seek', 'stop']
 //
 // `stalled` is NOT in this list, and its absence is measured rather than stylistic: on this exact
 // hardware the HTML5 `stalled` event fires at every segment transition while the clock keeps moving
-// perfectly (see HANDOFF-vod.md, "Corrections made this session"). It is reported as telemetry on a
-// `state` message's `flags`, never as a state, so that nothing downstream can mistake it for a
-// playback failure.
+// perfectly (see RECEIVER-ARCH.md, "`stalled` is noise here too" and "Corrections carried over").
+// It is reported as telemetry on a `state` message's `flags`, never as a state, so that nothing
+// downstream can mistake it for a playback failure.
 const STATES = ['idle', 'loading', 'buffering', 'playing', 'paused', 'ended'];
 
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);

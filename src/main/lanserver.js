@@ -2626,8 +2626,8 @@ module.exports = function createLanServer(opts) {
           if (!url) return cb(null);
           // Attach embedded text subs + any external .srt/.ass as standalone WebVTT the
           // cast receiver can sideload — direct-MP4 casts used to carry NO subtitles. Only when this is
-          // an actual Chromecast handoff (directSubs) — AirPlay/AVPlayer reads MP4 subs itself, so the
-          // pre-resolution skips the extraction.
+          // a Spritz Receiver handoff (directSubs; main.js resolveCastable's forCast) — AirPlay/AVPlayer
+          // reads MP4 subs itself, so the pre-resolution skips the extraction.
           if (opts && opts.directSubs) {
             disposeSubs = prepareDirectSubs(input, extraSubs, (subs) => cb(url, subs));
             if (cancelled && typeof disposeSubs === 'function') { try { disposeSubs(); } catch (e) {} disposeSubs = null; }
@@ -2775,6 +2775,11 @@ module.exports = function createLanServer(opts) {
   //
   // STILL UNPROVEN: an AVPlayer on this route at all (main.js is what hands it one), subtitle and
   // audio-rendition switching, and a full watch-through long enough to evict.
+  //
+  // REACHABILITY: main.js resolveCastable hands a RECEIVER live HLS before trying this route while
+  // source-selected audio is on (SPRITZ_RECEIVER_SOURCE_AUDIO, default on). So with the defaults,
+  // SPRITZ_VOD reaches only the non-receiver (AirPlay) local-file path — the unproven one above —
+  // and the LG results above are not reproducible without SPRITZ_RECEIVER_SOURCE_AUDIO=0.
   const VOD_ENABLED = () => process.env.SPRITZ_VOD === '1';
   // Beyond this the keyframe probe is not worth waiting for. It is a full pass over the file index,
   // and on a slow disk or a network share it can take longer than the user will sit through.
