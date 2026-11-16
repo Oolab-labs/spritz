@@ -4,16 +4,19 @@
 // and torrent streams over the network. The receiver fetches the URL itself, so it must
 // be the Mac's LAN IP (loopback is unreachable from the TV). Binds 0.0.0.0.
 //
-// Two roles:
-//   /file/<token>   — serve a file with HTTP range support (seek/scrub). Used for both
-//                     original local files AND remuxed temp files.
+// Routes:
+//   /file/<token>   — serve a file with HTTP range support (seek/scrub). Used for original
+//                     local files and the WebVTT subtitle sidecars made for them.
+//   /dlna/<token>/  — DLNA-compliant proxy in front of webtorrent's server (serveDlnaProxy), for
+//                     a television and, on loopback, for the packager (createOwnedSource).
+//   /hls/<token>/   — live HLS (serveHls).
+//   /mkv/<token>    — Matroska stream for the Spritz Receiver (serveMkv / serveMkvStream).
+//   /sub/<token>/<name> — WebVTT sidecars that go with an /mkv/ stream (serveMkvSub).
+//   /vod/<token>/   — seekable VOD HLS (serveVod).
 //
-// Remux-on-demand: containers the receiver can't open (MKV/AVI/TS/WebM) whose VIDEO is
-// already H.264/HEVC are repackaged to a temp MP4 with `-c:v copy` (lossless, ~no CPU);
-// incompatible audio (AC3/DTS/Opus/FLAC/…) is transcoded to AAC. The temp file is then
-// served via /file/ with range support — AVPlayer rejects a live non-seekable pipe
-// (status: failed), so it must be a complete, range-seekable file. Video codecs the
-// receiver can't decode (VP9/AV1/Xvid) are left un-castable here (needs full transcode).
+// Containers or audio the receiver can't take as-is (MKV/AVI/TS/WebM, AC3/DTS/Opus/FLAC/…) are
+// not remuxed to a temp MP4 any more: they go to live HLS (serveHls) or the seekable VOD route
+// (serveVod), which keep embedded subtitles and multiple audio tracks.
 
 const http = require('http');
 const { byteRange } = require('./http-range');
@@ -617,23 +620,22 @@ module.exports = function createLanServer(opts) {
   // Fire-and-forget by design: see the range handling in serveDlnaProxy for why this must not be
   // waited on. No hook (a build with no torrent engine attached) simply means no prioritisation.
   const onSeekBytes = (opts && opts.onSeekBytes) || (() => {});
-  // Where a proxied source read IS, as it happens — see serveDlnaProxy. This is how the packager's
-  // demand reaches the torrent scheduler: the packager reads the torrent through this proxy, so the
-  // proxy is the one place that demand can be observed directly rather than inferred from which
-  // segment ffmpeg last wrote. Reports carry `reader` ('producer' for a serveSource URL, 'viewer'
-  // for a television on the DLNA route) because the two are different authorities and must not be
-  // confused — critical-authority.js is what tells them apart. Coalesced by
-  // SOURCE_READ_COALESCE_BYTES; fire-and-forget like onSeekBytes.
+  // Where a VIEWER's proxied source read IS, as it happens — a television on the DLNA route; see
+  // serveDlnaProxy. Reports carry `reader: 'viewer'`. Producer reads (the packager's ffmpeg on a
+  // createOwnedSource URL) never come here: they go to that source's registerSourceProducer lease
+  // (lease.noteSourceRead), because the two are different authorities and must not be confused —
+  // critical-authority.js is what tells them apart. Coalesced by SOURCE_READ_COALESCE_BYTES;
+  // fire-and-forget like onSeekBytes.
   const onSourceRead = (opts && opts.onSourceRead) || (() => {});
   // The packaging run's lifecycle — true when an epoch's ffmpeg starts, false when it exits, fails,
   // is stopped or is superseded. Forwarded to torrent.setProducerActive: this is the ONLY thing
   // that makes the producer the authority for the critical window. Never derived from a request.
   const onProducerActive = (opts && opts.onProducerActive) || (() => {});
   const registerSourceProducer = opts && opts.registerSourceProducer;
-  // Sweep leftover transcode segments / remux temp MP4s from previous runs at startup. A long cast
-  // keeps every fMP4 segment (a full transcoded copy) and remux makes a full temp MP4 — crashes can
-  // orphan gigabytes here. Active sessions clean themselves (cancelHls/cancelRemux); this clears the
-  // dead ones. Safe at construction: nothing is streaming yet.
+  // Sweep leftover transcode segments / subtitle sidecars from previous runs at startup. A long cast
+  // keeps every fMP4 segment (a full transcoded copy) — crashes can orphan gigabytes here. Active
+  // sessions clean themselves (cancelHls/cancelVod/cancelMkv); this clears the dead ones. REMUX_DIR is still
+  // swept: subtitle extraction writes there. Safe at construction: nothing is streaming yet.
   // THIS instance's temp media roots. Everything this lanserver produces lives under one of them,
   // and they are the only things this lanserver ever deletes.
   //
@@ -663,14 +665,13 @@ module.exports = function createLanServer(opts) {
   let airplayPos = 0;                   // where the AVPlayer is, pushed in from the orchestrator
   let startSubExtract = () => {};       // set by extractSubs for the CURRENT session
   let hlsStartedAt = 0, hlsAnnounced = false; // diagnostics for the session-churn investigation
-  const files = new Map();  // token → absolute path  (/file/, originals + remuxed temp files)
+  const files = new Map();  // token → absolute path  (/file/, originals + subtitle sidecars)
   const proxyRequests = new Set();
   const proxyHeaderTimeoutMs = opts && opts.proxyHeaderTimeoutMs || 15000;
   function cancelProxyRequests() {
     for (const cancel of [...proxyRequests]) cancel();
   }
   const dlnaProxies = new Map(); // token → { url, type }  (/dlna/ DLNA-compliant proxy → webtorrent)
-  let remuxProc = null, remuxOut = null; // current ffmpeg remux + its temp file
   let hlsPreparation = null, hlsGeneration = 0;
   let hlsProducer = null;
   let hlsProc = null, hlsDir = null, hlsToken = null; // current live HLS remux
@@ -815,19 +816,11 @@ module.exports = function createLanServer(opts) {
     });
   }
   // The same proxy, for the PACKAGER. ffmpeg reads a torrent-backed source through this so that its
-  // reads are observable (onSourceRead) and prioritisable (onSeekBytes) — the two things a file path
-  // straight into webtorrent's own server would not give us. Loopback, because the only reader is an
-  // ffmpeg on this machine: it is never handed to a television, and serveDlnaProxy refuses it from
-  // anywhere else.
-  function serveSource(upstreamUrl, cb) {
-    if (!upstreamUrl) return cb(null);
-    return tokenReady(cb, () => {
-      const token = newToken();
-      dlnaProxies.set(token, { url: upstreamUrl, type: 'application/octet-stream', reader: 'producer' });
-      const name = (String(upstreamUrl).split('?')[0].split('/').pop()) || 'source';
-      cb(`http://127.0.0.1:${port}/dlna/${token}/${name}`);
-    });
-  }
+  // reads are observable and prioritisable through the registerSourceProducer lease, whose
+  // noteSourceRead receives every read (never onSourceRead or onSeekBytes: those are the viewer's).
+  // A file path straight into webtorrent's own server would not give us that. Loopback, because the
+  // only reader is an ffmpeg on this machine: it is never handed to a television, and
+  // serveDlnaProxy refuses it from anywhere else.
   function createOwnedSource(input) {
     const lease = registerSourceProducer(input);
     if (!lease) return null;
@@ -930,7 +923,8 @@ module.exports = function createLanServer(opts) {
     //
     // VIEWER reads only. onSeekBytes leads to torrent.ensureBytes, which moves the viewer's playhead
     // — correct for a television, and precisely wrong for the packager, whose reads would otherwise
-    // impersonate the viewer. A producer's demand goes out through onSourceRead below instead.
+    // impersonate the viewer. A producer's demand goes to its lease instead
+    // (producerOwner.noteSourceRead, below).
     if (reader === 'viewer' && SEEK_ENABLED() && req.headers.range) {
       const m = /^bytes=(\d+)-/.exec(String(req.headers.range));
       // Only a seek. bytes=0- is the opening request of ordinary linear playback and needs nothing.
@@ -1107,12 +1101,6 @@ module.exports = function createLanServer(opts) {
     deliverFile(req, res, file, stat.size, mimeFor(file), dlna);
   }
 
-  function cancelRemux() {
-    const child = remuxProc, output = remuxOut;
-    remuxProc = null; remuxOut = null;
-    if (child) { try { child.kill('SIGKILL'); } catch (e) {} }
-    if (output) { try { fs.unlinkSync(output); } catch (e) {} }
-  }
   function cancelHls() {
     if (typeof hlsProducer !== 'undefined' && hlsProducer) {
       const owned = hlsProducer; hlsProducer = null;
@@ -1548,7 +1536,7 @@ module.exports = function createLanServer(opts) {
   function serveHls(input, cb, opts) {
     const lan = lanAddress();
     if (!lan || !input) return cb(null);
-    cancelHls(); cancelRemux();
+    cancelHls();
     const generation = hlsGeneration;
     const complete = cb;
     let finished = false, cancelled = false, cancelTracks = null;
@@ -1690,13 +1678,6 @@ module.exports = function createLanServer(opts) {
         // taking 4K means giving both up: one muxed audio track, no subtitle renditions, bare media
         // playlist. That is why the ambitious profile stays opt-in — it buys native 2160p HDR10 at a
         // fraction of the CPU, and it costs the track menus. The default path is untouched.
-        // NOTE the finding this was built on is now suspect. "A master playlist is always refused for
-        // a 4K HEVC copy (-12927)" was measured while EVERY playlist still carried the spurious
-        // leading #EXT-X-DISCONTINUITY that append_list emitted — the same defect that produced -12312
-        // everywhere else. With that gone the master may well be fine, and a master is what carries
-        // the audio and subtitle renditions the TV remote switches between. So 4K now keeps its
-        // renditions by default; SPRITZ_AIRPLAY_BARE=1 restores the stripped-down playlist if the
-        // receiver really does refuse the master.
         // CONFIRMED by A/B on hardware, after the append_list discontinuity bug was fixed and could no
         // longer be the explanation: a 4K HEVC copy behind a master playlist is refused at load
         // (status=failed, EMPTY error log — nothing fetched), while the SAME copy served as a bare
@@ -1706,9 +1687,8 @@ module.exports = function createLanServer(opts) {
         // A master is what carries the audio and subtitle renditions the TV remote switches between,
         // so 4K and the track menus are mutually exclusive on this receiver. That is a real tradeoff,
         // not a bug to fix: SPRITZ_AIRPLAY_4K=1 buys native 2160p HDR10 at a fraction of the CPU and
-        // costs the menus; the default 1080p path keeps them. SPRITZ_AIRPLAY_MASTER4K=1 forces a
-        // master anyway, for re-testing this against a future receiver or firmware.
-        const bare4k = took4k && process.env.SPRITZ_AIRPLAY_MASTER4K !== '1';
+        // costs the menus; the default 1080p path keeps them.
+        const bare4k = took4k;
         if (bare4k && (info && info.audio.length > 1 || allSubSources.length)) {
           clog('AirPlay 4K: serving a bare media playlist — one audio track, no subtitle renditions ' +
             '(a master playlist is refused for a 4K HEVC copy; the variant alone plays)');
@@ -1726,10 +1706,8 @@ module.exports = function createLanServer(opts) {
           ? ['-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5', '-rw_timeout', String(HTTP_READ_TIMEOUT_US)]
           : [];
         const finalizeReceiver = !!(sourceAudio && opts && opts.receiverSubtitles === true);
-        const inputStart = sourceAudio && opts ? require('./receiver-audio-plan').nearInputStart(opts.receiverInputStartSec, info && info.dur, transcode) : 0;
-        if (inputStart > 0) inOpts.push('-ss', String(inputStart), '-copyts');
         if (finalizeReceiver) inOpts.unshift('-xerror');
-        const hlsOpts = [...(inputStart > 0 ? ['-avoid_negative_ts', 'disabled'] : []), '-hls_segment_type', 'fmp4', '-hls_time', '2', '-hls_list_size', '0',
+        const hlsOpts = ['-hls_segment_type', 'fmp4', '-hls_time', '2', '-hls_list_size', '0',
           // NO append_list. Measured against the bundled ffmpeg: on a COMPLETELY FRESH directory,
           // append_list emits a leading #EXT-X-DISCONTINUITY before segment 0, where omit_endlist
           // alone emits none. That tag sets segment 0's discontinuity sequence to 1, and AVFoundation
@@ -1839,9 +1817,12 @@ module.exports = function createLanServer(opts) {
         const myDir = hlsDir, tok = myToken, m3u8 = path.join(myDir, playlist);
         const primaryMode = transcode ? 'hw' : 'copy';
         let settled = false, triedFallback = false;
-        let timelineOrigin = inputStart > 0 ? null : 0, originPending = false, producerExit = null;
+        // Preparation always starts at the head of the source, so the transport timeline begins at 0.
+        // It is still announced: Spritz Receiver 0.4.0 validates timelineOrigin in the load message.
+        const timelineOrigin = 0;
+        let producerExit = null;
         const finalizePlaylist = () => {
-          if (!finalizeReceiver || !producerExit || timelineOrigin === null || hlsToken !== tok) return;
+          if (!finalizeReceiver || !producerExit || hlsToken !== tok) return;
           try {
             const complete = require('./receiver-hls-finalize').completedPlaylist(fs.readFileSync(m3u8, 'utf8'), info.dur - timelineOrigin, producerExit.code, producerExit.signal);
             if (complete) { fs.writeFileSync(m3u8 + '.complete', complete); fs.renameSync(m3u8 + '.complete', m3u8); }
@@ -1851,17 +1832,6 @@ module.exports = function createLanServer(opts) {
 
         const ready = () => {
           if (!(countSegs(myDir) > 0 && safeStat(m3u8))) return false;
-          if (timelineOrigin === null) {
-            if (!originPending) {
-              originPending = true;
-              cancelTracks = probeFirstPts('concat:' + path.join(myDir, 'init.mp4') + '|' + path.join(myDir, 'seg00000.m4s'), pts => {
-                if (cancelled || finished || hlsToken !== tok) return;
-                if (!Number.isFinite(pts) || pts < 0 || pts > inputStart + 2) { cancel(); return; }
-                timelineOrigin = pts; finalizePlaylist();
-              });
-            }
-            return false;
-          }
           finalizePlaylist();
           if (!opts || typeof opts.receiverStartSec !== 'function') return true;
           try { return require('./hls-start-position').coversPosition(fs.readFileSync(m3u8, 'utf8'), opts.receiverStartSec() - timelineOrigin); }
@@ -1912,24 +1882,12 @@ module.exports = function createLanServer(opts) {
           const fail = (reason, code, signal) => {
             if (settled || hlsToken !== tok) return;
             if (sourceAudio) clog('receiver HLS preparation failed ' + JSON.stringify({
-              reason, mode, audioIndex: sourceAudio.index, inputStart,
+              reason, mode, audioIndex: sourceAudio.index,
               elapsedMs: Date.now() - hlsStartedAt, firstSegmentMs, segments: lastSegs,
               idleMs: Date.now() - lastProgressAt,
               ...preparationDiagnostics.summarize({ timedOut: reason === 'no-segment-progress', bytes: 0, code, signal })
             }));
             clearInterval(tick);
-            if (inputStart > 0) {
-              const failure = preparationDiagnostics.summarize({ code, signal, bytes: 0 });
-              if (failure.category === 'timestamp-or-mux-error') {
-                // Dispose this candidate before the caller starts the origin retry. The
-                // receiver's previous producer belongs to a different transport instance.
-                settled = true;
-                if (hlsPreparation === cancel) hlsPreparation = null;
-                cancelHls();
-                cb(null, [], { retryFromOrigin: true });
-              } else cancel();
-              return;
-            } // retain prior stream; no unmapped encoder fallback
             // A 4K copy that wedged must go back to the proven profile, NOT to a 4K software encode.
             // This retry re-plans first, so the relaunch is the ordinary 1080p H.264 path.
             if (retreatFrom4k()) {
@@ -1968,9 +1926,6 @@ module.exports = function createLanServer(opts) {
           ff.stderr.on('data', chunk => {
             if (ff !== hlsProc || settled || hlsToken !== tok) return;
             preparationDiagnostics.capture(chunk);
-            // A failed mux thread can leave FFmpeg's input thread alive. Do not
-            // wait for the progress watchdog when this candidate is already fatal.
-            if (inputStart > 0 && preparationDiagnostics.hasTerminalMuxFailure()) fail('mux-error');
           });
           // A SUPERSEDED process (e.g. the hw ffmpeg SIGKILLed when launching the sw fallback) must NOT
           // re-enter fail()/cancelHls() — that would tear down the brand-new process. Gate on the event
@@ -1991,7 +1946,7 @@ module.exports = function createLanServer(opts) {
             if (settled || hlsToken !== tok) return;
             // ffmpeg exited before we observed readiness. If it actually finished writing (a short
             // clip), the segments exist → let the next tick settle it; otherwise it failed → fail().
-            try { if (ready() || originPending && timelineOrigin === null) return; } catch (e) {}
+            try { if (ready()) return; } catch (e) {}
             fail('producer-exit', code, signal);
           });
         }
@@ -2587,45 +2542,6 @@ module.exports = function createLanServer(opts) {
     launch(false);
   }
 
-  // Remux `src` → a temp MP4 (video copied, audio→AAC if needed), then cb(absTempPath|null).
-  // -c copy is fast (I/O-bound, no re-encode); we wait for completion so the served file
-  // is complete + range-seekable (AVPlayer requires that).
-  function remuxToTemp(src, transcodeAudio, cb) {
-    cancelRemux();
-    try { fs.mkdirSync(remuxRoot, { recursive: true }); } catch (e) {}
-    const out = path.join(remuxRoot, newToken() + '.mp4');
-    // Keep the source audio channel layout (no forced -ac 2) so 5.1/7.1 surround survives.
-    const args = ['-loglevel', 'error', '-y', '-i', src, '-c:v', 'copy', '-c:a', transcodeAudio ? 'aac' : 'copy'];
-    if (transcodeAudio) args.push('-b:a', '384k');
-    args.push('-movflags', '+faststart', '-f', 'mp4', out); // faststart: moov up front → fast TV start
-    let ff, finished = false, discardOutput = false;
-    const remove = () => { try { fs.unlinkSync(out); } catch (e) {} };
-    const cancel = () => {
-      if (finished) return;
-      finished = true; discardOutput = true;
-      if (remuxProc === ff) remuxProc = null;
-      if (remuxOut === out) remuxOut = null;
-      try { if (ff) ff.kill('SIGKILL'); } catch (e) {}
-      remove();
-    };
-    remuxOut = out;
-    try { ff = remuxProc = spawn(FFMPEG, args); } catch (e) {
-      finished = true; if (remuxOut === out) remuxOut = null;
-      remove(); cb(null); return cancel;
-    }
-    ff.stderr.on('data', () => {});
-    const settle = (code) => {
-      if (finished) { if (discardOutput) remove(); return; }
-      if (ff !== remuxProc) { finished = true; discardOutput = true; remove(); return; }
-      finished = true; remuxProc = null;
-      if (code === 0 && safeStat(out)) cb(out);
-      else { discardOutput = true; remove(); if (remuxOut === out) remuxOut = null; cb(null); }
-    };
-    ff.on('error', () => settle(-1));
-    ff.on('close', settle);
-    return cancel;
-  }
-
   // (Removed: setMasterDefaultAudio/setMasterDefaultSubtitle — the old AirPlay "rewrite the master
   // DEFAULT + reload" track-switch path. AirPlay now switches renditions via the native AVPlayer
   // AVMediaSelectionGroup (apAddon.selectMedia) and Chromecast via EDIT_TRACKS_INFO, so these are dead.)
@@ -2656,17 +2572,17 @@ module.exports = function createLanServer(opts) {
     });
   }
 
-  // prepareCast(input, isFile, cb, remuxAlt) → cb(lanUrl|null). Probes the source and returns a
-  // TV-fetchable URL: direct serve if already compatible, else repackage. When `remuxAlt(input, cb)`
-  // is given (the casting path passes serveHls), the repackage uses live HLS — its first segment is
-  // ready in ~1–3s, so the cast button appears fast even for an MP4 whose audio needs transcoding
-  // (e.g. a 4K movie with TrueHD/DTS). Without it (DLNA, which needs a finite MP4) it falls back to
-  // a full remux-to-temp-MP4 (slow for big files). null if the VIDEO codec is unsupported.
+  // prepareCast(input, cb, remuxAlt, opts) → cb(lanUrl|null). `input` is a local file path (the
+  // only caller, main.js resolveCastable, routes torrents to serveDlna/serveHls itself). Probes the
+  // source and returns a TV-fetchable URL: direct serve if already compatible, else `remuxAlt(input,
+  // cb)` — the casting path passes serveHls, whose first segment is ready in ~1–3s, so the cast
+  // button appears fast even for an MP4 whose audio needs transcoding (e.g. a 4K movie with
+  // TrueHD/DTS). cb(null) when there is no remuxAlt to hand the source to.
   const directPreparations = new Set();
   function cancelDirectPreparations() {
     for (const cancel of [...directPreparations]) cancel();
   }
-  function prepareCast(input, isFile, cb, remuxAlt, opts) {
+  function prepareCast(input, cb, remuxAlt, opts) {
     const lan = lanAddress();
     if (!lan || !input) return cb(null);
     const complete = cb;
@@ -2687,7 +2603,7 @@ module.exports = function createLanServer(opts) {
     const fallback = () => {
       if (finished || fallbackStarted) return;
       fallbackStarted = true;
-      if (!remuxAlt) return cb(null);
+      if (typeof remuxAlt !== 'function') return cb(null);
       disposeFallback = remuxAlt(input, cb);
       if (cancelled && typeof disposeFallback === 'function') { try { disposeFallback(); } catch (e) {} disposeFallback = null; }
     };
@@ -2699,48 +2615,29 @@ module.exports = function createLanServer(opts) {
       // VP9/AV1/Xvid/VC-1/WMV can't ride a direct MP4 → hand to the HLS path, which now transcodes
       // them (was: hard refuse). DLNA serves the original untouched, so the TV decodes them natively.
       if (!VIDEO_OK.has(info.vcodec)) return fallback();
-      const ext = isFile ? path.extname(input).toLowerCase().replace('.', '') : (input.match(/\.(\w+)(\?|#|$)/) || [])[1];
-      const compatContainer = ['mp4', 'm4v', 'mov'].includes(ext) || /\/webtorrent\//.test(input) && /\.(mp4|m4v|mov)/i.test(input);
+      const ext = path.extname(input).toLowerCase().replace('.', '');
+      const compatContainer = ['mp4', 'm4v', 'mov'].includes(ext);
       const compatAudio = !info.acodec || AUDIO_OK.has(info.acodec);
       if (compatContainer && compatAudio) {
-        // Already castable as-is: direct file serve (+ sideloadable subs), or a token-scoped torrent proxy.
+        // Already castable as-is: direct file serve (+ sideloadable subs).
         const finishDirect = (url) => {
           if (finished) return;
           if (!url) return cb(null);
-          // Attach embedded text subs (local files) + any external .srt/.ass as standalone WebVTT the
+          // Attach embedded text subs + any external .srt/.ass as standalone WebVTT the
           // cast receiver can sideload — direct-MP4 casts used to carry NO subtitles. Only when this is
           // a Spritz Receiver handoff (directSubs; main.js resolveCastable's forCast) — AirPlay/AVPlayer
           // reads MP4 subs itself, so the pre-resolution skips the extraction.
           if (opts && opts.directSubs) {
-            disposeSubs = prepareDirectSubs(input, isFile, extraSubs, (subs) => cb(url, subs));
+            disposeSubs = prepareDirectSubs(input, extraSubs, (subs) => cb(url, subs));
             if (cancelled && typeof disposeSubs === 'function') { try { disposeSubs(); } catch (e) {} disposeSubs = null; }
           }
           else cb(url);
         };
-        if (isFile) {
-          disposeServe = serve(input, finishDirect);
-          if (cancelled && typeof disposeServe === 'function') { try { disposeServe(); } catch (e) {} disposeServe = null; }
-          return;
-        }
-        const m = input.match(/^http:\/\/(?:localhost|127\.0\.0\.1)(:\d+)(\/.*)$/i);
-        if (!m) return finishDirect(null);
-        disposeServe = serveDlna(input, 'video/mp4', finishDirect);
+        disposeServe = serve(input, finishDirect);
         if (cancelled && typeof disposeServe === 'function') { try { disposeServe(); } catch (e) {} disposeServe = null; }
         return;
       }
-      if (remuxAlt) return fallback(); // fast: live HLS (first segment in seconds)
-      // remux needed (foreign container and/or audio): -c:v copy (+ audio→AAC) to a temp
-      // MP4, then serve that complete file via /file/ with range support.
-      ensure(() => {
-        if (finished) return;
-        disposeFallback = remuxToTemp(input, !compatAudio, (tempPath) => {
-          if (finished) return;
-          if (!tempPath) return cb(null);
-          disposeServe = serve(tempPath, cb);
-          if (cancelled && typeof disposeServe === 'function') { try { disposeServe(); } catch (e) {} disposeServe = null; }
-        });
-        if (cancelled && typeof disposeFallback === 'function') { try { disposeFallback(); } catch (e) {} disposeFallback = null; }
-      });
+      fallback(); // foreign container and/or audio: live HLS (first segment in seconds)
     });
     if (cancelled && typeof disposeProbe === 'function') { try { disposeProbe(); } catch (e) {} disposeProbe = null; }
     return cancel;
@@ -2748,13 +2645,12 @@ module.exports = function createLanServer(opts) {
 
   // Extract embedded text subtitle tracks (local file) + external .srt/.ass files to standalone
   // WebVTT served over /file/ (text/vtt), for SIDELOADING onto a direct-MP4 cast (cast.js → TEXT
-  // tracks). cb([{url,lang,name}]). Torrent/remote input: skip embedded probe (would stall), but
-  // still attach external files. Bitmap subs are skipped (no WebVTT path).
+  // tracks). cb([{url,lang,name}]). Bitmap subs are skipped (no WebVTT path).
   const directSubJobs = new Set();
   function cancelDirectSubJobs() {
     for (const cancel of [...directSubJobs]) cancel();
   }
-  function prepareDirectSubs(input, isFile, extraSubs, cb) {
+  function prepareDirectSubs(input, extraSubs, cb) {
     let finished = false, cancelled = false, started = false, disposeProbe = null;
     const children = new Set(), outputs = new Set(), registrations = new Set();
     const finish = (tracks) => {
@@ -2827,8 +2723,7 @@ module.exports = function createLanServer(opts) {
         });
       });
     };
-    if (isFile) disposeProbe = probeTracks(input, (info) => run(info && info.subs ? info.subs.filter((x) => !x.bitmap) : []));
-    else run([]);
+    disposeProbe = probeTracks(input, (info) => run(info && info.subs ? info.subs.filter((x) => !x.bitmap) : []));
     if (cancelled && typeof disposeProbe === 'function') { try { disposeProbe(); } catch (e) {} disposeProbe = null; }
     return cancel;
   }
@@ -2841,7 +2736,7 @@ module.exports = function createLanServer(opts) {
     // writing into a directory that is about to be deleted, and they hold the process open. Found
     // because a test file stopped exiting once a case left a session in flight.
     cancelDirectPreparations();
-    cancelRemux(); cancelHls(); cancelVod(); cancelMkv('teardown');
+    cancelHls(); cancelVod(); cancelMkv('teardown');
     try { if (server) server.close(); } catch (e) {} server = null;
     try { if (binding) binding.close(); } catch (e) {} binding = null;
     cancelProxyRequests();
@@ -2853,7 +2748,7 @@ module.exports = function createLanServer(opts) {
     }
   }
 
-  // Cancel any in-flight HLS remux + temp remux (without closing the server) — used when the source
+  // Cancel any in-flight HLS remux (without closing the server) — used when the source
   // changes or a torrent is cancelled, so an orphan ffmpeg isn't left reading a dead URL. Also prune
   // the per-source token Maps (they only grew until app-quit before): the previous source's /file/ and
   // /dlna/ URLs are dead now, and the next source re-registers its own afterwards. (Audit M7)
@@ -3701,9 +3596,9 @@ module.exports = function createLanServer(opts) {
     });
   }
 
-  function cancelActive() { cancelDirectSubJobs(); cancelTokenRegistrations(); cancelDirectPreparations(); cancelProxyRequests(); cancelHls(); cancelRemux(); cancelVod(); cancelMkv('cancelActive — the source changed or casting stopped'); files.clear(); dlnaProxies.clear(); }
+  function cancelActive() { cancelDirectSubJobs(); cancelTokenRegistrations(); cancelDirectPreparations(); cancelProxyRequests(); cancelHls(); cancelVod(); cancelMkv('cancelActive — the source changed or casting stopped'); files.clear(); dlnaProxies.clear(); }
 
-  return { retireReceiverHls: cancelHls, serve, serveDlna, serveSource, serveSubtitleForDlna, prepareCast, serveHls, serveMkv, serveVod, cancelVod, teardown, cancelActive, lanAddress, avCompatible,
+  return { retireReceiverHls: cancelHls, serve, serveDlna, serveSubtitleForDlna, prepareCast, serveHls, serveMkv, serveVod, cancelVod, teardown, cancelActive, lanAddress, avCompatible,
     // Transport epochs (SPRITZ_VOD_EPOCH=1): seek by logical position, map a reported position back.
     vodSeek, vodLogical, vodSourceDuration, vodEpoch,
     // Where the AirPlay player is. Only the orchestrator sees AVPlayer's clock, and only this module
@@ -3736,7 +3631,11 @@ module.exports = function createLanServer(opts) {
     serverPort: () => (server && server.listening ? port : null), // diagnostics: where receivers are pointed
     // The receiver control channel attaches to this server's `upgrade` event; see onServer above.
     onServer,
-    ensureServer: (cb) => ensure(() => cb(server)) };
+    ensureServer: (cb) => ensure(() => cb(server)),
+    // The packager's source proxy (serveHls is the only production caller). Exposed so
+    // source-read-observation.test.js can drive the real producer route over HTTP; it needs a
+    // registerSourceProducer option and a listening server (ensureServer) first.
+    createOwnedSource };
 };
 
 function safeStat(f) { try { const s = fs.statSync(f); return s.isFile() ? s : null; } catch (e) { return null; } }
@@ -3834,7 +3733,6 @@ module.exports.minimalMaster = minimalMaster;
 module.exports.servedMaster = servedMaster;
 module.exports.isCompleteMaster = isCompleteMaster;
 module.exports.canSynthesizeMaster = canSynthesizeMaster;
-module.exports.masterWithSubs = masterWithSubs;
 module.exports.CAST_PIPE_MUXFLAGS = CAST_PIPE_MUXFLAGS;
 module.exports.lastKeyframeAtOrBefore = lastKeyframeAtOrBefore;
 module.exports.castSeekArgs = castSeekArgs;

@@ -63,4 +63,4 @@ function canSendOriginal(plan, info, opts) {
   return { ok: true };
 }
 
-module.exports = { canSendOriginal, DIRECT_CONTAINERS, DIRECT_VIDEO, DIRECT_AUDIO };
+module.exports = { canSendOriginal };

@@ -73,4 +73,4 @@ function allowCommand(args) {
   return true;
 }
 
-module.exports = { allowProperty, allowCommand, PROP_ALLOW, CMD_ALLOW, CMD_TARGET_ALLOW };
+module.exports = { allowProperty, allowCommand };

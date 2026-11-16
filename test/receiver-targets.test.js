@@ -60,7 +60,9 @@ test('an authenticated session makes a receiver online and carries its playback'
   assert.equal(t[0].status, T.ONLINE);
   assert.equal(t[0].playback.state, 'playing');
   assert.equal(t[0].playback.currentTime, 5901.2);
-  assert.equal(t[0].playback.ageMs, 400, 'a position without its age is not knowledge');
+  // Only what the renderer reads is published (renderer.js syncReceiverPlayback / receiver-event).
+  assert.ok(!('ageMs' in t[0].playback), 'nothing reads a reading age');
+  assert.ok(!('pairedAt' in t[0]), 'the pairing time stays in the registry');
 });
 
 // An unauthenticated socket is not a place a film can be sent.

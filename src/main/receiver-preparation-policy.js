@@ -18,9 +18,9 @@ function stallAction({ sourceWaiting, category, elapsedMs }) {
 
 // Packaged-app defaults: a Finder launch has no shell environment, so the shipped behaviour must
 // be the hardware-qualified one. Source-selected audio is on (SPRITZ_RECEIVER_SOURCE_AUDIO=0 turns
-// it off); near-position preparation is not yet qualified and stays opt-in.
+// it off).
 function receiverFeatures(env) {
-  return { sourceAudio: env.SPRITZ_RECEIVER_SOURCE_AUDIO !== '0', nearAudio: env.SPRITZ_RECEIVER_NEAR_AUDIO === '1' };
+  return { sourceAudio: env.SPRITZ_RECEIVER_SOURCE_AUDIO !== '0' };
 }
 
 module.exports = { sourceWaiting, stallAction, receiverFeatures };

@@ -65,4 +65,4 @@ function shouldLoad({ hello, desired } = {}) {
   };
 }
 
-module.exports = { shouldLoad, HOLDING };
+module.exports = { shouldLoad };

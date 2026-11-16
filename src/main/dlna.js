@@ -98,33 +98,11 @@ const SOAP_TIMEOUT = { SetAVTransportURI: 20000, Play: 20000, Stop: 10000, Seek:
 for (const k of Object.keys(SOAP_TIMEOUT)) SOAP_TIMEOUT[k] = Math.max(50, Math.round(SOAP_TIMEOUT[k] * TSCALE));
 const httpGet = (url, cb) => { try { const u = new URL(url); return httpReq({ host: u.hostname, port: u.port || 80, path: u.pathname + u.search, method: 'GET' }, null, cb); } catch (e) { cb(e); } };
 
-// Physical-LAN private IPv4s only (skip loopback + VPN/tunnel interfaces) — same rule as cast.js,
-// so the unicast SSDP sweep below walks exactly the subnets the eureka sweep does.
-function lanSubnets() {
-  const out = [];
-  const ifaces = os.networkInterfaces();
-  for (const name of Object.keys(ifaces)) {
-    if (!/^(en|eth)/i.test(name)) continue; // physical NICs only
-    for (const a of ifaces[name] || []) {
-      if (a.internal) continue;
-      if (a.family !== 'IPv4' && a.family !== 4) continue;
-      if (!/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(a.address)) continue;
-      out.push(a.address);
-    }
-  }
-  return out;
-}
-// User-entered addresses (Settings) merged with the SPRITZ_DLNA_HOSTS env var — probed by the
-// unicast sweep alongside normal SSDP, for renderers that never answer a broadcast.
+const { lanSubnets, parseHosts } = require('./lan-hosts'); // same rule as cast.js, so the unicast SSDP sweep walks exactly the subnets the eureka sweep does
+// User-entered addresses (Settings) — probed by the unicast sweep alongside normal SSDP, for
+// renderers that never answer a broadcast.
 let userHosts = [];
-function setManualHosts(csv) {
-  userHosts = String(csv || '').split(',').map((x) => x.trim())
-    .filter((x) => /^\d{1,3}(\.\d{1,3}){3}$/.test(x));
-}
-function manualHosts() {
-  const env = String(process.env.SPRITZ_DLNA_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean);
-  return [...new Set(userHosts.concat(env))];
-}
+function setManualHosts(csv) { userHosts = parseHosts(csv); }
 
 // Durable last-good renderer cache. The LG's SSDP responder is INTERMITTENT — it answers unicast
 // M-SEARCH right after cast activity and goes silent when idle, while its UPnP HTTP stack stays up
@@ -271,8 +249,8 @@ module.exports = function createDlna() {
   function unicastSweep() {
     if (!sock) return;
     const gen = discoveryGeneration, owner = sock;
-    const hosts = knownHosts().concat(manualHosts()); // last-good renderers answer first
-    for (const ip of lanSubnets()) {
+    const hosts = knownHosts().concat(userHosts); // last-good renderers answer first
+    for (const ip of lanSubnets(os.networkInterfaces())) {
       const base = ip.replace(/\.\d+$/, '.');
       for (let n = 1; n <= 254; n++) { const h = base + n; if (h !== ip && hosts.indexOf(h) < 0) hosts.push(h); }
     }
@@ -467,5 +445,5 @@ module.exports = function createDlna() {
 
   function teardown() { try { if (current) stop(); } catch (e) {} stopDiscovery(); current = null; } // stop the TV, not just discovery
 
-  return { on: (e, fn) => ev.on(e, fn), startDiscovery, stopDiscovery, load, play, pause, stop, seek, setVolume, position, transportState, teardown, setManualHosts, discoveryState: health.snapshot };
+  return { on: (e, fn) => ev.on(e, fn), startDiscovery, load, play, pause, stop, seek, setVolume, position, transportState, teardown, setManualHosts, discoveryState: health.snapshot };
 };

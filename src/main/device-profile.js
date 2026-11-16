@@ -112,12 +112,9 @@ function outranks(next, prev) {
   return SOURCES.indexOf(next.source) > SOURCES.indexOf(prev.source);
 }
 
-const canCopyAudio = (profile, codec) =>
-  !!codec && normalise(profile).audioCopy.includes(String(codec).toLowerCase());
-
 module.exports = {
-  defaultProfile, fromMdns, fromEureka, normalise, outranks, canCopyAudio, isTvLike,
-  AUDIO_BASIC, AUDIO_PASSTHROUGH, SOURCES
+  defaultProfile, fromMdns, fromEureka, normalise, outranks, isTvLike,
+  AUDIO_PASSTHROUGH
 };
 
 // UHD is a platform fact, not the web application's 1920x1080 graphics viewport.

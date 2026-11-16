@@ -224,3 +224,16 @@ test('low space does not interrupt an already downloaded selected file', async t
   for (const timer of [...f.timers.values()].filter(x => x.interval)) timer.fn();
   assert.equal(tor.destroyed, undefined); assert.equal(f.events.some(e => e.type === 'torrent:error'), false);
 });
+
+// The whole file is already selected at priority 0 when playback starts. Any further select over a
+// range inside it is merged by webtorrent into ONE whole-file selection at the higher priority, so a
+// "tail" request at priority 1 never fetched the tail early; it only raised the background download
+// to the priority of mpv's own reads, which then split the peer request slots with the playhead.
+test('handing the head to mpv adds no priority selection over the playing file', async (t) => {
+  const f = fixture(t); await f.torrent.add('A'); const tor = f.clients[0].torrents[0]; tor.ready();
+  const selects = []; tor.select = (from, to, priority) => selects.push({ from, to, priority });
+  tor.bitfield.get = () => true;
+  f.torrent.selectFile(0);
+  assert.equal(f.events.filter((e) => e.type === 'torrent:ready').length, 1);
+  assert.deepEqual(selects, []);
+});

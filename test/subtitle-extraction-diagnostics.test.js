@@ -22,11 +22,3 @@ test('subtitle diagnostics distinguish missing input packets from preserved part
 test('mux timestamp failure takes precedence over an expired progress deadline', () => {
   assert.equal(classify('Non-monotonic DTS; Error submitting a packet to the muxer: Invalid argument', { bytes: 0, timedOut: true }), 'timestamp-or-mux-error');
 });
-
-test('terminal mux detection handles split output without treating DTS warnings as fatal', () => {
-  const diag = createDiagnostics();
-  diag.capture('Non-monotonic DTS; changing to 123'); assert.equal(diag.hasTerminalMuxFailure(), false);
-  diag.capture('Error submitting a packet to the '); assert.equal(diag.hasTerminalMuxFailure(), false);
-  diag.capture('muxer: Invalid argument'); assert.equal(diag.hasTerminalMuxFailure(), true);
-  diag.capture('x'.repeat(5000)); assert.equal(diag.hasTerminalMuxFailure(), true);
-});

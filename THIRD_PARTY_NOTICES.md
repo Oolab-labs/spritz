@@ -152,8 +152,8 @@ or SSPL-licensed package is present in the dependency tree.
 ## 5. macOS system frameworks (linked by native addons, not redistributed)
 
 `native/airplay` and `native/nowplaying` link only Apple system frameworks (AppKit, AVFoundation, AVKit,
-CoreMedia, Foundation, MediaPlayer); `native/mpv` additionally links Cocoa, QuartzCore, OpenGL, CoreVideo and
-IOSurface. These come with macOS under Apple's SDK licence and are not redistributed by Spritz.
+CoreMedia, Foundation, MediaPlayer); `native/mpv` additionally links Cocoa, OpenGL and CoreVideo. These
+come with macOS under Apple's SDK licence and are not redistributed by Spritz.
 
 ---
 
