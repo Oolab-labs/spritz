@@ -1188,14 +1188,16 @@ if (!gotLock) {
   cast.on('connection-closed', ({ at, during, retries } = {}) => {
     castLog('the TV closed the Cast connection during ' + during + (Number.isFinite(at) ? ' at ' + Math.round(at) + 's (stream clock)' : '') + ', ' + retries + ' reconnect(s) so far');
   });
-  cast.on('reconnect', ({ at } = {}) => {
+  cast.on('reconnect', ({ at, duringLoad } = {}) => {
     if (castEngine !== 'chromecast' || !castMkv) return;
     const now = Date.now();
     if (now - mkvReconnectAt > 30000) mkvReconnects = 0; // 30s of stability resets the budget
     if (mkvReconnects >= 3) { resumeLocalFromChromecast(); send('cast-event', { type: 'error', message: 'Cast connection lost.' }); return; }
     mkvReconnects++; mkvReconnectAt = now;
     // `at` is the receiver's own clock, which counts from the start of the stream; lastCastPos is film time.
-    recastMkv(lastCastPos || lastAvTime || at || 0, castMkv.audioTrack); // fresh MKV stream from the live position
+    // Except mid-LOAD, when `at` is the film position that load was taking the TV to (a seek's target),
+    // and lastCastPos is still where the TV was before it.
+    recastMkv(duringLoad ? (at || 0) : (lastCastPos || lastAvTime || at || 0), castMkv.audioTrack); // fresh MKV stream
   });
   // The TV closed the Cast app — Home, another input, or another phone casting. The session is gone;
   // waiting on it is the hang. Carry on locally from the TV's last position.
@@ -2361,6 +2363,7 @@ if (!gotLock) {
       // The source changed (or a cast was cancelled) during the ~12s handshake → don't resurrect. (Audit M3)
       subGuard.end(4000);
       if (gen !== loadGen) { pendingObservation = null; try { cast.stop(); } catch (e) {} setEngine('mpv'); return; }
+      if (err && err.reconnecting && castEngine === 'chromecast' && castMkv) { pendingObservation = null; return; } // a re-cast replaces it
       if (err) {
         if (err.detailedErrorCode) console.error('[cast] LOAD failed, detailedErrorCode=' + err.detailedErrorCode + ' (104=container/codec unsupported, e.g. a real Chromecast rejecting MKV)');
         // Recorded as context only. What a refusal does NOT tell us is which of the stream's
@@ -2394,7 +2397,16 @@ if (!gotLock) {
       castMkv.audioTrack = aTrack; castMkv.burnSub = (bs != null && bs >= 0) ? bs : null; castMkv.menuSubs = menuSubs || [];
       lastIdleReason = null;
       cast.load(host, { url: u, title: lastCastTitle, contentType: lan.castMime(), livePipe: true, currentTime: Math.max(0, startSec || 0), subs: sideloadSubs || [] }, (err) => {
-        if (err) { subGuard.end(0); send('cast-event', { type: 'error', message: err.message }); return; }
+        if (err) {
+          subGuard.end(0);
+          // Reconnecting: cast.js has already asked for the re-cast that replaces this one.
+          if (err.reconnecting && castEngine === 'chromecast' && castMkv) return;
+          // Otherwise the cast is over. Hand playback back to the Mac at the TV's position, as the first
+          // cast's failure does. Only telling the window left it playing locally from where the cast had
+          // started, while this process still thought it was casting.
+          resumeLocalFromChromecast(); send('cast-event', { type: 'error', message: err.message });
+          return;
+        }
         send('cast-event', { type: 'started', host, audioTracks: audioTracks || [], audioActive: aTrack, isMkv: true, subTracks: menuSubs || [], burnActive: castMkv.burnSub });
         if (cb) cb();
         subGuard.end(4000); // after cb: setTrack's echo arrives a moment later
