@@ -1185,6 +1185,9 @@ if (!gotLock) {
   // A LIVE Chromecast session dropped (Wi-Fi blip) on the non-seekable MKV pipe → re-cast a fresh stream
   // from the live position (cast.js can't just re-GET the URL). Bounded so a dead TV can't loop forever.
   let mkvReconnects = 0, mkvReconnectAt = 0;
+  cast.on('connection-closed', ({ at, during, retries } = {}) => {
+    castLog('the TV closed the Cast connection during ' + during + (Number.isFinite(at) ? ' at ' + Math.round(at) + 's (stream clock)' : '') + ', ' + retries + ' reconnect(s) so far');
+  });
   cast.on('reconnect', ({ at } = {}) => {
     if (castEngine !== 'chromecast' || !castMkv) return;
     const now = Date.now();
