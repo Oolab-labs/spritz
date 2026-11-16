@@ -52,4 +52,4 @@ function shouldRetryInSoftware(stderr) {
   return classifyFailure(stderr) !== 'input';
 }
 
-module.exports = { classifyFailure, shouldRetryInSoftware, ENCODER_FAILURE, INPUT_FAILURE };
+module.exports = { classifyFailure, shouldRetryInSoftware };

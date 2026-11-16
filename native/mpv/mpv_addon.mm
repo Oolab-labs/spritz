@@ -1,17 +1,18 @@
 // Spritz — libmpv Node-API addon (Objective-C++).
 //
-//   M1a       apiVersion()/probe()         headless libmpv smoke test.
-//   M1b GATEA attachTestSurface()/detach() compositing proof (magenta, no mpv) — PASSED.
-//   M1b GATEB startPlayer()/loadFile()/... real libmpv render API onto the same
-//             NSOpenGLView (under the DOM): vo=libmpv, mpv_render_context (opengl),
-//             update callback -> setNeedsDisplay, render with the QUERIED FBO + FLIP_Y.
+//   attachTestSurface()/detach()  create/tear down the NSOpenGLView that sits under the web layer.
+//                                 Despite the name this is the production attach path (main.js).
+//   startPlayer()                 mpv core with vo=libmpv + the render API (opengl) on that view:
+//                                 update callback -> display-link clock -> drawRect, rendering into
+//                                 the QUERIED FBO with FLIP_Y.
+//   setEventListener()            property/file/log events, delivered to JS by a dedicated pump
+//                                 thread through a ThreadSafeFunction.
+//   command()/setProperty()/playerStat()/mediaStats()  control and read-back.
 //
-// Bring-up simplification (deliberate, per blueprint): rendering is driven on the
-// MAIN thread via the view's drawRect (the render context is created + used on the
-// same thread with the GL context current), and ADVANCED_CONTROL is OFF. A dedicated
-// render thread + ThreadSafeFunction property events come after the gate proves out.
+// Rendering is driven on the MAIN thread via the view's drawRect (the render context is created and
+// used on the same thread with the GL context current), and ADVANCED_CONTROL is OFF (see
+// CreateRenderContextCurrent for why).
 
-#include <cstdlib>   // getenv (SPRITZ_GL_READBACK)
 #include <napi.h>
 #include <mpv/client.h>
 #include <mpv/render.h>
@@ -20,7 +21,6 @@
 #import <OpenGL/gl3.h>
 #import <CoreVideo/CoreVideo.h>
 
-#include <chrono>
 #include <string>
 #include <thread>
 #include <atomic>
@@ -29,79 +29,11 @@
 #include <cstdio>
 
 // ----------------------------------------------------------------------------
-// M1a: headless libmpv smoke test.
-// ----------------------------------------------------------------------------
-static std::string ApiVersionString() {
-  unsigned long v = mpv_client_api_version();
-  return std::to_string((v >> 16) & 0xffff) + "." + std::to_string(v & 0xffff);
-}
-Napi::Value ApiVersion(const Napi::CallbackInfo& info) {
-  return Napi::String::New(info.Env(), ApiVersionString());
-}
-Napi::Value Probe(const Napi::CallbackInfo& info) {
-  Napi::Env env = info.Env();
-  std::string src = (info.Length() > 0 && info[0].IsString())
-      ? info[0].As<Napi::String>().Utf8Value()
-      : "av://lavfi:testsrc=duration=3:size=320x240:rate=30";
-  mpv_handle* mpv = mpv_create();
-  if (!mpv) { Napi::Error::New(env, "mpv_create failed").ThrowAsJavaScriptException(); return env.Null(); }
-  mpv_set_option_string(mpv, "vo", "null");
-  mpv_set_option_string(mpv, "ao", "null");
-  mpv_set_option_string(mpv, "terminal", "no");
-  mpv_set_option_string(mpv, "idle", "yes");
-  if (mpv_initialize(mpv) < 0) { mpv_terminate_destroy(mpv); Napi::Error::New(env, "mpv_initialize failed").ThrowAsJavaScriptException(); return env.Null(); }
-  char* ver = mpv_get_property_string(mpv, "mpv-version");
-  std::string mpvVersion = ver ? ver : ""; if (ver) mpv_free(ver);
-  mpv_observe_property(mpv, 0, "width", MPV_FORMAT_INT64);
-  mpv_observe_property(mpv, 0, "height", MPV_FORMAT_INT64);
-  mpv_observe_property(mpv, 0, "duration", MPV_FORMAT_DOUBLE);
-  const char* cmd[] = { "loadfile", src.c_str(), nullptr };
-  int loadrc = mpv_command(mpv, cmd);
-  int64_t width = 0, height = 0; double duration = 0; bool loaded = false;
-  auto start = std::chrono::steady_clock::now();
-  while (true) {
-    mpv_event* ev = mpv_wait_event(mpv, 0.1);
-    if (ev->event_id == MPV_EVENT_FILE_LOADED) loaded = true;
-    if (ev->event_id == MPV_EVENT_PROPERTY_CHANGE) {
-      auto* p = static_cast<mpv_event_property*>(ev->data);
-      std::string name = p->name ? p->name : "";
-      if (p->format == MPV_FORMAT_INT64 && name == "width")  width  = *static_cast<int64_t*>(p->data);
-      if (p->format == MPV_FORMAT_INT64 && name == "height") height = *static_cast<int64_t*>(p->data);
-      if (p->format == MPV_FORMAT_DOUBLE && name == "duration") duration = *static_cast<double*>(p->data);
-    }
-    if (ev->event_id == MPV_EVENT_END_FILE) break;
-    if (width && height && duration > 0) break;
-    if (std::chrono::steady_clock::now() - start > std::chrono::seconds(4)) break;
-  }
-  mpv_terminate_destroy(mpv);
-  Napi::Object out = Napi::Object::New(env);
-  out.Set("apiVersion", Napi::String::New(env, ApiVersionString()));
-  out.Set("mpvVersion", Napi::String::New(env, mpvVersion));
-  out.Set("source", Napi::String::New(env, src));
-  out.Set("loadCommandRc", Napi::Number::New(env, loadrc));
-  out.Set("fileLoaded", Napi::Boolean::New(env, loaded));
-  out.Set("width", Napi::Number::New(env, static_cast<double>(width)));
-  out.Set("height", Napi::Number::New(env, static_cast<double>(height)));
-  out.Set("duration", Napi::Number::New(env, duration));
-  return out;
-}
-
-// ----------------------------------------------------------------------------
-// M1b: native surface + libmpv render API.
+// Native surface + libmpv render API.
 // ----------------------------------------------------------------------------
 static mpv_handle*         gMpv = nullptr;
 static mpv_render_context* gRender = nullptr;
 static bool                gWantPlayer = false;
-static unsigned char       gLastPixel[4] = {0,0,0,0};
-// glReadPixels forces a synchronous GPU->CPU sync, stalling the whole pipeline. Doing it once per
-// displayed frame (which is what this used to do, on both the render and idle-fill paths) costs a
-// stall on EVERY frame — for a value only two debug getters expose and nothing in the app reads.
-// Keep the capability for debugging, off unless explicitly asked for.
-static bool gPixelReadback = (getenv("SPRITZ_GL_READBACK") != nullptr);
-static int                 gFrameCount = 0;
-static GLint               gLastFboBinding = -1;
-static int                 gLastRenderRc = 99;   // 99 = render not yet attempted
-static std::atomic<int>    gUpdateCbCount{0};    // diag: written on the (arbitrary) update-cb thread, read on main
 
 // Property-event pump → JS (ThreadSafeFunction). The pump thread is the SOLE
 // caller of mpv_wait_event; it never touches GL and never blocks the mpv core.
@@ -186,8 +118,7 @@ static int CreateRenderContextCurrent() {
     self.wantsLayer = YES;
     // Opt the GL surface into Extended Dynamic Range so HDR content can exceed SDR white
     // on an EDR-capable display (harmless/no-op on SDR displays).
-    if ([self respondsToSelector:@selector(setWantsExtendedDynamicRangeOpenGLSurface:)])
-      [self setWantsExtendedDynamicRangeOpenGLSurface:YES];
+    self.wantsExtendedDynamicRangeOpenGLSurface = YES;
     self.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
   }
   return self;
@@ -203,7 +134,6 @@ static int CreateRenderContextCurrent() {
 
   GLint fbo = 0;
   glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
-  gLastFboBinding = fbo;
   NSRect bpx = [self convertRectToBacking:self.bounds];
   int pxW = (int)bpx.size.width, pxH = (int)bpx.size.height;
 
@@ -215,8 +145,7 @@ static int CreateRenderContextCurrent() {
       { MPV_RENDER_PARAM_FLIP_Y, &flip },
       { (mpv_render_param_type)0, nullptr }
     };
-    gLastRenderRc = mpv_render_context_render(gRender, rp);
-    if (gPixelReadback) glReadPixels(pxW/2, pxH/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, gLastPixel);
+    mpv_render_context_render(gRender, rp);
     [ctx flushBuffer];
     mpv_render_context_report_swap(gRender);
   } else {
@@ -225,10 +154,8 @@ static int CreateRenderContextCurrent() {
     glViewport(0, 0, pxW, pxH);
     glClearColor(0.043f, 0.043f, 0.059f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    if (gPixelReadback) glReadPixels(pxW/2, pxH/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, gLastPixel);
     [ctx flushBuffer];
   }
-  gFrameCount++;
 }
 @end
 
@@ -245,7 +172,6 @@ static std::atomic<bool> gInterpolation{false};
 
 static void on_mpv_render_update(void* ctx) {
   // Arbitrary thread: signal only — never call mpv/GL here.
-  gUpdateCbCount.fetch_add(1, std::memory_order_relaxed);
   // Previously this dispatched a redraw straight to the main queue. It no longer does: the display
   // link below is now the single scheduler, so frames are presented on a vsync-aligned clock
   // instead of two independent sources both asking to draw.
@@ -549,19 +475,6 @@ Napi::Value StartPlayer(const Napi::CallbackInfo& info) {
   return out;
 }
 
-// loadFile(url)
-Napi::Value LoadFile(const Napi::CallbackInfo& info) {
-  Napi::Env env = info.Env();
-  if (!gMpv) { Napi::Error::New(env, "player not started").ThrowAsJavaScriptException(); return env.Null(); }
-  std::string url = info[0].As<Napi::String>().Utf8Value();
-  const char* cmd[] = { "loadfile", url.c_str(), "replace", nullptr };
-  int rc = mpv_command(gMpv, cmd);
-  RunOnMain(^{ if (gVideoView) [gVideoView setNeedsDisplay:YES]; });
-  Napi::Object out = Napi::Object::New(env);
-  out.Set("loadRc", Napi::Number::New(env, rc));
-  return out;
-}
-
 // command(name, ...args) — generic mpv_command passthrough (stop, seek, frame-step,
 // sub-add, etc.). Args stringified, matching the old driver's command() semantics.
 Napi::Value Command(const Napi::CallbackInfo& info) {
@@ -582,18 +495,16 @@ Napi::Value Command(const Napi::CallbackInfo& info) {
   return Napi::Number::New(env, rc);
 }
 
-// playerStat() — read-back proof of playback (safe: client API, off the render path).
+// playerStat() — position/pause/track/audio-output read-back for main.js and the renderer's stall
+// check (safe: client API, off the render path). Size and hwdec live in mediaStats().
 Napi::Value PlayerStat(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   Napi::Object out = Napi::Object::New(env);
   if (gMpv) {
-    double tp = 0, dur = 0; int64_t w = 0, h = 0; int paused = 0;
+    double tp = 0, dur = 0; int paused = 0;
     mpv_get_property(gMpv, "time-pos", MPV_FORMAT_DOUBLE, &tp);
     mpv_get_property(gMpv, "duration", MPV_FORMAT_DOUBLE, &dur);
-    mpv_get_property(gMpv, "dwidth",  MPV_FORMAT_INT64,  &w);
-    mpv_get_property(gMpv, "dheight", MPV_FORMAT_INT64,  &h);
     mpv_get_property(gMpv, "pause",   MPV_FORMAT_FLAG,   &paused);
-    char* hw = mpv_get_property_string(gMpv, "hwdec-current");
     char* aid = mpv_get_property_string(gMpv, "aid");
     char* sid = mpv_get_property_string(gMpv, "sid");
     out.Set("aid", Napi::String::New(env, aid ? aid : ""));
@@ -605,20 +516,8 @@ Napi::Value PlayerStat(const Napi::CallbackInfo& info) {
     if (sid) mpv_free(sid);
     out.Set("timePos", Napi::Number::New(env, tp));
     out.Set("duration", Napi::Number::New(env, dur));
-    out.Set("width", Napi::Number::New(env, (double)w));
-    out.Set("height", Napi::Number::New(env, (double)h));
     out.Set("paused", Napi::Boolean::New(env, paused != 0));
-    out.Set("hwdec", Napi::String::New(env, hw ? hw : ""));
-    if (hw) mpv_free(hw);
   }
-  out.Set("renderActive", Napi::Boolean::New(env, gRender != nullptr));
-  out.Set("frameCount", Napi::Number::New(env, gFrameCount));
-  out.Set("updateCbCount", Napi::Number::New(env, gUpdateCbCount.load(std::memory_order_relaxed)));
-  out.Set("lastRenderRc", Napi::Number::New(env, gLastRenderRc));
-  out.Set("fboBinding", Napi::Number::New(env, gLastFboBinding));
-  Napi::Array px = Napi::Array::New(env, 4);
-  for (int i = 0; i < 4; i++) px.Set(i, Napi::Number::New(env, gLastPixel[i]));
-  out.Set("centerPixel", px);
   return out;
 }
 
@@ -649,7 +548,7 @@ Napi::Value MediaStats(const Napi::CallbackInfo& info) {
   return o;
 }
 
-// setProperty(name, value) — minimal control surface for the gate (pause etc.).
+// setProperty(name, value) — set any mpv property; type follows the JS value (bool/number/string).
 Napi::Value SetProperty(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (!gMpv) return env.Undefined();
@@ -664,18 +563,6 @@ Napi::Value SetProperty(const Napi::CallbackInfo& info) {
   else if (info[1].IsNumber()) { double d = info[1].As<Napi::Number>().DoubleValue(); mpv_set_property(gMpv, name.c_str(), MPV_FORMAT_DOUBLE, &d); }
   else { std::string s = info[1].As<Napi::String>().Utf8Value(); mpv_set_property_string(gMpv, name.c_str(), s.c_str()); }
   return env.Undefined();
-}
-
-Napi::Value GlSelfCheck(const Napi::CallbackInfo& info) {
-  Napi::Env env = info.Env();
-  Napi::Object out = Napi::Object::New(env);
-  Napi::Array px = Napi::Array::New(env, 4);
-  for (int i = 0; i < 4; i++) px.Set(i, Napi::Number::New(env, gLastPixel[i]));
-  out.Set("frameCount", Napi::Number::New(env, gFrameCount));
-  out.Set("centerPixel", px);
-  out.Set("fboBinding", Napi::Number::New(env, gLastFboBinding));
-  out.Set("presents", Napi::Boolean::New(env, gFrameCount > 0));
-  return out;
 }
 
 static void DetachCore() {
@@ -710,13 +597,9 @@ Napi::Value Detach(const Napi::CallbackInfo& info) {
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
-  exports.Set("apiVersion", Napi::Function::New(env, ApiVersion));
-  exports.Set("probe", Napi::Function::New(env, Probe));
   exports.Set("attachTestSurface", Napi::Function::New(env, AttachTestSurface));
-  exports.Set("glSelfCheck", Napi::Function::New(env, GlSelfCheck));
   exports.Set("setEventListener", Napi::Function::New(env, SetEventListener));
   exports.Set("startPlayer", Napi::Function::New(env, StartPlayer));
-  exports.Set("loadFile", Napi::Function::New(env, LoadFile));
   exports.Set("command", Napi::Function::New(env, Command));
   exports.Set("playerStat", Napi::Function::New(env, PlayerStat));
   exports.Set("mediaStats", Napi::Function::New(env, MediaStats));

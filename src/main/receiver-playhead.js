@@ -68,4 +68,4 @@ function playheadUpdate({ source, cur, dur } = {}) {
   return { frac, durationSec: Number(dur) };
 }
 
-module.exports = { isTorrentSource, playheadFraction, playheadUpdate, TORRENT_URL };
+module.exports = { isTorrentSource, playheadFraction, playheadUpdate };

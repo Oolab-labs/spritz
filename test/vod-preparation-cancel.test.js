@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { isTorrentSource } = require('../src/main/receiver-playhead');
 const source = fs.readFileSync(path.join(__dirname, '../src/main/lanserver.js'), 'utf8');
 function fixture() {
   const ready = [], probes = [], starts = [], results = [], disposed = [];
@@ -47,7 +48,7 @@ test('resolver distinguishes cancellation from decline and rejects superseded fa
   const main = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
   const resolver = main.slice(main.indexOf('  function resolveCastable('), main.indexOf('  // Resolve the CHROMECAST'));
   const pending = [], fallbacks = [];
-  const ctx = { loadGen: 1, AIRPLAY_4K: false, AIRPLAY_CAPS: {}, externalSubs: [],
+  const ctx = { loadGen: 1, AIRPLAY_4K: false, AIRPLAY_CAPS: {}, externalSubs: [], isTorrentSource,
     airplayCaps: (caps) => caps,
     lan: { serveVod: (_, __, cb) => pending.push(cb), serveHls: (input) => fallbacks.push(input) } };
   vm.createContext(ctx);
@@ -91,7 +92,7 @@ test('throwing completion cannot prevent cancellation of owned probe', () => {
 test('resolver disposer follows VOD decline into HLS and rejects duplicate/late callbacks', () => {
   const main = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
   let vodCallback, hlsCallback, starts = 0, hlsDisposed = 0; const results = [];
-  const ctx = { loadGen: 1, AIRPLAY_4K: false, AIRPLAY_CAPS: {}, externalSubs: [], airplayCaps: c => c,
+  const ctx = { loadGen: 1, AIRPLAY_4K: false, AIRPLAY_CAPS: {}, externalSubs: [], isTorrentSource, airplayCaps: c => c,
     lan: {
       serveVod: (_, __, cb) => { vodCallback = cb; return () => cb(null, { outcome: 'cancelled' }); },
       serveHls: (_, cb) => { starts++; hlsCallback = cb; return () => { hlsDisposed++; cb(null); }; }

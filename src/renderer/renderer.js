@@ -30,16 +30,6 @@ function isDirectMedia(u) {
   try { return /\.(mp4|mkv|webm|mov|avi|m4v|flv|ts|wmv|mpg|mpeg|ogv|m3u8|mpd|m2ts|mp3|aac|flac|wav|ogg|opus)$/i.test(new URL(u).pathname); }
   catch (e) { return false; }
 }
-// Synchronous "this source is plausibly castable" check — lets the cast/AirPlay buttons appear the
-// instant a local/direct file loads, WITHOUT waiting on the async serveHls/probe to flip `castable`
-// (the cast button shows on source+device, never on a per-file resolution). Excludes
-// torrents (the head must download first → rely on real `castable` + the retry) and stream-site pages.
-function pathLooksCastable(src) {
-  const s = String(src || '');
-  if (!s || isTorrentSrc(s)) return false;
-  if (/^https?:\/\//i.test(s)) return isDirectMedia(s);
-  return /\.(mp4|m4v|mov|mkv|avi|ts|m2ts|webm|wmv|flv|mpg|mpeg|ogv)$/i.test(s.replace(/^file:\/\//, '').split(/[?#]/)[0]);
-}
 
 // ---- elements ----
 const home = $('#home'), player = $('#player'), controls = $('#controls'), spinner = $('#spinner');
@@ -793,19 +783,7 @@ $('#sub-online').addEventListener('click', async () => {
   const res = await soda.player.onlineSubtitles(currentLocalPath);
   if (!ownsSubtitle(owner)) return;
   if (res && res.ok) { soda.player.addSubtitleFile(res.srt); toast('Subtitles added: ' + (res.name || 'OpenSubtitles') + ' ✓', 3000); }
-  else toast((res && res.error) || 'No subtitles found — try Whisper', 4000);
-});
-// Whisper is shelved (see index.html): it works, but it is too slow and too inaccurate on a
-// feature-length film to sit in the menu next to two subtitle sources that are neither.
-if (soda.experimental) $('#sub-generate').classList.remove('hidden');
-$('#sub-generate').addEventListener('click', async () => {
-  const owner = subtitleOwner();
-  closeMenus();
-  if (!currentLocalPath) { showSponsorToast('AI subs need a local file'); return; }
-  const res = await soda.player.generateSubtitles(currentLocalPath); // Whisper (async; main posts progress notices)
-  if (!ownsSubtitle(owner)) return;
-  if (res && res.ok) soda.player.addSubtitleFile(res.srt);
-  else toast((res && res.error) || 'Subtitle generation failed', 4000);
+  else toast((res && res.error) || 'No subtitles found', 4000);
 });
 const clampDelay = (v) => Math.round(Math.max(-30, Math.min(30, v)) * 10) / 10;
 const fmtDelay = (v) => (v > 0 ? '+' : '') + v.toFixed(1) + 's';

@@ -8,7 +8,7 @@ const { presentTargets } = require('../src/main/receiver-presentation');
 const source = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
 function fixture(logical, duration) {
   let position; const sent = [];
-  const ctx = { presentTargets, receivers: { on: (_, cb) => { position = cb; } },
+  const ctx = { presentTargets, receiverPlan: null, receivers: { on: (_, cb) => { position = cb; } },
     lan: { vodLogical: logical, vodSourceDuration: duration }, send: (_, event) => sent.push(event) };
   ctx.receiverTimelineTransport = () => ctx.lan;
   vm.createContext(ctx);
@@ -22,10 +22,10 @@ test('unknown/invalid epoch conversion cannot publish epoch-local film time', ()
   }
   const f = fixture(undefined); f.position({ epoch: 'unknown', currentTime: 2 }); assert.equal(f.sent.length, 0);
 });
-test('known epoch publishes converted film time including zero with the raw reading beside it', () => {
+test('known epoch publishes converted film time including zero, without the epoch-local reading', () => {
   for (const logical of [0, 602]) {
     const f = fixture(() => logical); f.position({ receiverId: 'lg', epoch: 'e1', currentTime: 2 });
-    assert.equal(f.sent[0].position.currentTime, logical); assert.equal(f.sent[0].position.epochLocal, 2);
+    assert.equal(f.sent[0].position.currentTime, logical); assert.ok(!('epochLocal' in f.sent[0].position));
   }
 });
 test('partial and invalid clocks do not publish a timeline update; direct clocks remain valid', () => {
@@ -39,14 +39,14 @@ test('epoch position duration uses owned source length and preserves playlist ob
   const raw = { receiverId: 'lg', epoch: 'owned', currentTime: 2, durationSec: 20 };
   f.position(raw);
   assert.equal(f.sent[0].position.durationSec, 7200);
-  assert.equal(f.sent[0].position.epochDurationSec, 20);
+  assert.ok(!('epochDurationSec' in f.sent[0].position));
   assert.equal(raw.durationSec, 20); assert.equal(raw.currentTime, 2);
 });
 test('unknown source duration never publishes epoch length as film duration', () => {
   const f = fixture(() => 602, () => null);
   f.position({ epoch: 'owned', currentTime: 2, durationSec: 20 });
   assert.equal(f.sent[0].position.durationSec, null);
-  assert.equal(f.sent[0].position.epochDurationSec, 20);
+  assert.ok(!('epochDurationSec' in f.sent[0].position));
 });
 
 test('audio replacement cannot retire the previous stream on a wrong or in-flight clock', () => {

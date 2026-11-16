@@ -37,9 +37,7 @@ function clearPlayback(s) {
     epoch: null,
     currentTime: null,
     durationSec: null,
-    paused: null,
-    bufferedUntil: null,
-    flags: [], tracks: null, trackMediaId: null, trackEpoch: null
+    tracks: null, trackMediaId: null, trackEpoch: null
   });
 }
 
@@ -51,12 +49,10 @@ function clearPlayback(s) {
 // fixed port — would change behaviour for every existing cast path to solve a problem only the
 // receiver has.
 //
-// 7737 is CHOSEN, not inherited. The spike and tools/receiver-dev.js use 8099, and making that the
-// protocol's permanent address would have meant the harness and the real application fighting for
-// the same port on a developer's machine — the beacon would lose, log a line nobody reads, and
-// discovery would silently stop working. It is also outside macOS's ephemeral range (49152-65535),
-// so the kernel will not hand it to something else first, and it is not one of the common
-// development ports (3000/5000/8000/8080/8099).
+// 7737 is CHOSEN, not inherited from the first spike's 8099. It is outside macOS's ephemeral range
+// (49152-65535), so the kernel will not hand it to something else first, and it is not one of the
+// common development ports (3000/5000/8000/8080/8099) — a beacon that lost its port to another
+// process would log a line nobody reads, and discovery would silently stop working.
 const BEACON_PORT = 7737;
 
 function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelectTrack } = {}) {
@@ -82,8 +78,12 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
   }
 
   // What each live connection is doing. Kept HERE rather than in the hub because it is application
-  // state — the hub's job ends at "a trusted message arrived".
-  const sessions = new Map();   // sessionId -> { receiverId, authenticated, state, mediaId, currentTime, ... }
+  // state — the hub's job ends at "a trusted message arrived". Whether a connection is TRUSTED is
+  // not kept here: the hub is the authority (hub.isAuthenticated), and a copy has diverged twice —
+  // a just-paired TV showed 'offline' (the hub reports pairing as `paired`), and a revoked socket,
+  // which the hub leaves open, still looked trusted here.
+  const sessions = new Map();   // sessionId -> { receiverId, state, mediaId, currentTime, ... }
+  const trusted = (sessionId) => !!hub && hub.isAuthenticated(sessionId);
 
   // What the application currently wants played, per receiver. This is the DESIRE; what the
   // television is actually doing is in `sessions`. Keeping them apart is what lets shouldLoad
@@ -96,9 +96,9 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
       store.save(storePath, registry);
     } catch (e) {
       // A store that cannot be written is worth saying out loud: pairings made now will not survive
-      // a restart. It is not worth stopping playback over.
+      // a restart. It is not worth stopping playback over. Logged only: nothing listens for an
+      // 'error' event on this service, and an EventEmitter throws one that nobody listens to.
       log('could not save the trust store — ' + e.message);
-      ev.emit('error', { where: 'persist', message: e.message });
     }
   }
 
@@ -109,13 +109,13 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
     // leave a device list on screen that nothing can act on.
     if (!started) return [];
     const live = [];
-    for (const [sessionId, s] of sessions) live.push(Object.assign({ sessionId, now: clock() }, s));
+    for (const [sessionId, s] of sessions) live.push(Object.assign({ sessionId }, s, { authenticated: trusted(sessionId) }));
     return targets.targetsFrom({ registry, sessions: live });
   }
 
   function sessionFor(receiverId) {
     for (const [sessionId, s] of sessions) {
-      if (s.receiverId === receiverId && s.authenticated) return { sessionId, s };
+      if (s.receiverId === receiverId && trusted(sessionId)) return { sessionId, s };
     }
     return null;
   }
@@ -223,11 +223,11 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
     });
     h.on('paired', (e) => {
       // Pairing AUTHENTICATES the socket that asked — the hub sets it to AUTHENTICATED inside
-      // confirmPairing — but it reports that as `paired`, not `authenticated`. Without this the
-      // session stayed marked untrusted here and the television showed as "offline" in the device
-      // list seconds after a successful pairing, and could not be played to. Seen in the real UI.
+      // confirmPairing — but it reports that as `paired`, not `authenticated`. The session must
+      // learn which television it is now, or it stayed unattributed and the television showed as
+      // "offline" in the device list seconds after a successful pairing. Seen in the real UI.
       const s = sessions.get(e.sessionId);
-      if (s) Object.assign(s, { receiverId: e.receiverId, authenticated: true, since: clock() });
+      if (s) Object.assign(s, { receiverId: e.receiverId, since: clock() });
       log(R.short(e.receiverId) + ' paired');
       emitTargets();
       ev.emit('pairing', targets.pendingFrom({ pending: h.pending() }));
@@ -235,14 +235,13 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
     h.on('revoked', () => { emitTargets(); });
 
     h.on('connected', ({ sessionId }) => {
-      sessions.set(sessionId, { receiverId: null, authenticated: false, state: 'idle', since: clock() });
+      sessions.set(sessionId, { receiverId: null, state: 'idle', since: clock() });
     });
 
     h.on('authenticated', ({ sessionId, receiverId, receiver }) => {
       const s = sessions.get(sessionId) || {};
       sessions.set(sessionId, Object.assign(s, {
-        receiverId, authenticated: true, since: clock(),
-        name: (receiver && receiver.name) || null,
+        receiverId, since: clock(),
         version: (receiver && receiver.version) || null
       }));
       log(R.short(receiverId) + ' authenticated');
@@ -251,7 +250,7 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
 
     h.on('auth.failed', ({ sessionId, receiverId, reason }) => {
       const s = sessions.get(sessionId);
-      if (s) { s.authenticated = false; s.receiverId = receiverId || s.receiverId; }
+      if (s) s.receiverId = receiverId || s.receiverId;
       log(R.short(receiverId) + ' authentication failed — ' + reason);
       emitTargets();
     });
@@ -259,15 +258,14 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
     // THE critical seam. A receiver's greeting only reaches here once the hub has authenticated it.
     h.on('capabilities', ({ sessionId, msg }) => {
       const s = sessions.get(sessionId);
-      if (!s || !s.authenticated) return;
-      s.logicalTimeline = msg.reported && msg.reported.logicalTimeline === 1;
+      if (!s || !trusted(sessionId)) return;
       s.profile = require('./device-profile').fromReceiver(msg.reported, s.receiverId);
       log(R.short(s.receiverId) + ' reported decoder profile: ' + s.profile.maxHeight + 'p, HEVC4K=' + s.profile.hevc4k);
     });
 
     h.on('hello', ({ sessionId, msg }) => {
       const s = sessions.get(sessionId);
-      if (!s || !s.authenticated) return;
+      if (!s || !trusted(sessionId)) return;
       // Record what the receiver says it is holding BEFORE deciding anything. This is knowledge
       // about the television, worth having even when the application has no plans for it — without
       // it, re-picking the film already on screen looked like "holding nothing" and restarted it.
@@ -340,7 +338,7 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
 
     h.on('select-track', ({ sessionId, msg }) => {
       const s = sessions.get(sessionId);
-      if (!s || !s.authenticated || !ownsReport(s, msg)) return;
+      if (!s || !trusted(sessionId) || !ownsReport(s, msg)) return;
       Promise.resolve(command(s.receiverId, 'select-track', msg)).then(result => {
         if (!result || !result.ok) { log(R.short(s.receiverId) + ' track request failed: ' + (result && result.why || 'unknown')); ev.emit('track-request-error', { receiverId: s.receiverId, why: result && result.why || 'Track selection failed' }); }
       }).catch(() => ev.emit('track-request-error', { receiverId: s.receiverId, why: 'Track selection failed' }));
@@ -355,7 +353,7 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
       const epoch = has(msg, 'epoch') ? (msg.epoch == null ? null : String(msg.epoch)) : (mediaId === s.mediaId ? s.epoch : null);
       const changed = s.mediaId !== mediaId || s.epoch !== epoch;
       if (changed) {
-        s.currentTime = null; s.bufferedUntil = null;
+        s.currentTime = null;
         if (s.trackMediaId !== mediaId || s.trackEpoch !== epoch) s.tracks = null;
       }
       s.mediaId = mediaId; s.epoch = epoch;
@@ -388,15 +386,11 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
           (msg.state === 'playing' || msg.state === 'paused')) {
         want.autoplay = msg.state === 'playing';
       }
-      // `flags` (stalled, waiting) are recorded but are NOT the state. Measured on this hardware:
-      // stalled fires at every segment boundary while the clock keeps perfect 1:1 time.
-      s.flags = msg.flags || [];
       // This is an observation from the current authenticated receiver, not an inference from the
       // controller having sent Stop. The webOS receiver's Stop acknowledgement explicitly carries
       // mediaId:null and omits all the other playback fields, so that one fact invalidates the whole
-      // presentation cache. It is intentionally the final presentation-field write: Stop can carry
-      // stale waiting/stalled flags, and those belong to the discarded presentation too. An omitted
-      // mediaId remains different; partial state reports do not assert that anything was unloaded.
+      // presentation cache. An omitted mediaId remains different; partial state reports do not
+      // assert that anything was unloaded.
       if (msg.state === 'idle' && has(msg, 'mediaId') && msg.mediaId === null) {
         clearPlayback(s); desired.delete(s.receiverId);
         ev.emit('playback-stopped', { receiverId: s.receiverId });
@@ -409,9 +403,9 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
       const s = sessions.get(sessionId);
       if (!s || !ownsReport(s, msg)) return;
       if ((has(msg, 'mediaId') && msg.mediaId !== s.mediaId) || (has(msg, 'epoch') && msg.epoch !== s.epoch)) {
-        for (const field of ['currentTime', 'durationSec', 'bufferedUntil']) if (!has(msg, field)) s[field] = null;
+        for (const field of ['currentTime', 'durationSec']) if (!has(msg, field)) s[field] = null;
       }
-      for (const field of ['mediaId', 'epoch', 'currentTime', 'durationSec', 'paused', 'bufferedUntil']) {
+      for (const field of ['mediaId', 'epoch', 'currentTime', 'durationSec']) {
         if (has(msg, field)) s[field] = msg[field];
       }
       s.at = clock();
@@ -539,19 +533,6 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
     return { ok: hub.send(found.sessionId, msg) };
   }
 
-  // Close a receiver's CONTROL socket, and nothing else. The television keeps its media connection,
-  // notices, reconnects, and is judged by shouldLoad like any reconnect — which is the point: this
-  // is the production lever for exercising the adopt-on-reconnect behaviour that used to need the
-  // dev harness. The hub's drop does not touch media by design; see receiver-hub.js.
-  function dropControl(receiverId) {
-    if (!hub) return { ok: false, why: 'receiver service not started' };
-    const found = sessionFor(receiverId);
-    if (!found) return { ok: false, why: 'receiver is not connected' };
-    log(R.short(receiverId) + ' control socket dropped on request');
-    hub.drop(found.sessionId, 'dropped on request');
-    return { ok: true };
-  }
-
   function command(receiverId, what, arg) {
     if (what === 'seek' && (!Number.isFinite(arg) || arg < 0)) return { ok: false, why: 'invalid seek position' };
     if (!hub) return { ok: false, why: 'receiver service not started' };
@@ -632,7 +613,6 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
   ev.play = play;
   ev.addSubtitles = addSubtitles;
   ev.command = command;
-  ev.dropControl = dropControl;
   ev.confirmPairing = confirmPairing;
   ev.revoke = revoke;
   ev.subtitleSelection = (id, mediaId, epoch) => {
@@ -643,11 +623,9 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
     const selected = s.tracks && s.tracks.subtitles.find(t => t.selected);
     return selected ? selected.id : 'off';
   };
-  ev.supportsLogicalTimeline = id => { const live = sessionFor(id); return !!(live && live.s.logicalTimeline); };
   ev.profile = (id) => { const live = sessionFor(id); return live ? live.s.profile || null : null; };
   ev.targets = list;
   ev.pending = () => (hub ? targets.pendingFrom({ pending: hub.pending() }) : []);
-  ev.isStarted = () => started;
   ev.beaconPort = () => (beacon && beacon.listening ? beacon.address().port : 0);
   // Test and diagnostics only. The registry holds credentials; nothing should hand this to a
   // renderer or a log.

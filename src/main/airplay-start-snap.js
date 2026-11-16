@@ -59,4 +59,4 @@ function safeStartOnTimeline(startSec, playlist, origin = 0) {
   return o + safeAirplayStart(startSec - o, playlist);
 }
 
-module.exports = { segmentStarts, safeAirplayStart, safeStartOnTimeline, producedEnd, startIsProduced, MAX_OFFSET, LOOKAHEAD };
+module.exports = { segmentStarts, safeAirplayStart, safeStartOnTimeline, producedEnd, startIsProduced, LOOKAHEAD };

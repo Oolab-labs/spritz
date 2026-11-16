@@ -29,22 +29,7 @@ const txtLib = () => (dnsTxt || (dnsTxt = require('dns-txt')()));
 const castLib = () => (castv2 || (castv2 = require('castv2-client')));
 const deviceProfile = require('./device-profile'); // one definition of what a receiver can decode
 const { createDiscoveryHealth } = require('./discovery-health');
-
-// Physical-LAN private IPv4s only (skip loopback + VPN/tunnel interfaces).
-function lanSubnets() {
-  const out = [];
-  const ifaces = os.networkInterfaces();
-  for (const name of Object.keys(ifaces)) {
-    if (!/^(en|eth)/i.test(name)) continue; // physical NICs only
-    for (const a of ifaces[name] || []) {
-      if (a.internal) continue;
-      if (a.family !== 'IPv4' && a.family !== 4) continue;
-      if (!/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(a.address)) continue;
-      out.push(a.address);
-    }
-  }
-  return out;
-}
+const { lanSubnets, parseHosts } = require('./lan-hosts'); // shared with dlna.js: same subnets, same manual-host rule
 
 const { pollStatus } = require('./cast-poll');
 module.exports = function createCast() {
@@ -88,8 +73,8 @@ module.exports = function createCast() {
     if (changed) emitDevices();
   }
   // Audio-only endpoints (Chromecast Audio, Nest/Home speakers, cast groups) can't show video —
-  // don't offer them as a "TV". Match on the mDNS model (md) and friendly name.
-  // (Nest Hub / Hub Max have screens → keep them.)
+  // don't offer them as a "TV". mDNS matches on its model (md) and friendly name; the eureka sweep
+  // passes the model only (see probeEureka). (Nest Hub / Hub Max have screens → keep them.)
   const isAudioOnly = (name, model) => /chromecast audio|google home(?! hub)|nest (mini|audio)|cast group|soundbar/i.test((model || '') + ' ' + (name || ''));
 
   // LG's OWN discovery vector. An LG webOS TV answers an SSDP search for its second-screen
@@ -207,29 +192,20 @@ module.exports = function createCast() {
     } catch (e) { /* malformed mDNS packet — ignore, never crash discovery */ }
   }
 
-  // Manually-specified hosts (comma-separated) for TVs that never auto-discover —
-  // the old app exposed this as 'manual-cast-hosts'. Useful when the TV is on another
-  // subnet or a VPN hijacks multicast.
-  // User-entered TV addresses (Settings) merged with the SPRITZ_CAST_HOSTS env var. These are
-  // probed alongside normal discovery, never instead of it — discovery is best-effort by nature
-  // (multicast can be filtered, a TV's discovery service sleeps, macOS can deny local-network
-  // access silently), so a directly-addressable fallback is what makes casting recoverable.
+  // User-entered TV addresses (Settings). These are probed alongside normal discovery, never
+  // instead of it — discovery is best-effort by nature (multicast can be filtered, a TV's discovery
+  // service sleeps, macOS can deny local-network access silently), so a directly-addressable
+  // fallback is what makes casting recoverable.
   let userHosts = [];
-  const parseHosts = (csv) => String(csv || '').split(',').map((x) => x.trim())
-    .filter((x) => /^\d{1,3}(\.\d{1,3}){3}$/.test(x)); // IPv4 literals only — these get probed directly
   function setManualHosts(csv) { userHosts = parseHosts(csv); }
-  function manualHosts() {
-    const env = String(process.env.SPRITZ_CAST_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean);
-    return [...new Set(userHosts.concat(env))];
-  }
 
   function sweep() {
     const gen = discoveryGeneration;
     // mDNS query (catches standard Chromecasts)
     try { if (mdns) mdns.query({ questions: [{ name: '_googlecast._tcp.local', type: 'PTR' }] }); } catch (e) {}
     // eureka /24 sweep (catches LG webOS + Chromecast-built-in TVs) + any manual hosts
-    const hosts = manualHosts();
-    for (const ip of lanSubnets()) {
+    const hosts = userHosts.slice();
+    for (const ip of lanSubnets(os.networkInterfaces())) {
       const base = ip.replace(/\.\d+$/, '.');
       for (let n = 1; n <= 254; n++) { const h = base + n; if (h !== ip) hosts.push(h); }
     }
@@ -262,7 +238,17 @@ module.exports = function createCast() {
       let body = '';
       res.on('data', (d) => { body += d; });
       res.on('end', () => {
-        if (gen === discoveryGeneration && discovering) { health.reply(); try { const j = JSON.parse(body); if (j && j.name) addDevice(host, String(j.name), capsFromEureka(j)); } catch (e) {} }
+        // Google speakers answer eureka_info too, and devices are keyed by host, so without this
+        // check the sweep re-adds a speaker the mDNS path just skipped. Check the reported model
+        // only, never the friendly name: a video Chromecast its owner called "Living Room Soundbar"
+        // must stay castable. A skipped speaker still counts as a reply and still pumps the sweep.
+        if (gen === discoveryGeneration && discovering) {
+          health.reply();
+          try {
+            const j = JSON.parse(body), info = (j && j.device_info) || {};
+            if (j && j.name && !isAudioOnly('', info.model_name || info.product_name)) addDevice(host, String(j.name), capsFromEureka(j));
+          } catch (e) {}
+        }
         finish();
       });
     });
@@ -529,7 +515,7 @@ module.exports = function createCast() {
 
   return {
     on: (e, fn) => ev.on(e, fn),
-    startDiscovery, stopDiscovery, load, play, pause, seek, stop, setVolume, teardown, wake, setManualHosts,
+    startDiscovery, load, play, pause, seek, stop, setVolume, teardown, setManualHosts,
     tracks, setTrack, connectedHost: () => connectedHost,
     capsFor: (host) => { const d = devices.get(host); return d ? d.caps : null; },
     discoveryState: health.snapshot

@@ -252,4 +252,4 @@ function explain(plan) {
   return 'Converting this file for your device.';
 }
 
-module.exports = { planPlayback, explain, FMP4_VIDEO, TALL };
+module.exports = { planPlayback, explain, TALL };

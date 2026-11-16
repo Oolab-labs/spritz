@@ -7,7 +7,7 @@
 //   addon events (TSFN)      → main → IPC('player-event') → renderer
 
 // Cache compiled JS on disk so subsequent launches skip re-parsing/compiling the main process's
-// modules (this file is ~1200 lines and pulls in webtorrent, castv2 and friends). Node >=22 only,
+// modules (this file is ~2500 lines and pulls in webtorrent, castv2 and friends). Node >=22 only,
 // and purely an optimisation — wrapped because a failure here must never stop the app booting.
 try { require('module').enableCompileCache?.(); } catch (e) {}
 
@@ -31,7 +31,7 @@ process.on('uncaughtException', (e) => { try { console.error('[uncaughtException
 process.on('unhandledRejection', (e) => { try { console.error('[unhandledRejection]', e && e.stack || e); } catch (_) {} });
 
 // Packaged builds use only their bundled copies — see bin-path.js.
-const { binPath, userBinPath } = require('./bin-path');
+const { binPath } = require('./bin-path');
 const YTDLP = binPath('yt-dlp');
 const FFMPEG = binPath('ffmpeg');
 
@@ -149,7 +149,7 @@ if (!gotLock) {
   function invalidateLoad() {
     ++loadGen;
     retireReceiverIntent();
-    if (typeof receiverPlan !== 'undefined' && receiverPlan) {
+    if (receiverPlan) {
       if (receiverPlan.pendingClockTimer) clearTimeout(receiverPlan.pendingClockTimer);
       if (receiverPlan.retirePrevious) receiverPlan.retirePrevious();
       if (receiverPlan.transport && receiverPlan.transport !== lan) receiverPlan.transport.teardown();
@@ -430,8 +430,8 @@ if (!gotLock) {
     const restored = windowState.restore(windowState.load(windowStateFile), screen.getAllDisplays(), { width: 950, height: 560 });
     mainWindow = new BrowserWindow({
       ...restored,
-      minWidth: 520,
-      minHeight: 400,
+      minWidth: windowState.MIN_W,   // one source for the minimum: restore() clamps saved sizes to the same numbers
+      minHeight: windowState.MIN_H,
       // Transparent so the native libmpv layer (below the web contents) shows
       // through where the DOM is transparent. frame:true on purpose (frameless +
       // transparent + resizable hits Electron regression #49173).
@@ -455,11 +455,14 @@ if (!gotLock) {
     });
 
     // Remember size and position: debounced while the person drags or resizes, and once more on close. The
-    // restored (normal) bounds are saved even in fullscreen, and the mini-player's tiny window is skipped.
+    // restored (normal) bounds are saved even in fullscreen. Nothing is saved while the mini player is on
+    // (`mini`, declared with the window:toggleMini handler): macOS clamps its setSize to the minimum above, so
+    // a size threshold cannot tell it from a normal window, and saving it made the next launch open small in
+    // the mini player's corner. The last normal-mode bounds stay on disk instead.
     let windowStateTimer = null;
     const rememberWindow = () => {
       try {
-        if (!mainWindow || mainWindow.isDestroyed()) return;
+        if (!mainWindow || mainWindow.isDestroyed() || mini) return;
         const b = mainWindow.getNormalBounds();
         if (b.width >= windowState.MIN_W && b.height >= windowState.MIN_H) windowState.save(windowStateFile, b);
       } catch (e) { /* never let bookkeeping disturb playback */ }
@@ -519,6 +522,9 @@ if (!gotLock) {
       try { lan.teardown(); } catch (e) {}
       try { cast.teardown(); } catch (e) {}
       try { dlna.teardown(); } catch (e) {}
+      // A window closed in mini mode takes the mini state with it: a window re-created on dock activate is
+      // normal-sized, and must not inherit a flag that stops it being remembered (or a stale restore target).
+      mini = false; prevBounds = null;
       mainWindow = null;
     });
   }
@@ -608,7 +614,7 @@ if (!gotLock) {
   }
   ipcMain.handle('diag:get', () => { try { return diagSnapshot(); } catch (e) { return null; } });
   const { trustPosition, effectiveState } = require('./resume-point'); // which receiver clocks are worth believing
-  const { playheadUpdate } = require('./receiver-playhead'); // aiming the torrent window at the RECEIVER's position
+  const { playheadUpdate, isTorrentSource } = require('./receiver-playhead'); // aiming the torrent window at the RECEIVER's position; what is a torrent stream URL
   const history = require('./history')(); // resume positions / recents
   const deviceMemory = require('./device-memory-store')(); // what each receiver has been seen to play
   // The receiver's own opinion, which the app records nowhere. Until now the only trace of what the
@@ -798,46 +804,6 @@ if (!gotLock) {
   ipcMain.on('nowplaying:update', (_e, info = {}) => { try { if (npAddon) npAddon.setInfo(info); } catch (e) {} });
   ipcMain.on('nowplaying:clear', () => { try { if (npAddon) npAddon.clear(); } catch (e) {} });
 
-  // ---- Whisper auto-subtitles ----
-  // Extract 16kHz mono audio (whisper.cpp's required format) then transcribe to an .srt
-  // and hand it back for sub-add. Binary/model are discovered or overridable via env.
-  function whisperBin() {
-    if (process.env.WHISPER_BIN) return process.env.WHISPER_BIN;
-    // user-installed, never bundled — so the system lookup applies even when packaged
-    for (const n of ['whisper-cli', 'whisper-cpp']) { const p = userBinPath(n); if (p !== n) return p; }
-    return null;
-  }
-  function whisperModel() {
-    const m = process.env.WHISPER_MODEL || path.join(app.getPath('userData'), 'models', 'ggml-base.en.bin');
-    return fs.existsSync(m) ? m : null;
-  }
-  ipcMain.handle('subtitle:generate', async (_e, { src } = {}) => {
-    const bin = whisperBin(), model = whisperModel();
-    const file = localMediaPath(src); // same reasoning as thumb:at — this feeds ffmpeg -i
-    if (!file) return { ok: false, error: 'No media loaded' };
-    if (!bin) return { ok: false, error: 'Whisper not found — install with: brew install whisper-cpp' };
-    if (!model) return { ok: false, error: 'No Whisper model — put ggml-base.en.bin in app models folder' };
-    const base = path.join(app.getPath('temp'), 'spritz-whisper-' + Date.now());
-    const wav = base + '.wav';
-    try {
-      send('toast', { message: 'Extracting audio for subtitles…' });
-      await run(FFMPEG, ['-y', '-i', file, '-ar', '16000', '-ac', '1', '-f', 'wav', wav], 300000); // 5 min
-      send('toast', { message: 'Transcribing with Whisper…' });
-      await run(bin, ['-m', model, '-f', wav, '-osrt', '-of', base], 1800000); // 30 min cap
-      try { fs.unlinkSync(wav); } catch (e) {}
-      if (fs.existsSync(base + '.srt')) { send('toast', { message: 'Subtitles ready ✓' }); return { ok: true, srt: base + '.srt' }; }
-      return { ok: false, error: 'No subtitles produced' };
-    } catch (e) { try { fs.unlinkSync(wav); } catch (_) {} return { ok: false, error: e.message }; }
-  });
-  // BOTH pipes have to be drained, not just stderr. A child that writes past the 64 KiB pipe buffer
-  // into a stream nobody reads blocks on that write forever, and the only symptom is the timeout
-  // firing much later with a misleading message. whisper-cli prints the transcript to STDOUT —
-  // measured at roughly 28 bytes per second of audio, with stderr carrying only its few KB of model
-  // info — so a feature-length film deadlocked somewhere past the half-hour mark while a short test
-  // clip, well under 64 KiB, always finished. That gap is exactly why this looked like "works
-  // standalone, broken in the app" and sent the search after the wrong change.
-  function run(cmd, args, timeout) { return new Promise((res, rej) => { const p = spawn(cmd, args, { timeout: timeout || 0 }); p.stdout.on('data', () => {}); p.stderr.on('data', () => {}); p.on('error', rej); p.on('close', (c) => c === 0 ? res() : rej(new Error(path.basename(cmd) + (c === null ? ' timed out' : ' failed')))); }); }
-
   // ---- OpenSubtitles (legacy XML-RPC, no API key) ----
   // Hash the file and fetch a matching subtitle. Uses the OpenSubtitles
   // movie-hash (size + 64-bit sums of the first & last 64 KiB) so it matches by content, not name.
@@ -950,9 +916,17 @@ if (!gotLock) {
   // an AirPlay/Chromecast cast carries it too — converted to a WebVTT rendition (HLS) or sideloaded
   // text track (direct MP4), with charset detection. Pre-cast additions are included automatically;
   // a subtitle added mid-cast needs a re-cast to appear (AirPlay/Cast can't add a rendition live).
+  // The path comes from the renderer and later reaches ffmpeg's -i (which speaks concat/http/subfile
+  // as readily as files) and, for .srt/.smi, the LAN file server as-is — so the same localMediaPath
+  // rule as thumb:at/subtitle:generate, plus the subtitle extensions every real sender produces (the
+  // Add Subtitle dialog's filter; OpenSubtitles and Whisper both write .srt). Without the extension
+  // check any readable file (a key, a config) could be registered and handed to the TV raw.
+  const EXTERNAL_SUB_EXT = new Set(['.srt', '.ass', '.ssa', '.sub', '.smi', '.vtt']);
   ipcMain.on('subtitle:external', (_e, { path: p, lang, name } = {}) => {
-    if (!p || externalSubs.some((s) => s.path === p)) return;
-    externalSubs.push({ path: p, lang: lang || 'und', name: name || path.basename(String(p)) });
+    const file = localMediaPath(p);
+    if (!file || !EXTERNAL_SUB_EXT.has(path.extname(file).toLowerCase())) return;
+    if (externalSubs.some((s) => s.path === file)) return;
+    externalSubs.push({ path: file, lang: lang || 'und', name: name || path.basename(file) });
   });
 
   // ---- VPN kill-switch status ----
@@ -1231,9 +1205,10 @@ if (!gotLock) {
   const ctypeFor = (u) => /\.m3u8(\?|#|$)/i.test(u || '') ? 'application/vnd.apple.mpegurl'
     : /\.mkv(\?|#|$)/i.test(u || '') ? 'video/x-matroska' : 'video/mp4';
   // caps = receiver capability profile (copy-vs-transcode); extraSubs implied from externalSubs.
-  // forCast = this resolution is for an actual Chromecast handoff (extract sideloadable subs for a
-  // direct MP4); the AirPlay pre-resolution leaves it false so we don't spawn sub-extractors on every
-  // local MP4 load (AVPlayer reads an MP4's embedded subs itself).
+  // forCast = this resolution is for a Spritz Receiver handoff (extract sideloadable subs for a
+  // direct MP4). Chromecast does not come through here — it has resolveChromecast. The AirPlay
+  // pre-resolution leaves it false so we don't spawn sub-extractors on every local MP4 load
+  // (AVPlayer reads an MP4's embedded subs itself).
   // Buffer health is a conservative hint, scoped to the current source and load.
   function receiverSourceWaiting(source, generation) {
     return require('./receiver-preparation-policy').sourceWaiting(torrentPreparationSample,
@@ -1244,10 +1219,8 @@ if (!gotLock) {
     const mediaLan = extra && extra.transport || lan;
     const resolutionGen = loadGen;
     const s = String(url || '');
-    // The 4K profile is offered ONLY for local files. A stream copy has no bitrate knob, and a torrent
-    // swarm measured here at 0.0 MB/s for four and a half straight minutes; an EVENT playlist that
-    // stops growing is exactly what produces -16839, and after readiness the permanently-fatal -11866.
-    // A local file is a disk read. capsFallback carries the proven profile so lanserver can decline.
+    // capsFallback carries the proven profile so lanserver can decline the 4K one.
+    //
     // Streamed sources may now take the 4K profile too. The original local-only rule was written
     // when a failed 4K copy demoted to a 4K SOFTWARE encode, which never produces a segment and ends
     // the launch ladder at cb(null) — on a torrent that was a real risk, so the gate stayed shut.
@@ -1258,17 +1231,32 @@ if (!gotLock) {
     // copy costs roughly twice the airtime of the transcode it replaces. Worth it for the picture —
     // the copy is native 2160p HDR10 at 46ms of CPU per 8s, against a 1080p re-encode at ~345% — but
     // not something to switch on for everyone without the hardware evidence.
-    const hlsOpts = () => (!caps && AIRPLAY_4K && !(extra && extra.receiver))
-      ? { caps: airplayCaps(AIRPLAY_CAPS_4K), capsFallback: airplayCaps(AIRPLAY_CAPS), extraSubs: externalSubs }
-      : { ...(extra && extra.receiver && require('./receiver-preparation-policy').receiverFeatures(process.env).sourceAudio && Number.isFinite(extra.startSec) ? { receiverStartSec: () => extra.startSec } : {}), ...(extra && Number.isInteger(extra.audioHint) ? { audioHint: extra.audioHint } : {}), receiverSourceWaiting: () => receiverSourceWaiting(s, resolutionGen), sourceSelectedAudio: !!(extra && extra.receiver && require('./receiver-preparation-policy').receiverFeatures(process.env).sourceAudio), sideloadSubs: !!(extra && extra.receiver), receiverSubtitles: !!(extra && extra.receiverSubtitles), caps: caps || airplayCaps(AIRPLAY_CAPS), ...(caps && caps.hevc4k ? { capsFallback: require('./device-profile').defaultProfile() } : {}), extraSubs: externalSubs };
+    const hlsOpts = () => {
+      // Every Spritz Receiver preparation sideloads subtitles and hands them to lanserver's receiver
+      // subtitle path, so both flags follow `receiver`. Source-selected audio is a receiver feature
+      // with an env kill switch (receiver-preparation-policy), read once here.
+      const receiver = !!(extra && extra.receiver);
+      if (!caps && AIRPLAY_4K && !receiver) return { caps: airplayCaps(AIRPLAY_CAPS_4K), capsFallback: airplayCaps(AIRPLAY_CAPS), extraSubs: externalSubs };
+      const sourceAudio = receiver && require('./receiver-preparation-policy').receiverFeatures(process.env).sourceAudio;
+      return {
+        ...(sourceAudio && Number.isFinite(extra.startSec) ? { receiverStartSec: () => extra.startSec } : {}),
+        ...(extra && Number.isInteger(extra.audioHint) ? { audioHint: extra.audioHint } : {}),
+        receiverSourceWaiting: () => receiverSourceWaiting(s, resolutionGen),
+        sourceSelectedAudio: sourceAudio,
+        sideloadSubs: receiver,
+        receiverSubtitles: receiver,
+        caps: caps || airplayCaps(AIRPLAY_CAPS),
+        ...(caps && caps.hevc4k ? { capsFallback: require('./device-profile').defaultProfile() } : {}),
+        extraSubs: externalSubs,
+      };
+    };
     // Remote https (yt-dlp / direct): no probe/remux — use as-is when it's an AV container.
     if (/^https:\/\//i.test(s)) return cb(mediaLan.avCompatible(s) ? s : null);
     // Torrent localhost stream: expose only this file through the token-scoped LAN proxy.
     // NO ffprobe/remux here — probing a torrent stream stalls
     // (moov may be at the tail / whole file not downloaded), which would block the cast button.
     // AVPlayer range-reads the moov itself. MKV/etc can't be cast (no AV container) → null.
-    const tor = s.match(/^http:\/\/(?:localhost|127\.0\.0\.1)(:\d+)(\/webtorrent\/.*)$/i);
-    if (tor) {
+    if (isTorrentSource(s)) {
       // For the Spritz Receiver the subtitles come later, once the TV has read the MP4 index this
       // skips (playToReceiver → receiver-late-subtitles.js); `lateSubtitles` names the source to probe.
       if (mediaLan.avCompatible(s)) return mediaLan.serveDlna(s, ctypeFor(s), extra && extra.receiver
@@ -1297,6 +1285,12 @@ if (!gotLock) {
         // the ordinary case, not an error path. LOCAL FILES ONLY, deliberately: the keyframe probe
         // is a full pass over the file, which on a still-downloading torrent would either stall or
         // read pieces that have not arrived. That case is a separate piece of work.
+        //
+        // RECEIVERS DO NOT REACH serveVod while source-selected audio is on, which is the default
+        // (receiver-preparation-policy: SPRITZ_RECEIVER_SOURCE_AUDIO !== '0'): the sourceSelectedAudio
+        // branch below returns serveHls first. So SPRITZ_VOD / _PRESEG / _EPOCH currently affect only
+        // the non-receiver (AirPlay) local-file path, which has never run on hardware — every VOD
+        // hardware result so far (RECEIVER-ARCH.md) is from the LG receiver.
         const opts = hlsOpts();
         // startSec is where the viewer is; an epoch-backed session opens its first epoch there rather
         // than at 0 and then superseding it.
@@ -1323,7 +1317,7 @@ if (!gotLock) {
       }
       // MP4/MOV: direct-serve if already compatible, else live HLS (fast) instead of a slow full
       // remux — so a 4K MP4 with TrueHD/DTS audio still becomes castable in seconds, not minutes.
-      return mediaLan.prepareCast(filePath, true, cb, (input, c) => mediaLan.serveHls(input, c, hlsOpts()), { extraSubs: externalSubs, directSubs: !!forCast });
+      return mediaLan.prepareCast(filePath, cb, (input, c) => mediaLan.serveHls(input, c, hlsOpts()), { extraSubs: externalSubs, directSubs: !!forCast });
     }
     cb(null);
   }
@@ -1336,7 +1330,7 @@ if (!gotLock) {
   function resolveChromecast(url, caps, audioTrack, startSec, cb) {
     const s = String(url || '');
     if (/^https:\/\//i.test(s)) return cb(lan.avCompatible(s) ? s : null, { subs: [], audioTracks: [], dur: 0, isMkv: false });
-    const tor = /^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\//i.test(s);
+    const tor = isTorrentSource(s);
     const filePath = decodeURIComponent(s.replace(/^file:\/\//, ''));
     const input = tor ? s : filePath;
     if (!tor && !/^\//.test(filePath)) return cb(null);
@@ -1362,8 +1356,7 @@ if (!gotLock) {
     const s = String(url || '');
     if (/\.m3u8(\?|#|$)/i.test(s)) return cb(null);              // remote HLS → DLNA can't play it
     if (/^https:\/\//i.test(s)) return cb(lan.avCompatible(s) ? s : null);
-    const tor = s.match(/^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\/.*/i);
-    if (tor) {
+    if (isTorrentSource(s)) {
       // Serve the ORIGINAL torrent stream (any container) to the LG through our DLNA-AWARE PROXY.
       // webOS decodes MKV/HEVC/HDR/Dolby Vision natively + gives its own scrubber/subtitle/audio
       // menus, but it's a STRICT renderer: it HEADs the URL and needs contentFeatures.dlna.org /
@@ -1468,7 +1461,7 @@ if (!gotLock) {
         if (mpvLog.handle(ev)) return; // libmpv error lines go to userData/mpv.log, not the renderer
         // Temp torrent diag: log mpv's load lifecycle for a torrent URL so we can see whether mpv actually
         // opened the stream (file-loaded) or failed (end-file reason=4=ERROR). Remove once "press twice" is solved.
-        if (process.env.SPRITZ_DEBUG && ev && (ev.type === 'file-loaded' || ev.type === 'end-file') && /^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\//i.test(mpvLastUrl || '')) {
+        if (process.env.SPRITZ_DEBUG && ev && (ev.type === 'file-loaded' || ev.type === 'end-file') && isTorrentSource(mpvLastUrl)) {
           try { fs.appendFileSync('/tmp/spritz-torrent.log', '[' + new Date().toISOString().slice(11, 23) + '] mpv ' + ev.type + (ev.type === 'end-file' ? ' reason=' + ev.reason : '') + '\n'); } catch (e) {}
         }
         // Feed the play position to the torrent engine so it can keep its CRITICAL piece window
@@ -1631,9 +1624,10 @@ if (!gotLock) {
   //     only thing that decides that, and it compares what the television reports holding against
   //     what the application wants. resume-point.js is deliberately NOT consulted: it answers where
   //     to relaunch ffmpeg for a live cast pipe, a question this path does not have.
-  //   - mediaId: stable per source, so "the same film" and "a different film" are distinguishable.
-  //     Derived from the source, not from the URL, because a URL carries a fresh token per session
-  //     and would make every re-pick look like new media.
+  //   - mediaId: a hash of the source plus a per-play random suffix, so it is UNIQUE PER PLAY on
+  //     purpose. Every play builds a fresh transport and URL (receiverTransportFor below), so the
+  //     television must load it; a stable id would let receiver-session.shouldLoad() adopt a stale
+  //     URL on a re-pick of the same film.
   //
   // Authenticated platform UHD and codec reports enable HEVC copy; unknown receivers stay 1080p.
   function receiverTransportFor() {
@@ -1674,7 +1668,7 @@ if (!gotLock) {
     if (!src) return Promise.resolve({ ok: false, why: 'nothing is open' });
     const startSec = mpvPos() || lastAvTime || 0;
     const mediaId = require('crypto').createHash('sha1').update(String(src)).digest('hex').slice(0, 16) + require('crypto').randomBytes(4).toString('hex');
-    const mediaLan = typeof receiverTransportFor === 'function' ? receiverTransportFor() : lan;
+    const mediaLan = receiverTransportFor();
     const previous = receiverPlan && receiverPlan.receiverId === receiverId ? receiverPlan : null;
     const title = (() => { try { return path.basename(decodeURIComponent(String(src).replace(/^file:\/\//, ''))); } catch (e) { return null; } })();
     return new Promise((resolve) => {
@@ -1682,8 +1676,7 @@ if (!gotLock) {
       let releaseAirplay = null, holdTimer = null;
       const holdUnusedAirplay = () => {
         holdTimer = null;
-        if (finished || !current() || castEngine !== 'mpv' || mediaLan === lan || previous && previous.transport === lan ||
-            typeof lan.holdReadyAirplayPrep !== 'function') return;
+        if (finished || !current() || castEngine !== 'mpv' || mediaLan === lan || previous && previous.transport === lan) return;
         try { releaseAirplay = lan.holdReadyAirplayPrep(); }
         catch (e) { recordErr('receiver-handoff', e.message || 'AirPlay preparation hold failed'); return; }
         if (!releaseAirplay) holdTimer = setTimeout(holdUnusedAirplay, 500);
@@ -1744,7 +1737,7 @@ if (!gotLock) {
         try { return fn(...args); }
         catch (e) { finish({ ok: false, why: e.message || 'receiver preparation failed' }); }
       };
-      deadline = setTimeout(() => finish({ ok: false, why: typeof receiverSourceWaiting === 'function' && receiverSourceWaiting(src, generation)
+      deadline = setTimeout(() => finish({ ok: false, why: receiverSourceWaiting(src, generation)
         ? 'Torrent data is still buffering; receiver preparation timed out' : 'receiver preparation timed out' }), 60000);
       holdUnusedAirplay();
       protect(() => { disposeSource = resolveCastable(src, protect((url, subtitles, metadata) => {
@@ -1757,7 +1750,7 @@ if (!gotLock) {
         // The first epoch was opened at startSec by resolveCastable, so the seek below is normally an
         // in-epoch one; if it is not (the epoch landed elsewhere), it takes the same path a viewer's
         // seek takes.
-        const ep = mediaLan.vodEpoch && mediaLan.vodEpoch();
+        const ep = mediaLan.vodEpoch();
         if (ep && ep.current) {
           const epochId = ep.current.id;
           const send = (epochId, url2, localStart) => {
@@ -1779,7 +1772,7 @@ if (!gotLock) {
           return send(epochId, url, 0);
         }
         console.log('[spritz] receiver source audio: catalog=' + (metadata && metadata.audio ? metadata.audio.length : 0));
-        const subtitleTrackId = previous && previous.src === src && typeof svc.subtitleSelection === 'function'
+        const subtitleTrackId = previous && previous.src === src
           ? svc.subtitleSelection(receiverId, previous.mediaId, previous.epoch) : undefined;
         receiverPlan = { receiverId, mediaId, title, epoch: null, url, src, subtitles, subtitleTrackId, timelineOrigin: metadata && metadata.timelineOrigin, sourceDuration: metadata && metadata.sourceDuration, audioCatalog: metadata && metadata.audio, selectedAudio: metadata && metadata.selectedAudio, transport: mediaLan, autoplay: cancel.autoplay };
         // The webOS player stalls when started late inside an HLS segment, exactly as AirPlay did:
@@ -1804,7 +1797,7 @@ if (!gotLock) {
           });
         }
         finish(played);
-      }), typeof svc.profile === 'function' ? svc.profile(receiverId) : null, true, { startSec, receiver: true, receiverSubtitles: true, audioHint: macAudioOrdinal(), transport: mediaLan });
+      }), svc.profile(receiverId), true, { startSec, receiver: true, audioHint: macAudioOrdinal(), transport: mediaLan });
       if (finished && failed) disposePreparation();
       })();
     });
@@ -1819,9 +1812,7 @@ if (!gotLock) {
     const state = target && target.playback && target.playback.state;
     // A viewer can resume or pause while replacement startup is pending.
     if (state === 'playing' || state === 'paused') previous.autoplay = state === 'playing';
-    const selectedSubtitle = typeof svc.subtitleSelection === 'function'
-      ? svc.subtitleSelection(failed.receiverId, failed.mediaId, failed.epoch) : undefined;
-    if (selectedSubtitle !== undefined) previous.subtitleTrackId = selectedSubtitle;
+    previous.subtitleTrackId = svc.subtitleSelection(failed.receiverId, failed.mediaId, failed.epoch);
     const result = svc.play(previous.receiverId, { ...previous, startSec: previous.position || 0, forceReload: true });
     if (result.ok) {
       receiverPlan = previous; failed.transport.teardown();
@@ -1848,7 +1839,7 @@ if (!gotLock) {
     const position = seekPosition !== null ? seekPosition : Number.isFinite(owner.position) ? owner.position : playback && playback.currentTime;
     if (!Number.isFinite(position) || position < 0) return Promise.resolve({ ok: false, why: 'Wait for a receiver playback position before switching audio' });
     const intent = retireReceiverIntent(), generation = loadGen, svc = startReceivers();
-    const transport = typeof receiverTransportFor === 'function' ? receiverTransportFor() : require('./lanserver')({});
+    const transport = receiverTransportFor();
     return new Promise(resolve => {
       let finished = false, timer = null;
       const current = () => intent === receiverIntent && generation === loadGen && receiverPlan === owner && owner.src === mpvLastUrl;
@@ -1866,24 +1857,18 @@ if (!gotLock) {
       timer = setTimeout(() => finish({ ok: false, why: 'Audio preparation timed out; previous stream retained' }), 60000);
       send('receiver-event', { type: 'track-pending', receiverId, pending: true });
       let preparationAttempt = 0;
-      const prepare = inputStart => {
+      const prepare = () => {
         const attempt = ++preparationAttempt;
         transport.serveHls(owner.src, (url, subtitles, metadata) => {
           if (finished || attempt !== preparationAttempt) return;
           if (!current()) return cancel();
-          if (!url && metadata && metadata.retryFromOrigin === true && inputStart > 0) return prepare(0);
           if (!url || !metadata) return finish({ ok: false, why: 'Audio preparation failed; previous stream retained' });
           // A fresh presentation identity rejects delayed reports/commands from the previous URL.
           const mediaId = require('crypto').randomBytes(8).toString('hex');
           const resumePosition = seekPosition !== null ? seekPosition : Number.isFinite(owner.position) ? owner.position : position;
           // Re-read selection at commit: the viewer may change subtitles or choose
           // Off while the replacement audio is being prepared.
-          const currentPlayback = svc.targets().find(t => t.id === receiverId);
-          const reported = currentPlayback && currentPlayback.playback && currentPlayback.playback.tracks;
-          const selected = reported && reported.subtitles.find(t => t.selected);
-          const subtitleTrackId = typeof svc.subtitleSelection === 'function'
-            ? svc.subtitleSelection(receiverId, owner.mediaId, owner.epoch)
-            : selected ? selected.id : 'off';
+          const subtitleTrackId = svc.subtitleSelection(receiverId, owner.mediaId, owner.epoch);
           const next = { ...owner, timelineOrigin: metadata.timelineOrigin, sourceDuration: metadata.sourceDuration, mediaId, url, epoch: null, transport, subtitles, previous: { ...owner, subtitleTrackId: subtitleTrackId },
             audioCatalog: metadata.audio, selectedAudio: index, position: resumePosition, audioStartPosition: resumePosition, autoplay: cancel.autoplay };
           const result = svc.play(receiverId, { ...next, startSec: resumePosition,
@@ -1902,12 +1887,11 @@ if (!gotLock) {
           finish({ ok: true, mediaId });
         }, { caps: svc.profile(receiverId), sourceSelectedAudio: true, audioTrack: index,
           sideloadSubs: true, receiverSubtitles: true, extraSubs: externalSubs,
-          receiverInputStartSec: inputStart,
           receiverSourceWaiting: () => receiverSourceWaiting(owner.src, generation),
           receiverStartSec: () => seekPosition !== null ? seekPosition : Number.isFinite(owner.position) ? owner.position : position });
       };
       try {
-        prepare(require('./receiver-preparation-policy').receiverFeatures(process.env).nearAudio && svc.supportsLogicalTimeline && svc.supportsLogicalTimeline(receiverId) ? Math.max(0, position - 20) : 0);
+        prepare();
       } catch (e) { finish({ ok: false, why: e.message || 'Audio preparation failed' }); }
     });
   }
@@ -1917,13 +1901,10 @@ if (!gotLock) {
   // moved to the new transport — through svc.play, so shouldLoad decides the LOAD, as always.
   function seekReceiver(receiverId, logicalSec) {
     if (!Number.isFinite(logicalSec) || logicalSec < 0) return { ok: false, why: 'invalid seek position' };
-    if (receiverPlan && receiverPlan.receiverId === receiverId && Number.isFinite(receiverPlan.timelineOrigin) && logicalSec < receiverPlan.timelineOrigin) {
-      return switchReceiverAudio(receiverId, { mediaId: receiverPlan.mediaId, epoch: receiverPlan.epoch, trackId: 'source-audio-' + receiverPlan.selectedAudio, seekSec: logicalSec });
-    }
     const intent = retireReceiverIntent(), generation = loadGen, owner = receiverPlan;
     const svc = startReceivers();
     const mediaLan = owner && owner.transport || lan;
-    const ep = mediaLan.vodEpoch && mediaLan.vodEpoch();
+    const ep = mediaLan.vodEpoch();
     if (!ep || !ep.current || !receiverPlan || receiverPlan.receiverId !== receiverId) {
       return svc.command(receiverId, 'seek', logicalSec);
     }
@@ -1996,17 +1977,16 @@ if (!gotLock) {
     receivers.on('track-request-error', (e) => send('receiver-event', { type: 'track-error', ...e }));
     receivers.on('pairing', (pending) => send('receiver-event', { type: 'pairing', pending }));
     // A position is EPOCH-LOCAL as the television counts it. Translate to logical film time before
-    // anyone downstream sees it, keeping the local reading beside it for the log.
+    // anyone downstream sees it.
     receivers.on('position', (p) => {
       if (!p || !Number.isFinite(p.currentTime) || p.currentTime < 0) return;
       let out = p;
       if (p.epoch) {
         const mediaLan = receiverTimelineTransport();
-        if (typeof mediaLan.vodLogical !== 'function') return;
         out = presentTargets([{ playback: p }], mediaLan.vodLogical, mediaLan.vodSourceDuration)[0].playback;
         if (!Number.isFinite(out.currentTime) || out.currentTime < 0) return;
       }
-      if (typeof receiverPlan !== 'undefined' && receiverPlan && p.receiverId === receiverPlan.receiverId &&
+      if (receiverPlan && p.receiverId === receiverPlan.receiverId &&
           p.mediaId === receiverPlan.mediaId && (p.epoch || null) === (receiverPlan.epoch || null) &&
           typeof p.paused === 'boolean') {
         // A finite clock alone does not prove that the replacement restored the film.
@@ -2137,7 +2117,7 @@ if (!gotLock) {
       }
     } catch (e) {}
   }
-  ipcMain.on('player:load', (_e, { url, start, referer } = {}) => {
+  ipcMain.on('player:load', (_e, { url, referer } = {}) => {
     const gen = invalidateLoad();
     applyHttpHeaders(url, referer);
     applyStreamCache(url);
@@ -2149,10 +2129,10 @@ if (!gotLock) {
     // mpv 0.38+ loadfile signature: <url> [<flags> [<index> [<options>]]] — the
     // 'index' slot was inserted before 'options', so pass '-1' (default) or the
     // opts land in the index slot and the file silently fails to load.
-    const isTorLoad = /^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\//i.test(url || '');
-    if (isTorLoad && process.env.SPRITZ_DEBUG) { try { fs.appendFileSync('/tmp/spritz-torrent.log', '[' + new Date().toISOString().slice(11, 23) + '] player:load -> mpv loadfile ' + String(url).slice(0, 90) + '\n'); } catch (e) {} }
+    const isTor = isTorrentSource(url);
+    if (isTor && process.env.SPRITZ_DEBUG) { try { fs.appendFileSync('/tmp/spritz-torrent.log', '[' + new Date().toISOString().slice(11, 23) + '] player:load -> mpv loadfile ' + String(url).slice(0, 90) + '\n'); } catch (e) {} }
     try {
-      mpvAddon.command('loadfile', url, 'replace', '-1', loadOpts(start));
+      mpvAddon.command('loadfile', url, 'replace', '-1', loadOpts());
       mpvLastUrl = url;
       if (mainWindow && url) {
         const base = decodeURIComponent(String(url).split('/').pop().split('?')[0] || '');
@@ -2163,7 +2143,6 @@ if (!gotLock) {
       // newer source's castUrl (cross-source contamination → cast plays the wrong title).
       // Torrents: the HLS remux can't produce a segment until enough is downloaded, so a
       // just-started torrent resolves to null. Retry as it buffers so the cast button appears.
-      const isTor = /^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\//i.test(url || '');
       let tries = 0;
       const tryResolve = () => resolveCastable(url, (av, subs) => {
         if (gen !== loadGen || receiverPlan && receiverPlan.src === url) return;
@@ -2282,7 +2261,6 @@ if (!gotLock) {
     resumeLocalFromAirplay(true);
     setTimeout(() => { try { if (apAddon && castUrl && castEngine === 'mpv') apAddon.prepare(castUrl, mpvPos()); } catch (e) {} }, 1800);
   });
-  ipcMain.handle('airplay:stat', () => { try { return apAddon ? apAddon.stat() : null; } catch (e) { return null; } });
   ipcMain.handle('airplay:mediaTracks', () => { try { return apAddon ? apAddon.mediaTracks() : null; } catch (e) { return null; } });
   ipcMain.on('airplay:selectMedia', (_e, { kind, index } = {}) => {
     // Switch the casting AVPlayer's audio/subtitle rendition via AVMediaSelectionGroup — the native,
@@ -2529,13 +2507,12 @@ if (!gotLock) {
   ipcMain.on('window:minimize', () => { if (mainWindow) mainWindow.minimize(); });
   // Float-on-top + mini-player (compact always-on-top window)
   let onTop = false, mini = false, prevBounds = null;
-  function setFloat(v) { onTop = v; if (mainWindow) mainWindow.setAlwaysOnTop(v, 'floating'); send('window-state', { onTop, mini }); }
+  function setFloat(v) { onTop = v; if (mainWindow) mainWindow.setAlwaysOnTop(v, 'floating'); }
   ipcMain.on('window:toggleFloat', () => setFloat(!onTop));
   ipcMain.on('window:toggleMini', () => {
     if (!mainWindow) return;
     if (!mini) { prevBounds = mainWindow.getBounds(); mainWindow.setSize(480, 270, true); setFloat(true); mini = true; }
     else { if (prevBounds) mainWindow.setBounds(prevBounds); setFloat(false); mini = false; }
-    send('window-state', { onTop, mini });
   });
   ipcMain.on('window:close', () => { if (mainWindow) mainWindow.close(); });
   // manual window dragging (-webkit-app-region is unreliable on the transparent window)
@@ -2547,9 +2524,4 @@ if (!gotLock) {
   ipcMain.on('window:setTitle', (_e, { title } = {}) => { if (mainWindow && title != null) mainWindow.setTitle(title); });
   ipcMain.on('power:block', () => { if (psbId < 0) psbId = powerSaveBlocker.start('prevent-display-sleep'); });
   ipcMain.on('power:unblock', () => { if (psbId >= 0) { powerSaveBlocker.stop(psbId); psbId = -1; } });
-
-  ipcMain.handle('app:getVersions', () => ({
-    app: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome,
-    node: process.versions.node, arch: process.arch
-  }));
 }

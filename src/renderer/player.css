@@ -50,7 +50,6 @@ body:has(.controls.idle) #winctl { opacity: 0; pointer-events: none; transition:
 .home-actions { display: flex; gap: 12px; justify-content: center; margin-top: 20px; }
 .logo { font-size: 56px; line-height: 1; }
 #home h1 { margin: 6px 0 2px; font-size: 26px; font-weight: 650; }
-.tagline { margin: 0 0 22px; color: #8b8b96; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; }
 .drop-hint { margin-top: 16px; color: #9a9aa6; }
 .btn {
   font: inherit; border: 0; border-radius: 9px; padding: 10px 22px; cursor: pointer;
@@ -205,8 +204,6 @@ button.button:focus-visible { outline: 2px solid var(--accent); outline-offset: 
 .switch input:checked + .switch-track { background: var(--accent); }
 .switch input:checked + .switch-track::before { transform: translateX(18px); }
 
-/* the native AVRoutePickerView overlays this slot; keep it empty (no DOM glyph) */
-.airplay-button { width: 34px; height: 34px; }
 /* During cast, audio/subtitle buttons are driven by the AVPlayer's media selection
    (see populateAirTracks) — JS shows them only when the cast asset has tracks. */
 body.casting .quality { display: none; }
@@ -250,8 +247,6 @@ body.casting .controls > * { pointer-events: auto; }
   background: rgba(255,255,255,.05); color: #e7e7ea; font: 12px ui-monospace, monospace; }
 .setting-input:focus { outline: none; border-color: var(--accent); }
 
-.cast-empty-warn { color: #f0b429; white-space: normal; line-height: 1.35; }
-.cast-empty-hint { margin-top: 3px; font-size: 11px; color: #9aa3b0; max-width: 260px; white-space: normal; }
 
 body.casting #torrent-status { opacity: 1; } /* download also supplies the TV */
 #torrent-file-list { max-height: 46vh; overflow-y: auto; }
