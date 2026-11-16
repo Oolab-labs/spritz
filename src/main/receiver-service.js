@@ -51,12 +51,10 @@ function clearPlayback(s) {
 // fixed port — would change behaviour for every existing cast path to solve a problem only the
 // receiver has.
 //
-// 7737 is CHOSEN, not inherited. The spike and tools/receiver-dev.js use 8099, and making that the
-// protocol's permanent address would have meant the harness and the real application fighting for
-// the same port on a developer's machine — the beacon would lose, log a line nobody reads, and
-// discovery would silently stop working. It is also outside macOS's ephemeral range (49152-65535),
-// so the kernel will not hand it to something else first, and it is not one of the common
-// development ports (3000/5000/8000/8080/8099).
+// 7737 is CHOSEN, not inherited from the first spike's 8099. It is outside macOS's ephemeral range
+// (49152-65535), so the kernel will not hand it to something else first, and it is not one of the
+// common development ports (3000/5000/8000/8080/8099) — a beacon that lost its port to another
+// process would log a line nobody reads, and discovery would silently stop working.
 const BEACON_PORT = 7737;
 
 function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelectTrack } = {}) {
@@ -109,7 +107,7 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
     // leave a device list on screen that nothing can act on.
     if (!started) return [];
     const live = [];
-    for (const [sessionId, s] of sessions) live.push(Object.assign({ sessionId, now: clock() }, s));
+    for (const [sessionId, s] of sessions) live.push(Object.assign({ sessionId }, s));
     return targets.targetsFrom({ registry, sessions: live });
   }
 
@@ -513,19 +511,6 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
     return { ok: true, loaded: true, why: d.why };
   }
 
-  // Close a receiver's CONTROL socket, and nothing else. The television keeps its media connection,
-  // notices, reconnects, and is judged by shouldLoad like any reconnect — which is the point: this
-  // is the production lever for exercising the adopt-on-reconnect behaviour that used to need the
-  // dev harness. The hub's drop does not touch media by design; see receiver-hub.js.
-  function dropControl(receiverId) {
-    if (!hub) return { ok: false, why: 'receiver service not started' };
-    const found = sessionFor(receiverId);
-    if (!found) return { ok: false, why: 'receiver is not connected' };
-    log(R.short(receiverId) + ' control socket dropped on request');
-    hub.drop(found.sessionId, 'dropped on request');
-    return { ok: true };
-  }
-
   function command(receiverId, what, arg) {
     if (what === 'seek' && (!Number.isFinite(arg) || arg < 0)) return { ok: false, why: 'invalid seek position' };
     if (!hub) return { ok: false, why: 'receiver service not started' };
@@ -605,7 +590,6 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
   ev.stop = stop;
   ev.play = play;
   ev.command = command;
-  ev.dropControl = dropControl;
   ev.confirmPairing = confirmPairing;
   ev.revoke = revoke;
   ev.subtitleSelection = (id, mediaId, epoch) => {
@@ -620,7 +604,6 @@ function createReceiverService({ storePath, lan, onLog, now, beaconPort, onSelec
   ev.profile = (id) => { const live = sessionFor(id); return live ? live.s.profile || null : null; };
   ev.targets = list;
   ev.pending = () => (hub ? targets.pendingFrom({ pending: hub.pending() }) : []);
-  ev.isStarted = () => started;
   ev.beaconPort = () => (beacon && beacon.listening ? beacon.address().port : 0);
   // Test and diagnostics only. The registry holds credentials; nothing should hand this to a
   // renderer or a log.

@@ -7,8 +7,9 @@ test('list refresh uses film clock without mutating adoption state or presenting
   const before = JSON.stringify(list);
   for (let i = 0; i < 3; i++) {
     const view = presentTargets(list, (epoch, time) => epoch === 'e1' ? 600 + time : null);
-    assert.equal(view[0].playback.currentTime, 602); assert.equal(view[0].playback.epochLocal, 2);
-    assert.equal(view[0].playback.durationSec, null); assert.equal(view[0].playback.epochDurationSec, 20);
+    assert.equal(view[0].playback.currentTime, 602); assert.equal(view[0].playback.durationSec, null);
+    // The epoch-local reading is the service's business; the renderer reads only film time.
+    assert.ok(!('epochLocal' in view[0].playback)); assert.ok(!('epochDurationSec' in view[0].playback));
   }
   assert.equal(JSON.stringify(list), before);
 });
