@@ -151,6 +151,6 @@
   },
   "overrides": {
     "protobufjs": "^7.6.6",
-    "ip-address": "^10.7.3"
+    "ip-address": "^10.7.6"
   }
 }
