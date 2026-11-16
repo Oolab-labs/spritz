@@ -33,8 +33,7 @@ link and stream comes from you.
   audio, only the audio is converted — surround stays surround rather than being
   flattened to stereo.
 - **Handles subtitles** — embedded, external files, styled ASS, burn-in for image-based
-  subtitles that receivers can't render, OpenSubtitles lookup, optional Whisper
-  generation.
+  subtitles that receivers can't render, and OpenSubtitles lookup.
 - **Remembers where you were** — Continue Watching, playlists and queues, per-title
   audio/subtitle language preferences, keyboard shortcuts, Anime4K upscaling.
 
@@ -157,8 +156,8 @@ Archive material, Creative Commons and public-domain films, independent releases
 
 Embedded and external subtitles are picked up automatically, including sidecar files
 next to the video (`Movie.en.srt`, a `Subs/` folder). Image-based subtitles that a
-receiver can't render are burned into the picture instead. OpenSubtitles lookup and
-Whisper generation are available for files that have none.
+receiver can't render are burned into the picture instead. Files that have none can
+fetch a match from OpenSubtitles.
 
 ## Spritz Receiver for LG webOS
 
