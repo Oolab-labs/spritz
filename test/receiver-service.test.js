@@ -800,7 +800,7 @@ test('service forwards first control frame coalesced with HTTP upgrade', async (
     let headBytes = 0;
     server.prependOnceListener('upgrade', (_, socket, head) => { headBytes = head.length; });
     // A pre-trust message in the upgrade head: it must be parsed and answered like any other.
-    const c = await client(port, proto.pairRequest('early', { receiverId: 'lg-head', name: 'Head LG', platform: 'webos' }));
+    const c = await client(port, proto.envelope('pair.request', 'early', { receiverId: 'lg-head', name: 'Head LG', platform: 'webos' }));
     try {
       await c.next('hello');
       const challenge = await c.next('pair.challenge');

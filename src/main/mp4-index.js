@@ -79,4 +79,4 @@ function isMp4Name(name) {
   return /\.(mp4|m4v|mov)$/i.test(String(name || ''));
 }
 
-module.exports = { findMoov, parseHeader, isMp4Name };
+module.exports = { findMoov, isMp4Name };

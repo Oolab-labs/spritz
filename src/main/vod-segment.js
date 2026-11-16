@@ -502,4 +502,4 @@ function buildVodMaster({ mediaUrl, subs, audio, bandwidth, width, height, codec
 }
 
 module.exports = { segmentArgs, segmentRunArgs, runSegmentReady, presegmentArgs, presegmentPackageArgs, keyframeArgs, parseKeyframes, segmentPath, vodEligible,
-  subPlaylist, subExtractArgs, buildVodMaster, VTT_HEAD, SEGMENT_EXT };
+  subPlaylist, subExtractArgs, buildVodMaster, VTT_HEAD };

@@ -224,6 +224,6 @@ function listReceivers(reg) {
 module.exports = {
   emptyRegistry, beginPairing, confirmPairing, cancelPairing, pendingList,
   authenticate, revoke, listReceivers,
-  newToken, newCode, newNonce, proofFor, proofMatches, short,
-  TOKEN_BYTES, CODE_DIGITS, CODE_TTL_MS, MAX_CODE_ATTEMPTS
+  newToken, newNonce, proofFor, short,
+  CODE_DIGITS, CODE_TTL_MS, MAX_CODE_ATTEMPTS
 };
