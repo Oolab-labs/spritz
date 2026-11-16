@@ -29,22 +29,7 @@ const txtLib = () => (dnsTxt || (dnsTxt = require('dns-txt')()));
 const castLib = () => (castv2 || (castv2 = require('castv2-client')));
 const deviceProfile = require('./device-profile'); // one definition of what a receiver can decode
 const { createDiscoveryHealth } = require('./discovery-health');
-
-// Physical-LAN private IPv4s only (skip loopback + VPN/tunnel interfaces).
-function lanSubnets() {
-  const out = [];
-  const ifaces = os.networkInterfaces();
-  for (const name of Object.keys(ifaces)) {
-    if (!/^(en|eth)/i.test(name)) continue; // physical NICs only
-    for (const a of ifaces[name] || []) {
-      if (a.internal) continue;
-      if (a.family !== 'IPv4' && a.family !== 4) continue;
-      if (!/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(a.address)) continue;
-      out.push(a.address);
-    }
-  }
-  return out;
-}
+const { lanSubnets, parseHosts } = require('./lan-hosts'); // shared with dlna.js: same subnets, same manual-host rule
 
 const { pollStatus } = require('./cast-poll');
 module.exports = function createCast() {
@@ -207,29 +192,20 @@ module.exports = function createCast() {
     } catch (e) { /* malformed mDNS packet — ignore, never crash discovery */ }
   }
 
-  // Manually-specified hosts (comma-separated) for TVs that never auto-discover —
-  // the old app exposed this as 'manual-cast-hosts'. Useful when the TV is on another
-  // subnet or a VPN hijacks multicast.
-  // User-entered TV addresses (Settings) merged with the SPRITZ_CAST_HOSTS env var. These are
-  // probed alongside normal discovery, never instead of it — discovery is best-effort by nature
-  // (multicast can be filtered, a TV's discovery service sleeps, macOS can deny local-network
-  // access silently), so a directly-addressable fallback is what makes casting recoverable.
+  // User-entered TV addresses (Settings). These are probed alongside normal discovery, never
+  // instead of it — discovery is best-effort by nature (multicast can be filtered, a TV's discovery
+  // service sleeps, macOS can deny local-network access silently), so a directly-addressable
+  // fallback is what makes casting recoverable.
   let userHosts = [];
-  const parseHosts = (csv) => String(csv || '').split(',').map((x) => x.trim())
-    .filter((x) => /^\d{1,3}(\.\d{1,3}){3}$/.test(x)); // IPv4 literals only — these get probed directly
   function setManualHosts(csv) { userHosts = parseHosts(csv); }
-  function manualHosts() {
-    const env = String(process.env.SPRITZ_CAST_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean);
-    return [...new Set(userHosts.concat(env))];
-  }
 
   function sweep() {
     const gen = discoveryGeneration;
     // mDNS query (catches standard Chromecasts)
     try { if (mdns) mdns.query({ questions: [{ name: '_googlecast._tcp.local', type: 'PTR' }] }); } catch (e) {}
     // eureka /24 sweep (catches LG webOS + Chromecast-built-in TVs) + any manual hosts
-    const hosts = manualHosts();
-    for (const ip of lanSubnets()) {
+    const hosts = userHosts.slice();
+    for (const ip of lanSubnets(os.networkInterfaces())) {
       const base = ip.replace(/\.\d+$/, '.');
       for (let n = 1; n <= 254; n++) { const h = base + n; if (h !== ip) hosts.push(h); }
     }
