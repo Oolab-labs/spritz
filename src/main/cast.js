@@ -477,6 +477,17 @@ module.exports = function createCast() {
         if (err) { ev.emit('error', { message: err.message }); return done(err); }
         player = p;
         startStatusPoll(p);
+        // The TV closed the Cast app: Home on the remote, another input, or another phone casting.
+        // castv2-client reports the receiver's CLOSE as 'close' on the player, and nothing else fires
+        // — the platform heartbeat keeps the socket itself alive — so without this the cast screen
+        // waits on a clock that will never move again. Our own teardown removes this listener before
+        // it closes anything, so only the TV's close reaches here.
+        p.on('close', () => {
+          if (p !== player) return;
+          const at = (lastStatus && Number.isFinite(lastStatus.currentTime)) ? lastStatus.currentTime : null;
+          teardownClient();
+          ev.emit('receiver-closed', { at });
+        });
         p.on('status', (s) => {
           // Guard on identity, NOT on the generation this closure was created with: a reused
           // session (fast path) outlives its original load, so a captured myGen would go stale
