@@ -61,10 +61,12 @@ function createCriticalAim({ tlog = () => {}, now = Date.now } = {}) {
     if (finite(durationSec) && durationSec > 0) mediaDuration = durationSec;
   }
 
-  // A read observed at the source proxy (lanserver's onSourceRead). Only the PRODUCER's reads are
-  // demand: a television reading the same file through the DLNA route is the viewer, and its
-  // position already arrives as playhead status. Attribution is the proxy's, by token; nothing
-  // here re-derives it.
+  // A read observed at the source proxy. Only the PRODUCER's reads are demand: a television reading
+  // the same file through the DLNA route is the viewer, and its position already arrives as playhead
+  // status. Attribution is the proxy's, by token; nothing here re-derives it. Since serveSource was
+  // deleted, producer reads arrive only through a registered lease (registerProducer above, fed by
+  // lanserver's producerOwner.noteSourceRead); lanserver's onSourceRead now carries viewer reads
+  // alone, so on this path they are all dropped by the reader check below.
   //
   // open and progress both carry `position` — the range start at open, the advancing delivered
   // position after — and that is the number wanted. close is recorded for the position too (the

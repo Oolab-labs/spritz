@@ -57,9 +57,24 @@ function connect(port, path) {
     let st = null;
     const msgs = [];
     const waiters = [];
+    const pongs = new Map();   // ping payload -> resolver
     const client = {
       socket,
       msgs,
+      // Ordering barrier: a masked WS ping control frame, resolved by its pong. The hub answers
+      // control frames in the same in-order receive loop as text frames, so the pong proves every
+      // earlier message has been handled.
+      barrier() {
+        const nonce = crypto.randomBytes(6).toString('hex');
+        const body = Buffer.from(nonce), mask = crypto.randomBytes(4), masked = Buffer.from(body);
+        for (let i = 0; i < masked.length; i++) masked[i] ^= mask[i & 3];
+        const head2 = Buffer.from([0x89, 0x80 | body.length]);
+        return new Promise((res, rej) => {
+          const timer = setTimeout(() => { pongs.delete(nonce); rej(new Error('timed out waiting for pong')); }, 4000);
+          pongs.set(nonce, () => { clearTimeout(timer); res(); });
+          socket.write(Buffer.concat([head2, mask, masked]));
+        });
+      },
       send(m) {
         const body = Buffer.from(proto.serialize(m), 'utf8');
         const mask = crypto.randomBytes(4);
@@ -97,6 +112,7 @@ function connect(port, path) {
       const out = wsf.decode(buf, st);
       buf = out.rest; st = out.state || st;
       for (const f of out.frames) {
+        if (f.type === 'pong') { const done = pongs.get(f.body.toString()); if (done) { pongs.delete(f.body.toString()); done(); } continue; }
         if (f.type !== 'text') continue;
         const r = proto.parse(f.text);
         if (!r.ok) continue;
@@ -173,21 +189,10 @@ test('a command reaches the receiver and an event comes back', async () => {
   }, { registry: reg });
 });
 
-test('ping is answered with pong carrying the nonce', async () => {
-  await withHub(async ({ port }) => {
-    const c = await connect(port);
-    const greeting = await c.next('hello');
-    c.send(proto.ping(greeting.sid, { nonce: 'n7' }));
-    const pong = await c.next('pong');
-    assert.equal(pong.nonce, 'n7');
-    c.close();
-  });
-});
-
 test('a malformed message is logged and does not kill the session', async () => {
   await withHub(async ({ hub, port }) => {
     const c = await connect(port);
-    const greeting = await c.next('hello');
+    await c.next('hello');
     // Raw garbage, framed correctly — the socket is fine, the payload is not.
     const body = Buffer.from('{"v":1,"type":"nonsense"}', 'utf8');
     const mask = crypto.randomBytes(4);
@@ -195,10 +200,8 @@ test('a malformed message is logged and does not kill the session', async () => 
     for (let i = 0; i < masked.length; i++) masked[i] ^= mask[i & 3];
     const head = Buffer.alloc(2); head[0] = 0x81; head[1] = 0x80 | body.length;
     c.socket.write(Buffer.concat([head, mask, masked]));
-    // The session must still work afterwards.
-    c.send(proto.ping(greeting.sid, { nonce: 'still-here' }));
-    const pong = await c.next('pong');
-    assert.equal(pong.nonce, 'still-here');
+    // The session must still work afterwards: the bad frame was handled, and the socket answers.
+    await c.barrier();
     assert.equal(hub.sessions().length, 1, 'the session was dropped over one bad message');
     c.close();
   });

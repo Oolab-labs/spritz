@@ -31,7 +31,7 @@ process.on('uncaughtException', (e) => { try { console.error('[uncaughtException
 process.on('unhandledRejection', (e) => { try { console.error('[unhandledRejection]', e && e.stack || e); } catch (_) {} });
 
 // Packaged builds use only their bundled copies — see bin-path.js.
-const { binPath, userBinPath } = require('./bin-path');
+const { binPath } = require('./bin-path');
 const YTDLP = binPath('yt-dlp');
 const FFMPEG = binPath('ffmpeg');
 
@@ -430,8 +430,8 @@ if (!gotLock) {
     const restored = windowState.restore(windowState.load(windowStateFile), screen.getAllDisplays(), { width: 950, height: 560 });
     mainWindow = new BrowserWindow({
       ...restored,
-      minWidth: 520,
-      minHeight: 400,
+      minWidth: windowState.MIN_W,   // one source for the minimum: restore() clamps saved sizes to the same numbers
+      minHeight: windowState.MIN_H,
       // Transparent so the native libmpv layer (below the web contents) shows
       // through where the DOM is transparent. frame:true on purpose (frameless +
       // transparent + resizable hits Electron regression #49173).
@@ -455,11 +455,14 @@ if (!gotLock) {
     });
 
     // Remember size and position: debounced while the person drags or resizes, and once more on close. The
-    // restored (normal) bounds are saved even in fullscreen, and the mini-player's tiny window is skipped.
+    // restored (normal) bounds are saved even in fullscreen. Nothing is saved while the mini player is on
+    // (`mini`, declared with the window:toggleMini handler): macOS clamps its setSize to the minimum above, so
+    // a size threshold cannot tell it from a normal window, and saving it made the next launch open small in
+    // the mini player's corner. The last normal-mode bounds stay on disk instead.
     let windowStateTimer = null;
     const rememberWindow = () => {
       try {
-        if (!mainWindow || mainWindow.isDestroyed()) return;
+        if (!mainWindow || mainWindow.isDestroyed() || mini) return;
         const b = mainWindow.getNormalBounds();
         if (b.width >= windowState.MIN_W && b.height >= windowState.MIN_H) windowState.save(windowStateFile, b);
       } catch (e) { /* never let bookkeeping disturb playback */ }
@@ -519,6 +522,9 @@ if (!gotLock) {
       try { lan.teardown(); } catch (e) {}
       try { cast.teardown(); } catch (e) {}
       try { dlna.teardown(); } catch (e) {}
+      // A window closed in mini mode takes the mini state with it: a window re-created on dock activate is
+      // normal-sized, and must not inherit a flag that stops it being remembered (or a stale restore target).
+      mini = false; prevBounds = null;
       mainWindow = null;
     });
   }
@@ -798,46 +804,6 @@ if (!gotLock) {
   ipcMain.on('nowplaying:update', (_e, info = {}) => { try { if (npAddon) npAddon.setInfo(info); } catch (e) {} });
   ipcMain.on('nowplaying:clear', () => { try { if (npAddon) npAddon.clear(); } catch (e) {} });
 
-  // ---- Whisper auto-subtitles ----
-  // Extract 16kHz mono audio (whisper.cpp's required format) then transcribe to an .srt
-  // and hand it back for sub-add. Binary/model are discovered or overridable via env.
-  function whisperBin() {
-    if (process.env.WHISPER_BIN) return process.env.WHISPER_BIN;
-    // user-installed, never bundled — so the system lookup applies even when packaged
-    for (const n of ['whisper-cli', 'whisper-cpp']) { const p = userBinPath(n); if (p !== n) return p; }
-    return null;
-  }
-  function whisperModel() {
-    const m = process.env.WHISPER_MODEL || path.join(app.getPath('userData'), 'models', 'ggml-base.en.bin');
-    return fs.existsSync(m) ? m : null;
-  }
-  ipcMain.handle('subtitle:generate', async (_e, { src } = {}) => {
-    const bin = whisperBin(), model = whisperModel();
-    const file = localMediaPath(src); // same reasoning as thumb:at — this feeds ffmpeg -i
-    if (!file) return { ok: false, error: 'No media loaded' };
-    if (!bin) return { ok: false, error: 'Whisper not found — install with: brew install whisper-cpp' };
-    if (!model) return { ok: false, error: 'No Whisper model — put ggml-base.en.bin in app models folder' };
-    const base = path.join(app.getPath('temp'), 'spritz-whisper-' + Date.now());
-    const wav = base + '.wav';
-    try {
-      send('toast', { message: 'Extracting audio for subtitles…' });
-      await run(FFMPEG, ['-y', '-i', file, '-ar', '16000', '-ac', '1', '-f', 'wav', wav], 300000); // 5 min
-      send('toast', { message: 'Transcribing with Whisper…' });
-      await run(bin, ['-m', model, '-f', wav, '-osrt', '-of', base], 1800000); // 30 min cap
-      try { fs.unlinkSync(wav); } catch (e) {}
-      if (fs.existsSync(base + '.srt')) { send('toast', { message: 'Subtitles ready ✓' }); return { ok: true, srt: base + '.srt' }; }
-      return { ok: false, error: 'No subtitles produced' };
-    } catch (e) { try { fs.unlinkSync(wav); } catch (_) {} return { ok: false, error: e.message }; }
-  });
-  // BOTH pipes have to be drained, not just stderr. A child that writes past the 64 KiB pipe buffer
-  // into a stream nobody reads blocks on that write forever, and the only symptom is the timeout
-  // firing much later with a misleading message. whisper-cli prints the transcript to STDOUT —
-  // measured at roughly 28 bytes per second of audio, with stderr carrying only its few KB of model
-  // info — so a feature-length film deadlocked somewhere past the half-hour mark while a short test
-  // clip, well under 64 KiB, always finished. That gap is exactly why this looked like "works
-  // standalone, broken in the app" and sent the search after the wrong change.
-  function run(cmd, args, timeout) { return new Promise((res, rej) => { const p = spawn(cmd, args, { timeout: timeout || 0 }); p.stdout.on('data', () => {}); p.stderr.on('data', () => {}); p.on('error', rej); p.on('close', (c) => c === 0 ? res() : rej(new Error(path.basename(cmd) + (c === null ? ' timed out' : ' failed')))); }); }
-
   // ---- OpenSubtitles (legacy XML-RPC, no API key) ----
   // Hash the file and fetch a matching subtitle. Uses the OpenSubtitles
   // movie-hash (size + 64-bit sums of the first & last 64 KiB) so it matches by content, not name.
@@ -950,9 +916,17 @@ if (!gotLock) {
   // an AirPlay/Chromecast cast carries it too — converted to a WebVTT rendition (HLS) or sideloaded
   // text track (direct MP4), with charset detection. Pre-cast additions are included automatically;
   // a subtitle added mid-cast needs a re-cast to appear (AirPlay/Cast can't add a rendition live).
+  // The path comes from the renderer and later reaches ffmpeg's -i (which speaks concat/http/subfile
+  // as readily as files) and, for .srt/.smi, the LAN file server as-is — so the same localMediaPath
+  // rule as thumb:at/subtitle:generate, plus the subtitle extensions every real sender produces (the
+  // Add Subtitle dialog's filter; OpenSubtitles and Whisper both write .srt). Without the extension
+  // check any readable file (a key, a config) could be registered and handed to the TV raw.
+  const EXTERNAL_SUB_EXT = new Set(['.srt', '.ass', '.ssa', '.sub', '.smi', '.vtt']);
   ipcMain.on('subtitle:external', (_e, { path: p, lang, name } = {}) => {
-    if (!p || externalSubs.some((s) => s.path === p)) return;
-    externalSubs.push({ path: p, lang: lang || 'und', name: name || path.basename(String(p)) });
+    const file = localMediaPath(p);
+    if (!file || !EXTERNAL_SUB_EXT.has(path.extname(file).toLowerCase())) return;
+    if (externalSubs.some((s) => s.path === file)) return;
+    externalSubs.push({ path: file, lang: lang || 'und', name: name || path.basename(file) });
   });
 
   // ---- VPN kill-switch status ----
@@ -1320,7 +1294,7 @@ if (!gotLock) {
       }
       // MP4/MOV: direct-serve if already compatible, else live HLS (fast) instead of a slow full
       // remux — so a 4K MP4 with TrueHD/DTS audio still becomes castable in seconds, not minutes.
-      return mediaLan.prepareCast(filePath, true, cb, (input, c) => mediaLan.serveHls(input, c, hlsOpts()), { extraSubs: externalSubs, directSubs: !!forCast });
+      return mediaLan.prepareCast(filePath, cb, (input, c) => mediaLan.serveHls(input, c, hlsOpts()), { extraSubs: externalSubs, directSubs: !!forCast });
     }
     cb(null);
   }
@@ -1847,12 +1821,11 @@ if (!gotLock) {
       timer = setTimeout(() => finish({ ok: false, why: 'Audio preparation timed out; previous stream retained' }), 60000);
       send('receiver-event', { type: 'track-pending', receiverId, pending: true });
       let preparationAttempt = 0;
-      const prepare = inputStart => {
+      const prepare = () => {
         const attempt = ++preparationAttempt;
         transport.serveHls(owner.src, (url, subtitles, metadata) => {
           if (finished || attempt !== preparationAttempt) return;
           if (!current()) return cancel();
-          if (!url && metadata && metadata.retryFromOrigin === true && inputStart > 0) return prepare(0);
           if (!url || !metadata) return finish({ ok: false, why: 'Audio preparation failed; previous stream retained' });
           // A fresh presentation identity rejects delayed reports/commands from the previous URL.
           const mediaId = require('crypto').randomBytes(8).toString('hex');
@@ -1883,12 +1856,11 @@ if (!gotLock) {
           finish({ ok: true, mediaId });
         }, { caps: svc.profile(receiverId), sourceSelectedAudio: true, audioTrack: index,
           sideloadSubs: true, receiverSubtitles: true, extraSubs: externalSubs,
-          receiverInputStartSec: inputStart,
           receiverSourceWaiting: () => receiverSourceWaiting(owner.src, generation),
           receiverStartSec: () => seekPosition !== null ? seekPosition : Number.isFinite(owner.position) ? owner.position : position });
       };
       try {
-        prepare(require('./receiver-preparation-policy').receiverFeatures(process.env).nearAudio && svc.supportsLogicalTimeline && svc.supportsLogicalTimeline(receiverId) ? Math.max(0, position - 20) : 0);
+        prepare();
       } catch (e) { finish({ ok: false, why: e.message || 'Audio preparation failed' }); }
     });
   }
@@ -1898,9 +1870,6 @@ if (!gotLock) {
   // moved to the new transport — through svc.play, so shouldLoad decides the LOAD, as always.
   function seekReceiver(receiverId, logicalSec) {
     if (!Number.isFinite(logicalSec) || logicalSec < 0) return { ok: false, why: 'invalid seek position' };
-    if (receiverPlan && receiverPlan.receiverId === receiverId && Number.isFinite(receiverPlan.timelineOrigin) && logicalSec < receiverPlan.timelineOrigin) {
-      return switchReceiverAudio(receiverId, { mediaId: receiverPlan.mediaId, epoch: receiverPlan.epoch, trackId: 'source-audio-' + receiverPlan.selectedAudio, seekSec: logicalSec });
-    }
     const intent = retireReceiverIntent(), generation = loadGen, owner = receiverPlan;
     const svc = startReceivers();
     const mediaLan = owner && owner.transport || lan;
@@ -1977,7 +1946,7 @@ if (!gotLock) {
     receivers.on('track-request-error', (e) => send('receiver-event', { type: 'track-error', ...e }));
     receivers.on('pairing', (pending) => send('receiver-event', { type: 'pairing', pending }));
     // A position is EPOCH-LOCAL as the television counts it. Translate to logical film time before
-    // anyone downstream sees it, keeping the local reading beside it for the log.
+    // anyone downstream sees it.
     receivers.on('position', (p) => {
       if (!p || !Number.isFinite(p.currentTime) || p.currentTime < 0) return;
       let out = p;
@@ -2118,7 +2087,7 @@ if (!gotLock) {
       }
     } catch (e) {}
   }
-  ipcMain.on('player:load', (_e, { url, start, referer } = {}) => {
+  ipcMain.on('player:load', (_e, { url, referer } = {}) => {
     const gen = invalidateLoad();
     applyHttpHeaders(url, referer);
     applyStreamCache(url);
@@ -2133,7 +2102,7 @@ if (!gotLock) {
     const isTorLoad = /^http:\/\/(?:localhost|127\.0\.0\.1):\d+\/webtorrent\//i.test(url || '');
     if (isTorLoad && process.env.SPRITZ_DEBUG) { try { fs.appendFileSync('/tmp/spritz-torrent.log', '[' + new Date().toISOString().slice(11, 23) + '] player:load -> mpv loadfile ' + String(url).slice(0, 90) + '\n'); } catch (e) {} }
     try {
-      mpvAddon.command('loadfile', url, 'replace', '-1', loadOpts(start));
+      mpvAddon.command('loadfile', url, 'replace', '-1', loadOpts());
       mpvLastUrl = url;
       if (mainWindow && url) {
         const base = decodeURIComponent(String(url).split('/').pop().split('?')[0] || '');
@@ -2263,7 +2232,6 @@ if (!gotLock) {
     resumeLocalFromAirplay(true);
     setTimeout(() => { try { if (apAddon && castUrl && castEngine === 'mpv') apAddon.prepare(castUrl, mpvPos()); } catch (e) {} }, 1800);
   });
-  ipcMain.handle('airplay:stat', () => { try { return apAddon ? apAddon.stat() : null; } catch (e) { return null; } });
   ipcMain.handle('airplay:mediaTracks', () => { try { return apAddon ? apAddon.mediaTracks() : null; } catch (e) { return null; } });
   ipcMain.on('airplay:selectMedia', (_e, { kind, index } = {}) => {
     // Switch the casting AVPlayer's audio/subtitle rendition via AVMediaSelectionGroup — the native,
@@ -2510,13 +2478,12 @@ if (!gotLock) {
   ipcMain.on('window:minimize', () => { if (mainWindow) mainWindow.minimize(); });
   // Float-on-top + mini-player (compact always-on-top window)
   let onTop = false, mini = false, prevBounds = null;
-  function setFloat(v) { onTop = v; if (mainWindow) mainWindow.setAlwaysOnTop(v, 'floating'); send('window-state', { onTop, mini }); }
+  function setFloat(v) { onTop = v; if (mainWindow) mainWindow.setAlwaysOnTop(v, 'floating'); }
   ipcMain.on('window:toggleFloat', () => setFloat(!onTop));
   ipcMain.on('window:toggleMini', () => {
     if (!mainWindow) return;
     if (!mini) { prevBounds = mainWindow.getBounds(); mainWindow.setSize(480, 270, true); setFloat(true); mini = true; }
     else { if (prevBounds) mainWindow.setBounds(prevBounds); setFloat(false); mini = false; }
-    send('window-state', { onTop, mini });
   });
   ipcMain.on('window:close', () => { if (mainWindow) mainWindow.close(); });
   // manual window dragging (-webkit-app-region is unreliable on the transparent window)
@@ -2528,9 +2495,4 @@ if (!gotLock) {
   ipcMain.on('window:setTitle', (_e, { title } = {}) => { if (mainWindow && title != null) mainWindow.setTitle(title); });
   ipcMain.on('power:block', () => { if (psbId < 0) psbId = powerSaveBlocker.start('prevent-display-sleep'); });
   ipcMain.on('power:unblock', () => { if (psbId >= 0) { powerSaveBlocker.stop(psbId); psbId = -1; } });
-
-  ipcMain.handle('app:getVersions', () => ({
-    app: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome,
-    node: process.versions.node, arch: process.arch
-  }));
 }

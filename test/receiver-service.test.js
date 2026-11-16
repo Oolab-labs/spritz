@@ -44,9 +44,23 @@ function client(port, initialMessage) {
       socket.write(initialMessage ? Buffer.concat([Buffer.from(handshake), wsf.encodeText(proto.serialize(initialMessage))]) : handshake);
     });
     let head = Buffer.alloc(0), up = false, buf = Buffer.alloc(0), st = null;
-    const msgs = [], waiters = [];
+    const msgs = [], waiters = [], pongs = new Map();
     const c = {
       socket, msgs,
+      // Ordering barrier: a masked WS ping control frame, resolved by its pong. The hub answers
+      // control frames in the same in-order receive loop as text frames (receiver-hub.js), so the
+      // pong proves every earlier message was handled — including invalid ones that emit nothing,
+      // which is what keeps the "cannot mutate" assertions below able to fail.
+      barrier() {
+        const nonce = crypto.randomBytes(6).toString('hex');
+        const body = Buffer.from(nonce), mask = crypto.randomBytes(4), masked = Buffer.from(body);
+        for (let i = 0; i < masked.length; i++) masked[i] ^= mask[i & 3];
+        return new Promise((res, rej) => {
+          const timer = setTimeout(() => { pongs.delete(nonce); rej(new Error('timed out waiting for pong')); }, 3000);
+          pongs.set(nonce, () => { clearTimeout(timer); res(); });
+          socket.write(Buffer.concat([Buffer.from([0x89, 0x80 | body.length]), mask, masked]));
+        });
+      },
       send(m) {
         const body = Buffer.from(proto.serialize(m), 'utf8');
         const mask = crypto.randomBytes(4);
@@ -80,6 +94,7 @@ function client(port, initialMessage) {
       const out = wsf.decode(buf, st);
       buf = out.rest; st = out.state || st;
       for (const f of out.frames) {
+        if (f.type === 'pong') { const done = pongs.get(f.body.toString()); if (done) { pongs.delete(f.body.toString()); done(); } continue; }
         if (f.type !== 'text') continue;
         const r = proto.parse(f.text);
         if (!r.ok) continue;
@@ -352,7 +367,7 @@ test('revoking removes the target and its authority at once', async () => {
   }, { seed: 'lg-1' });
 });
 
-test('registry.observed stays null through pairing and playback', async () => {
+test('pairing and playback write no capability field into the registry', async () => {
   await withService(async ({ svc, port, token }) => {
     const { c } = await authed(port, token, 'lg-1', null);
     svc.play('lg-1', { mediaId: 'm1', url: 'http://mac/a.m3u8' });
@@ -360,8 +375,10 @@ test('registry.observed stays null through pairing and playback', async () => {
     c.send(proto.capabilities(0, { reported: { hevc: 'probably' } }));
     await c.quiet('nothing');
     // Pairing proves identity, not codecs. Nothing in this milestone may write capability evidence.
-    assert.equal(svc._registry().receivers['lg-1'].observed, null,
-      'pairing wrote capability evidence — reported is not observed');
+    // Capability evidence lives in device-memory.js; the registry record holds identity and trust.
+    const rec = svc._registry().receivers['lg-1'];
+    assert.equal('observed' in rec, false, 'pairing wrote capability evidence — reported is not observed');
+    assert.equal('protocolVersion' in rec, false);
     c.close();
   }, { seed: 'lg-1' });
 });
@@ -557,41 +574,6 @@ test('a position report carries the epoch it was measured in', async () => {
   }, { seed: 'lg-1' });
 });
 
-// ---- dropping control on purpose ---------------------------------------------------------------
-//
-// The reconnect/adopt behaviour is the one this receiver was hardest won on, and until now the
-// only way to exercise it on hardware was the dev harness. This is the production lever: close a
-// receiver's CONTROL socket and nothing else. The television keeps its media connection, notices,
-// reconnects, and is adopted.
-
-test('dropControl closes the receiver\'s control socket and the reconnect is adopted, not reloaded', async () => {
-  await withService(async ({ svc, port, token, logs }) => {
-    const { c } = await authed(port, token, 'lg-1', { mediaId: 'm1', epoch: 'epoch-3', currentTime: 828.7, state: 'playing' });
-    await c.quiet('load');
-    // The application wants what the television already holds — the state a real cast is in.
-    const r0 = svc.play('lg-1', { mediaId: 'm1', epoch: 'epoch-3', url: 'http://mac/vod/t/epoch-3/media.m3u8' });
-    assert.equal(r0.loaded, false, 'asking for the film it holds does not reload it');
-    // Bounded: the hub's idle timeout would close the socket eventually anyway, and a test that
-    // waited indefinitely could not tell a deliberate drop from that.
-    const closed = new Promise((resolve) => c.socket.once('close', () => resolve('closed')));
-    const r = svc.dropControl('lg-1');
-    assert.equal(r.ok, true);
-    const outcome = await Promise.race([closed, new Promise((resolve) => setTimeout(() => resolve('still open'), 2000))]);
-    assert.equal(outcome, 'closed', 'the control socket was closed promptly, by the drop');
-    // The television comes back holding exactly what it had.
-    const again = await authed(port, token, 'lg-1', { mediaId: 'm1', epoch: 'epoch-3', currentTime: 830.2, state: 'playing' });
-    assert.equal(await again.c.quiet('load'), true, 'a reconnect after a control drop must ADOPT');
-    assert.ok(logs.some((l) => /adopted existing playback at 830\.2s/.test(l)), 'and say so');
-    again.c.close();
-  }, { seed: 'lg-1' });
-});
-
-test('dropControl on a receiver that is not connected says so', async () => {
-  await withService(async ({ svc }) => {
-    assert.equal(svc.dropControl('nobody').ok, false);
-  }, { seed: 'lg-1' });
-});
-
 // ---- stopping releases the media --------------------------------------------------------------
 //
 // Measured on hardware (2026-09-03): after `stop`, the television went idle and the Mac's live-HLS
@@ -630,8 +612,7 @@ test('an explicit no-media idle report clears stale playback presentation state'
 
     assert.equal(published[0].status, 'online', 'clearing playback must not disconnect the receiver');
     assert.deepEqual(published[0].playback, {
-      state: 'idle', mediaId: null, epoch: null, currentTime: null, durationSec: null,
-      ageMs: published[0].playback.ageMs
+      state: 'idle', mediaId: null, epoch: null, currentTime: null, durationSec: null
     });
     const current = svc.targets()[0].playback;
     assert.deepEqual(
@@ -689,8 +670,7 @@ test('idle with receiver flags clears every presentation field before target pro
       });
       const snapshot = svc.targets()[0].playback;
       assert.deepEqual(snapshot, {
-        state: 'idle', mediaId: null, epoch: null, currentTime: null, durationSec: null,
-        ageMs: snapshot.ageMs
+        state: 'idle', mediaId: null, epoch: null, currentTime: null, durationSec: null
       });
 
       c.send(proto.envelope('state', hello.sid, { state: 'idle', mediaId: null, flags: [] }));
@@ -760,8 +740,7 @@ test('Stop waits for the receiver report before clearing its public playback sta
     assert.equal(cancelled.length, 1);
     const idlePlayback = svc.targets()[0].playback;
     assert.deepEqual(idlePlayback, {
-      state: 'idle', mediaId: null, epoch: null, currentTime: null, durationSec: null,
-      ageMs: idlePlayback.ageMs
+      state: 'idle', mediaId: null, epoch: null, currentTime: null, durationSec: null
     });
     c.close();
   }, { seed: 'lg-1' });
@@ -787,8 +766,7 @@ test('after confirmed Stop an idle reconnect stays empty and the same file can b
     assert.equal(await again.c.quiet('load'), true,
       'stopped controller intent caused the idle reconnect to reload old media');
     assert.deepEqual(svc.targets()[0].playback, {
-      state: 'idle', mediaId: null, epoch: null, currentTime: null, durationSec: null,
-      ageMs: svc.targets()[0].playback.ageMs
+      state: 'idle', mediaId: null, epoch: null, currentTime: null, durationSec: null
     }, 'the idle greeting revived facts from the stopped presentation');
 
     const recast = svc.play('lg-1', {
@@ -821,11 +799,12 @@ test('service forwards first control frame coalesced with HTTP upgrade', async (
   await withService(async ({ port, server }) => {
     let headBytes = 0;
     server.prependOnceListener('upgrade', (_, socket, head) => { headBytes = head.length; });
-    const c = await client(port, proto.envelope('ping', 'early', { nonce: 'upgrade-head' }));
+    // A pre-trust message in the upgrade head: it must be parsed and answered like any other.
+    const c = await client(port, proto.envelope('pair.request', 'early', { receiverId: 'lg-head', name: 'Head LG', platform: 'webos' }));
     try {
       await c.next('hello');
-      const pong = await c.next('pong');
-      assert.equal(pong.nonce, 'upgrade-head');
+      const challenge = await c.next('pair.challenge');
+      assert.equal(typeof challenge.code, 'string'); assert.ok(challenge.code.length > 0);
       assert.ok(headBytes > 0, 'the test must exercise HTTP upgrade head bytes');
     } finally { c.close(); }
   });
@@ -841,6 +820,21 @@ test('service Stop preserves a corrupt store when quarantine fails', (t) => {
     assert.equal(fs.readFileSync(file, 'utf8'), '{broken');
     assert.deepEqual(fs.readdirSync(dir), ['receivers.json']);
   } finally { svc.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Nothing in the application listens for an 'error' event on the service, and an EventEmitter
+// throws when 'error' is emitted with no listener. A full or read-only disk must be logged and
+// shrugged off, not turned into an exception out of stop() (or out of any future persist caller).
+test('a failed trust-store write is logged, and Stop neither throws nor skips its own log', (t) => {
+  const dir = tmpdir(), file = path.join(dir, 'receivers.json'), logs = [];
+  const svc = createReceiverService({ storePath: file, beaconPort: 0, onLog: (m) => logs.push(m) });
+  try {
+    svc.start();
+    t.mock.method(store, 'save', () => { throw new Error('disk full'); });
+    assert.doesNotThrow(() => svc.stop());
+    assert.ok(logs.some((m) => /could not save the trust store — disk full/.test(m)), 'the failure is logged');
+    assert.equal(logs[logs.length - 1], 'receiver: stopped');
+  } finally { t.mock.restoreAll(); svc.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 
@@ -869,12 +863,11 @@ test('authenticated malformed timing reports cannot mutate current playback', as
     const { c, hello } = await authed(port, token, 'lg-1', { mediaId: 'm1', currentTime: 20, state: 'playing' });
     try {
       c.send(proto.position(hello.sid, { mediaId: 'm1', currentTime: 20, durationSec: 100, paused: false }));
-      c.send(proto.ping(hello.sid, { nonce: 'baseline' })); await c.next('pong');
+      await c.barrier();
       const before = svc.targets()[0].playback;
       c.send(proto.envelope('position', hello.sid, { mediaId: 'm1', currentTime: -20, durationSec: '100', paused: true }));
       c.send(proto.envelope('position', hello.sid, { mediaId: 'm1', currentTime: 50, paused: 'false' }));
-      c.send(proto.ping(hello.sid, { nonce: 'after-invalid' }));
-      assert.equal((await c.next('pong')).nonce, 'after-invalid');
+      await c.barrier();
       const after = svc.targets()[0].playback;
       assert.equal(after.currentTime, before.currentTime);
       assert.equal(after.durationSec, before.durationSec);
@@ -883,7 +876,7 @@ test('authenticated malformed timing reports cannot mutate current playback', as
       assert.ok(logs.some(line => line.includes('invalid currentTime')));
       assert.ok(logs.some(line => line.includes('invalid paused')));
       c.send(proto.position(hello.sid, { mediaId: 'm1', currentTime: 21, durationSec: 100, paused: false }));
-      c.send(proto.ping(hello.sid, { nonce: 'valid-again' })); await c.next('pong');
+      await c.barrier();
       assert.equal(svc.targets()[0].playback.currentTime, 21);
     } finally { c.close(); }
   }, { seed: 'lg-1' });
@@ -895,11 +888,11 @@ test('malformed reconnect greeting cannot replace authenticated playback', async
     const { c, hello } = await authed(port, token, 'lg-1', { mediaId: 'm1', currentTime: 20, state: 'playing' });
     try {
       c.send(Object.assign(proto.helloFrom(hello.sid, { receiverId: 'lg-1' }), { playing: { mediaId: 'wrong', currentTime: -50, state: 'playing' } }));
-      c.send(proto.ping(hello.sid, { nonce: 'after-bad-hello' })); await c.next('pong');
+      await c.barrier();
       assert.equal(svc.targets()[0].playback.mediaId, 'm1');
       assert.equal(svc.targets()[0].playback.currentTime, 20);
       c.send(Object.assign(proto.helloFrom(hello.sid, { receiverId: 'lg-1' }), { playing: { mediaId: 'm1', currentTime: 25, state: 'playing' } }));
-      c.send(proto.ping(hello.sid, { nonce: 'after-good-hello' })); await c.next('pong');
+      await c.barrier();
       assert.equal(svc.targets()[0].playback.currentTime, 25);
     } finally { c.close(); }
   }, { seed: 'lg-1' });
@@ -911,31 +904,31 @@ test('partial position preserves omitted fields and records supplied epoch', asy
     const { c, hello } = await authed(port, token, 'lg-1', { mediaId: 'm1', currentTime: 20, state: 'playing' });
     try {
       c.send(proto.position(hello.sid, { mediaId: 'm1', epoch: 'epoch-1', currentTime: 20, durationSec: 100, paused: false }));
-      c.send(proto.ping(hello.sid)); await c.next('pong');
+      await c.barrier();
       svc.play('lg-1', { mediaId: 'm1', epoch: 'epoch-2', url: 'http://localhost/epoch-2' });
       await c.next('load');
       let report; svc.once('position', value => { report = value; });
       c.send(proto.envelope('position', hello.sid, { currentTime: 21, epoch: 'epoch-2' }));
-      c.send(proto.ping(hello.sid)); await c.next('pong');
+      await c.barrier();
       const playback = svc.targets()[0].playback;
       assert.equal(playback.mediaId, 'm1'); assert.equal(playback.durationSec, null, 'old epoch duration cannot survive timeline replacement');
       assert.equal(playback.state, 'playing'); assert.equal(playback.currentTime, 21);
       assert.equal(report.epoch, 'epoch-2');
       svc.once('position', value => { report = value; });
       c.send(proto.envelope('position', hello.sid, { currentTime: 22 }));
-      c.send(proto.ping(hello.sid)); await c.next('pong');
+      await c.barrier();
       assert.equal(report.epoch, 'epoch-2', 'partial clock update retains its known timeline');
       assert.equal(report.currentTime, 22);
       assert.equal(report.durationSec, undefined, 'omitted observations remain omitted');
       svc.play('lg-1', { mediaId: 'm1', epoch: 'epoch-3', url: 'http://localhost/epoch-3' });
       await c.next('load');
       c.send(proto.loaded(hello.sid, { mediaId: 'm1', epoch: 'epoch-3', durationSec: 50 }));
-      c.send(proto.ping(hello.sid)); await c.next('pong');
+      await c.barrier();
       assert.equal(svc.targets()[0].playback.currentTime, null, 'loaded epoch cannot inherit previous local clock');
       assert.equal(svc.targets()[0].playback.durationSec, 50);
       c.send(proto.envelope('position', hello.sid, { mediaId: 'm1', epoch: 'epoch-3', currentTime: 4 }));
       c.send(proto.envelope('loaded', hello.sid, { mediaId: 'm1' }));
-      c.send(proto.ping(hello.sid)); await c.next('pong');
+      await c.barrier();
       assert.equal(svc.targets()[0].playback.epoch, 'epoch-3', 'omitted loaded epoch preserves known timeline');
       assert.equal(svc.targets()[0].playback.currentTime, 4);
       assert.equal(svc.targets()[0].playback.durationSec, 50, 'omitted metadata preserves same-timeline duration');
@@ -952,13 +945,13 @@ test('retired media and epoch reports cannot clear or repopulate current playbac
       c.send(proto.loaded(hello.sid, { mediaId: 'B', epoch: 'epoch-2', durationSec: 100 }));
       c.send(proto.state(hello.sid, { mediaId: 'B', epoch: 'epoch-2', state: 'playing' }));
       c.send(proto.position(hello.sid, { mediaId: 'B', epoch: 'epoch-2', currentTime: 20, durationSec: 100 }));
-      c.send(proto.ping(hello.sid)); await c.next('pong');
+      await c.barrier();
       c.send(proto.loaded(hello.sid, { mediaId: 'A', epoch: 'epoch-1', durationSec: 999 }));
       c.send(proto.position(hello.sid, { mediaId: 'A', currentTime: 999 }));
       c.send(proto.state(hello.sid, { mediaId: 'B', epoch: 'epoch-1', state: 'ended' }));
       c.send(proto.error(hello.sid, { mediaId: 'A', fatal: true }));
       c.send(proto.error(hello.sid, { mediaId: 'B', epoch: 'epoch-1', fatal: true }));
-      c.send(proto.ping(hello.sid)); await c.next('pong');
+      await c.barrier();
       const playback = svc.targets()[0].playback;
       assert.equal(playback.mediaId, 'B'); assert.equal(playback.currentTime, 20);
       assert.equal(playback.durationSec, 100); assert.equal(playback.state, 'playing');
@@ -993,10 +986,10 @@ test('older greeting reconciles desired load without overwriting current present
       c.send(proto.loaded(hello.sid, { mediaId: 'B', epoch: 'epoch-2', durationSec: 100 }));
       c.send(proto.state(hello.sid, { mediaId: 'B', epoch: 'epoch-2', state: 'playing' }));
       c.send(proto.position(hello.sid, { mediaId: 'B', epoch: 'epoch-2', currentTime: 20, durationSec: 100 }));
-      c.send(proto.ping(hello.sid)); await c.next('pong');
+      await c.barrier();
       c.send(Object.assign(proto.helloFrom(hello.sid, { receiverId: 'lg-1' }), { playing: { mediaId: 'A', epoch: 'epoch-1', currentTime: 999, state: 'paused' } }));
       const load = await c.next('load'); assert.equal(load.mediaId, 'B');
-      c.send(proto.ping(hello.sid)); await c.next('pong');
+      await c.barrier();
       const playback = svc.targets()[0].playback;
       assert.equal(playback.mediaId, 'B'); assert.equal(playback.currentTime, 20);
       assert.equal(playback.state, 'playing');
@@ -1007,7 +1000,7 @@ test('older greeting reconciles desired load without overwriting current present
 
 test('invalid controller timing sends no seek or load while explicit zero remains valid', async () => {
   await withService(async ({ svc, port, token }) => {
-    const { c, hello } = await authed(port, token, 'lg-1');
+    const { c } = await authed(port, token, 'lg-1');
     try {
       for (const value of [NaN, Infinity, -1, '20', undefined]) {
         assert.equal(svc.command('lg-1', 'seek', value).ok, false);
@@ -1015,7 +1008,7 @@ test('invalid controller timing sends no seek or load while explicit zero remain
       for (const value of [NaN, Infinity, -1, '20']) {
         assert.equal(svc.play('lg-1', { mediaId: 'A', url: 'http://localhost/A', startSec: value }).ok, false);
       }
-      c.send(proto.ping(hello.sid)); await c.next('pong');
+      await c.barrier();
       assert.equal(c.msgs.some(message => message.type === 'seek' || message.type === 'load'), false);
       assert.equal(svc.command('lg-1', 'seek', 0).ok, true);
       assert.equal((await c.next('seek')).toSec, 0);
@@ -1036,7 +1029,14 @@ test('reconnect LOAD preserves the latest controller pause/play and explicit see
         const command = autoplay ? 'pause' : 'play';
         assert.equal(svc.command('lg-1', command).ok, true); await c.next(command);
         assert.equal(svc.command('lg-1', 'seek', 7).ok, true); await c.next('seek');
-        svc.dropControl('lg-1');
+        // The television drops its control socket, as a real one does; wait until the service has
+        // seen it go, so the reconnect is a reconnect and not a second session racing the first.
+        const gone = new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('the service never saw the socket close')), 3000);
+          const on = (list) => { if (list[0] && list[0].status === 'offline') { clearTimeout(timer); svc.removeListener('targets', on); resolve(); } };
+          svc.on('targets', on);
+        });
+        c.close(); await gone;
         again = await authed(port, token, 'lg-1');
         const load = await again.c.next('load');
         assert.equal(load.autoplay, !autoplay); assert.equal(load.startSec, 7);

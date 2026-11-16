@@ -4,7 +4,7 @@
 //
 // hls-vod.js works out WHICH slices a film divides into and writes a complete, seekable playlist
 // before any of them exist. This is the other half: turning "segment 47" into an ffmpeg invocation.
-// The two were never connected — hls-vod.js has unit tests and, until now, no callers at all.
+// lanserver's serveVod is what joins the two.
 //
 // Two constraints decide every argument here, and both were measured on a fixture rather than
 // reasoned about, because both fail silently.
@@ -458,10 +458,8 @@ function subExtractArgs(input, trackIndex, out) {
   return ['-loglevel', 'error', '-y', '-i', input, '-map', '0:s:' + i, '-c:s', 'webvtt', '-f', 'webvtt', out];
 }
 
-// The master playlist: the one video variant, plus a SUBTITLES rendition per track.
-//
-// hls-vod.js's buildMasterPlaylist takes a single subtitlesUrl, which is all the AirPlay path ever
-// needed. A film usually has several tracks, so this writes the group properly.
+// The master playlist: the one video variant, plus a SUBTITLES rendition per track — a film
+// usually has several, so this writes the group properly rather than a single subtitles URL.
 //
 // No track is DEFAULT or AUTOSELECT. Turning subtitles on unasked is a worse failure than making
 // the viewer pick, and this project has already been bitten by a receiver silently choosing a
@@ -492,8 +490,9 @@ function buildVodMaster({ mediaUrl, subs, audio, bandwidth, width, height, codec
   }
   const attrs = ['BANDWIDTH=' + (Number(bandwidth) > 0 ? Math.floor(bandwidth) : 20000000)];
   if (Number(width) > 0 && Number(height) > 0) attrs.push('RESOLUTION=' + Math.floor(width) + 'x' + Math.floor(height));
-  // Only ever stated when it is known to be true — a guessed CODECS string once made AVPlayer reject
-  // a master outright and cost this project days (see buildMasterPlaylist in hls-vod.js).
+  // Only ever stated when the caller can state it truthfully — a guessed codec string is worse than
+  // none: a speculative one once made AVPlayer reject the master outright, and AirPlay stopped
+  // working for days.
   if (codecs) attrs.push('CODECS="' + codecs + '"');
   if (lines.some((l) => l.startsWith('#EXT-X-MEDIA:TYPE=AUDIO'))) attrs.push('AUDIO="aud"');
   if (lines.some((l) => l.startsWith('#EXT-X-MEDIA:TYPE=SUBTITLES'))) attrs.push('SUBTITLES="subs"');
@@ -503,4 +502,4 @@ function buildVodMaster({ mediaUrl, subs, audio, bandwidth, width, height, codec
 }
 
 module.exports = { segmentArgs, segmentRunArgs, runSegmentReady, presegmentArgs, presegmentPackageArgs, keyframeArgs, parseKeyframes, segmentPath, vodEligible,
-  subPlaylist, subExtractArgs, buildVodMaster, VTT_HEAD, SEGMENT_EXT };
+  subPlaylist, subExtractArgs, buildVodMaster, VTT_HEAD };

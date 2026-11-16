@@ -28,8 +28,3 @@ test('isPackaged: Electron without defaultApp only', () => {
   assert.strictEqual(isPackaged({ versions: { electron: '42.9.0' }, defaultApp: true }), false);
   assert.strictEqual(isPackaged({ versions: {} }), false);
 });
-
-test('user-installed optional tools (whisper) are still found on the system', () => {
-  const src = require('fs').readFileSync(require('path').join(__dirname, '../src/main/main.js'), 'utf8');
-  assert.match(src, /userBinPath\(n\)/, 'whisperBin must not use the bundled-only resolver');
-});

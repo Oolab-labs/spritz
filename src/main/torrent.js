@@ -297,17 +297,12 @@ module.exports = function createTorrent(send, opts = {}) {
       // Hand to mpv once the head is on disk (instant open), or after PREBUFFER_TIMEOUT regardless.
       const t0 = Date.now();
       let readied = false;
-      // Once the head is in hand, ask for the file TAIL too. An MKV's Cues (seek index) and an
-      // MP4's moov atom (when not front-loaded by faststart) live at the END of the file; without
-      // them mpv cannot build a seek index. The dependency can merge this selection
-      // with the whole-file range; effective request order still needs T1 qualification.
-      const wantTail = () => {
-        try {
-          const tail = Math.max(file._startPiece, file._endPiece - 3);
-          active.select(tail, file._endPiece, 1);
-        } catch (e) {}
-      };
-      const ready = (why) => { if (readied) return; readied = true; wantTail(); tlog('READY after ' + (Date.now() - t0) + 'ms (' + why + ') peers=' + active.numPeers + ' speed=' + Math.round(active.downloadSpeed / 1024) + 'KB/s -> ' + url); send('torrent:ready', { url }); };
+      // Deliberately no "fetch the tail" select here. The whole file is already selected at priority
+      // 0, and webtorrent merges any range inside it into one whole-file selection at the higher
+      // priority, still walked head-first: the tail never came early, and the background download
+      // rose to priority 1, splitting peer slots with mpv's own reads. When mpv needs MKV Cues or a
+      // tail moov it reads them itself, which makes its own priority-1 stream selection.
+      const ready = (why) => { if (readied) return; readied = true; tlog('READY after ' + (Date.now() - t0) + 'ms (' + why + ') peers=' + active.numPeers + ' speed=' + Math.round(active.downloadSpeed / 1024) + 'KB/s -> ' + url); send('torrent:ready', { url }); };
       const check = () => {
         if (readied || !current() || activeFile !== file) return; // superseded (file switch / cancel)
         let have = 0; const total = headEnd - file._startPiece;

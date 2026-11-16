@@ -1,6 +1,7 @@
 'use strict';
 
-// Presentation snapshots only: service/adoption clocks remain epoch-local.
+// Presentation snapshots only: the renderer is given film (logical) time, and the epoch-local clock
+// stays in the service, where adoption needs it. The input list is never mutated.
 function presentTargets(list, toLogical, sourceDuration) {
   return (list || []).map(target => {
     const p = target.playback;
@@ -15,7 +16,6 @@ function presentTargets(list, toLogical, sourceDuration) {
     }
     return { ...target, playback: { ...p,
       currentTime: Number.isFinite(logical) && logical >= 0 ? logical : null,
-      epochLocal: p.currentTime, epochDurationSec: p.durationSec,
       durationSec: Number.isFinite(duration) && duration > 0 ? duration : null
     } };
   });
