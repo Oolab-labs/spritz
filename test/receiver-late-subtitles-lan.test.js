@@ -19,9 +19,12 @@ const http = require('http');
 const { execFileSync } = require('child_process');
 const { binPath } = require('../src/main/bin-path');
 
-const FFMPEG = binPath('ffmpeg');
+// binPath answers the bare name when nothing is installed (CI has no ffmpeg), so "found" means an
+// absolute path that exists. The probe under test needs ffprobe as well.
+const found = (name) => { const p = binPath(name); return path.isAbsolute(p) && fs.existsSync(p) ? p : null; };
+const FFMPEG = found('ffmpeg');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'spritz-late-subs-'));
-const SKIP = !FFMPEG && 'ffmpeg not available';
+const SKIP = !(FFMPEG && found('ffprobe')) && 'ffmpeg/ffprobe not available';
 
 // An MP4 the way a release is written: moov at the end (no faststart), one mov_text track.
 function fixtures() {
