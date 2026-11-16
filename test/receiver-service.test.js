@@ -21,7 +21,6 @@ const wsf = require('../src/main/ws-frame');
 const proto = require('../src/main/receiver-protocol');
 const R = require('../src/main/receiver-registry');
 const store = require('../src/main/receiver-store');
-const targetProjection = require('../src/main/receiver-targets');
 const createReceiverService = require('../src/main/receiver-service');
 
 const tmpdir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'spritz-svc-'));
@@ -367,6 +366,22 @@ test('revoking removes the target and its authority at once', async () => {
   }, { seed: 'lg-1' });
 });
 
+// The hub keeps a revoked socket OPEN (playback must survive losing authority), so the service must
+// take trust from the hub rather than from a copy it set at authentication. With a copy, play()
+// found the revoked socket, recorded a fresh desire — undoing the one revoke() had just deleted —
+// and failed only because hub.send refused the LOAD.
+test('a revoked but still-open receiver is not connected, and play() records no desire for it', async () => {
+  await withService(async ({ svc, port, token }) => {
+    const { c } = await authed(port, token, 'lg-1', null);
+    svc.revoke('lg-1');
+    const r = svc.play('lg-1', { mediaId: 'm1', url: 'http://mac/a.m3u8', subtitleTrackId: 'source-subtitle-2' });
+    assert.deepEqual(r, { ok: false, why: 'receiver is not connected' });
+    assert.equal(svc.subtitleSelection('lg-1', 'm1', null), 'off', 'play() left a desire for a revoked receiver');
+    assert.equal(await c.quiet('load'), true, 'a media URL reached a revoked receiver');
+    c.close();
+  }, { seed: 'lg-1' });
+});
+
 test('pairing and playback write no capability field into the registry', async () => {
   await withService(async ({ svc, port, token }) => {
     const { c } = await authed(port, token, 'lg-1', null);
@@ -625,65 +640,43 @@ test('an explicit no-media idle report clears stale playback presentation state'
   }, { seed: 'lg-1' });
 });
 
-test('idle with receiver flags clears every presentation field before target projection', async () => {
-  const projected = [];
-  const targetsFrom = targetProjection.targetsFrom;
-  targetProjection.targetsFrom = (input) => {
-    projected.push((input.sessions || []).map((s) => Object.assign({}, s)));
-    return targetsFrom(input);
-  };
-  try {
-    await withService(async ({ svc, port, token }) => {
-      const { c, hello } = await authed(port, token, 'lg-1', null);
-      svc.play('lg-1', { mediaId: 'm1', epoch: 'epoch-2', url: 'http://mac/a.m3u8' });
-      await c.next('load');
-      c.send(proto.loaded(hello.sid, { mediaId: 'm1', epoch: 'epoch-2', durationSec: 3302 }));
-      c.send(proto.state(hello.sid, {
-        mediaId: 'm1', epoch: 'epoch-2', state: 'buffering', flags: ['waiting', 'stalled']
-      }));
-      c.send(proto.position(hello.sid, {
-        mediaId: 'm1', epoch: 'epoch-2', currentTime: 2832.903, durationSec: 3302,
-        paused: false, bufferedUntil: 2860
-      }));
-      await c.quiet('nothing');
+test('idle with receiver flags clears every presentation field', async () => {
+  await withService(async ({ svc, port, token }) => {
+    const { c, hello } = await authed(port, token, 'lg-1', null);
+    svc.play('lg-1', { mediaId: 'm1', epoch: 'epoch-2', url: 'http://mac/a.m3u8' });
+    await c.next('load');
+    c.send(proto.loaded(hello.sid, { mediaId: 'm1', epoch: 'epoch-2', durationSec: 3302 }));
+    c.send(proto.state(hello.sid, {
+      mediaId: 'm1', epoch: 'epoch-2', state: 'buffering', flags: ['waiting', 'stalled']
+    }));
+    c.send(proto.position(hello.sid, {
+      mediaId: 'm1', epoch: 'epoch-2', currentTime: 2832.903, durationSec: 3302,
+      paused: false, bufferedUntil: 2860
+    }));
+    await c.quiet('nothing');
 
-      const changed = new Promise((resolve) => svc.once('targets', resolve));
-      // Reachable from the reviewed receiver when Stop occurs while waiting/stalled. The receiver
-      // omits epoch, clock and duration; explicit mediaId:null is the authoritative unload fact.
-      c.send(proto.envelope('state', hello.sid, {
-        state: 'idle', mediaId: null, flags: ['waiting', 'stalled']
-      }));
-      await changed;
+    const stopped = [];
+    svc.on('playback-stopped', (e) => stopped.push(e));
+    const changed = new Promise((resolve) => svc.once('targets', resolve));
+    // Reachable from the reviewed receiver when Stop occurs while waiting/stalled. The receiver
+    // omits epoch, clock and duration; explicit mediaId:null is the authoritative unload fact.
+    c.send(proto.envelope('state', hello.sid, {
+      state: 'idle', mediaId: null, flags: ['waiting', 'stalled']
+    }));
+    const published = await changed;
 
-      const observed = projected[projected.length - 1].find((s) => s.receiverId === 'lg-1');
-      assert.deepEqual({
-        mediaId: observed.mediaId,
-        epoch: observed.epoch,
-        currentTime: observed.currentTime,
-        durationSec: observed.durationSec,
-        paused: observed.paused,
-        bufferedUntil: observed.bufferedUntil,
-        flags: observed.flags
-      }, {
-        mediaId: null, epoch: null, currentTime: null, durationSec: null,
-        paused: null, bufferedUntil: null, flags: []
-      });
-      const snapshot = svc.targets()[0].playback;
-      assert.deepEqual(snapshot, {
-        state: 'idle', mediaId: null, epoch: null, currentTime: null, durationSec: null
-      });
+    const cleared = { state: 'idle', mediaId: null, epoch: null, currentTime: null, durationSec: null };
+    assert.deepEqual(published[0].playback, cleared);
+    const snapshot = svc.targets()[0].playback;
+    assert.deepEqual(snapshot, cleared);
+    assert.deepEqual(stopped, [{ receiverId: 'lg-1' }]);
 
-      c.send(proto.envelope('state', hello.sid, { state: 'idle', mediaId: null, flags: [] }));
-      await c.quiet('nothing');
-      const repeated = projected[projected.length - 1].find((s) => s.receiverId === 'lg-1');
-      assert.deepEqual(repeated.flags, []);
-      c.close();
-    }, { seed: 'lg-1' });
-  } finally {
-    Object.defineProperty(targetProjection, 'targetsFrom', {
-      value: targetsFrom, writable: true, configurable: true, enumerable: true
-    });
-  }
+    c.send(proto.envelope('state', hello.sid, { state: 'idle', mediaId: null, flags: [] }));
+    await c.quiet('nothing');
+    const repeated = svc.targets()[0].playback;
+    assert.deepEqual(repeated, cleared);
+    c.close();
+  }, { seed: 'lg-1' });
 });
 
 test('omitting mediaId from a partial state report is not an unload', async () => {
