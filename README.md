@@ -20,7 +20,7 @@ Everything runs on your own machine and your own network. No account, nothing up
 no telemetry. The only time Spritz contacts GitHub (api.github.com) is when you choose **Help → Check for Updates…**; nothing is checked or downloaded automatically. Spritz ships **no** content, catalog, or index of any kind — every file,
 link and stream comes from you.
 
-> Status: `2.0.0-rc.16` (release candidate) — macOS 11+ on Apple Silicon (arm64). Read [Status & known limitations](#status--known-limitations) before relying on it.
+> Status: `2.0.0-rc.17` (release candidate) — macOS 11+ on Apple Silicon (arm64). Read [Status & known limitations](#status--known-limitations) before relying on it.
 
 ## What it does
 
@@ -175,7 +175,7 @@ Spritz Receiver is a small web app that runs on an LG webOS TV and plays what yo
 
 **If the TV can't find your Mac:** it searches its own network first, then a short list of common home ranges (`192.168.1.x`, `192.168.0.x`, `10.0.0.x`, `10.0.1.x`). A TV on a guest network, a separate VLAN, or an unusual range won't find the Mac. Put both on the same network. If the search finds nothing (it can take about a minute), the TV shows **Can't find Spritz** with a box for the Mac's address, which Spritz shows under **Devices**.
 
-**Where it has been tested:** one TV (LG 55NANO80T6A). Receiver 0.3.2 was exercised on it (webOS firmware 33.31.61) for the search, typed-address, pairing, code-refresh and pair-again flows, and for playing a local file and a streaming torrent with audio and subtitles switched from both the Mac and the TV's own menu. Receiver 0.4.0 was checked on the same TV on webOS 24 (firmware 33.31.75): pairing from the Mac's code field, the start and end times on screen, the launcher icon and launch screen, and a cast started at a position that used to freeze. This was driven over the TV's web inspector and the Mac, not by a person holding the remote. Other models and webOS versions are untested. Receiver and Mac app versions are meant to be used together: **Devices** shows the receiver's version and flags a TV running an older one, but the Mac app does not update it for you.
+**Where it has been tested:** one TV (LG 55NANO80T6A). Receiver 0.3.2 was exercised on it (webOS firmware 33.31.61) for the search, typed-address, pairing, code-refresh and pair-again flows, and for playing a local file and a streaming torrent with audio and subtitles switched from both the Mac and the TV's own menu. Receiver 0.4.0 was checked on the same TV on webOS 24 (firmware 33.31.75): pairing from the Mac's code field, the start and end times on screen, the launcher icon and launch screen, and a cast started at a position that used to freeze. Receiver 0.5.0 was checked on the same TV with a torrent MP4 carrying two embedded subtitle tracks: both appeared in the TV's menu and showed the right lines after seeking. This was driven over the TV's web inspector and the Mac, not by a person holding the remote. Other models and webOS versions are untested. Receiver and Mac app versions are meant to be used together: **Devices** shows the receiver's version and flags a TV running an older one, but the Mac app does not update it for you.
 
 ## Acceptable use
 
@@ -414,7 +414,7 @@ Developer account ($99/yr):
    [GPL binaries and corresponding source](#gpl-binaries-and-corresponding-source)) and
    `SHA256SUMS`; use `RELEASE-NOTES-v<version>.md` as the notes:
    ```sh
-   V=2.0.0-rc.16
+   V=2.0.0-rc.17
    gh release create v$V --target <build-commit> --prerelease --title "Spritz $V" \
      --notes-file RELEASE-NOTES-v$V.md \
      dist/Spritz-$V-arm64.dmg dist/Spritz-$V-arm64-mac.zip \
