@@ -16,7 +16,18 @@ A Mac media player (libmpv) that casts to your TV, plus an optional **Spritz Rec
 - `SHA256SUMS` — verify your downloads.
 
 ### What was tested
-TESTED-PLACEHOLDER
+On an LG 55NANO80T6A (webOS 24), with packaged candidate builds driven from the Mac and the TV's web inspector
+(not by a person holding the remote):
+- **Local playback:** play, seek, the Mac's subtitle menu, an external `.srt`.
+- **Torrent:** first frame in about 7 s, then a minute of playback with no stalls.
+- **Google Cast:** start, three seeks per run over many runs, the TV closing the Cast app (another app brought
+  to the front) and a Stop sent from a second Cast sender, which is what the TV's remote sends. When the TV
+  dropped Spritz's connection, Spritz reconnected and stayed on the TV; after four drops in ten seconds it
+  returned to the Mac at the TV's position.
+- **Spritz Receiver 0.5.0:** a torrent MP4 with two embedded subtitle tracks; both appeared in the TV's menu and
+  showed the right lines after seeking.
+- **DLNA:** plays and Stop returns to the Mac; it started from 0:00 rather than 10:00 (see *Known problems*).
+- AIRPLAY-PLACEHOLDER
 
 ### New since rc.16
 - **Google Cast no longer hangs when the TV lets go.** If the TV closes the Cast app (Home on the remote, another
