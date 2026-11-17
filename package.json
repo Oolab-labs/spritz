@@ -80,7 +80,7 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "minimumSystemVersion": "11.0",
+      "minimumSystemVersion": "27.0",
       "extendInfo": {
         "NSLocalNetworkUsageDescription": "Spritz streams your media to AirPlay devices on your local network.",
         "NSAppTransportSecurity": {

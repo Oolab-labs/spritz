@@ -89,6 +89,27 @@ function verify(app) {
     }
   }
 
+  // Nothing we bundle may be built for a newer macOS than the app declares: dyld refuses such a library,
+  // so the app opens and then cannot play. Every release promised macOS 11 while its Homebrew libraries
+  // needed 26 and 27, and nothing failed, because the only Mac it ran on was the one that built it.
+  {
+    const { minosOf, tooNew } = require('./macho-minos');
+    let declared = null;
+    try { declared = execFileSync('plutil', ['-extract', 'LSMinimumSystemVersion', 'raw', path.join(app, 'Contents', 'Info.plist')], { encoding: 'utf8', timeout: 20000 }).trim(); } catch (e) { /* fixture packages have no Info.plist */ }
+    if (declared) {
+      const resources = path.join(app, 'Contents', 'Resources') + path.sep;
+      const ours = files.filter((f) => f.startsWith(resources) && (/\.(node|dylib)$/.test(f) || REQUIRED_BINS.includes(base(f))));
+      const newer = tooNew(ours.map((f) => ({ file: f, minos: minosOf(f) })), declared);
+      if (newer.length) {
+        problems.push({
+          what: `${newer.length} bundled binar${newer.length === 1 ? 'y is' : 'ies are'} built for a newer macOS than the app declares (${declared}): ` +
+            newer.slice(0, 4).map((n) => `${path.basename(n.file)} needs ${n.minos}`).join(', ') + (newer.length > 4 ? ', …' : ''),
+          fix: 'raise build.mac.minimumSystemVersion (and what the README, site and notes promise), or rebuild those libraries for an older target'
+        });
+      }
+    }
+  }
+
   // An addon that ships without the libraries it was relocated onto is as broken as one that was
   // never packaged, and looks fine in a file listing.
   const mpv = files.find((f) => base(f) === 'mpv_render.node');
