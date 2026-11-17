@@ -27,7 +27,8 @@ On an LG 55NANO80T6A (webOS 24), with packaged candidate builds driven from the 
 - **Spritz Receiver 0.5.0:** a torrent MP4 with two embedded subtitle tracks; both appeared in the TV's menu and
   showed the right lines after seeking.
 - **DLNA:** plays and Stop returns to the Mac; it started from 0:00 rather than 10:00 (see *Known problems*).
-- AIRPLAY-PLACEHOLDER
+- **AirPlay, local file:** picked from the macOS picker; the TV started within a second of the Mac's position,
+  and after Stop the Mac resumed where the TV was.
 
 ### New since rc.16
 - **Google Cast no longer hangs when the TV lets go.** If the TV closes the Cast app (Home on the remote, another
@@ -60,6 +61,8 @@ On an LG 55NANO80T6A (webOS 24), with packaged candidate builds driven from the 
   them rather than stalling) or start early and then jump to the right place.
 - **Google Cast:** the LG sometimes closes Spritz's Cast connection mid-film, for a reason not yet known. Spritz now
   reconnects, which can restart the picture once or twice at the same spot.
+  Once, right after starting, the TV reported an error on the stream twice and closed its Cast app; Spritz
+  returned to the Mac.
 - **DLNA** casts can start from the beginning rather than where you were.
 - **Not yet verified:** the first-launch steps on a Mac that has never run Spritz, a very large remux from a cold
   start, an HDMI freeze seen once during development, and picture and sound staying aligned by eye over a whole film.
