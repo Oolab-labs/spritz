@@ -26,11 +26,13 @@ test('both documents give the same command for clearing the quarantine flag', ()
   assert.ok(notes.includes(QUARANTINE), 'release notes');
 });
 
-test('both documents name the System Settings route that macOS 15 and later requires', () => {
+// macOS 15 removed the right-click route, and the app now needs macOS 27, so System Settings is the only
+// route besides Terminal on every macOS it runs on, and neither document may still offer right-click → Open.
+test('both documents name the System Settings route, and no longer offer right-click → Open', () => {
   for (const [name, text] of [['README', readme], ['release notes', notes]]) {
     assert.ok(/Open Anyway/.test(text), name + ' says Open Anyway');
     assert.ok(/Privacy (&|and) Security/.test(text), name + ' says where it is');
-    assert.ok(/macOS 15/.test(text), name + ' says which macOS needs it');
+    assert.ok(!/right-click Spritz → \**Open\**|right-click →\s*Open works/i.test(text), name + ' does not offer right-click → Open as a way in');
   }
 });
 

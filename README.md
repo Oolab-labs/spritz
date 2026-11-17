@@ -20,7 +20,7 @@ Everything runs on your own machine and your own network. No account, nothing up
 no telemetry. The only time Spritz contacts GitHub (api.github.com) is when you choose **Help → Check for Updates…**; nothing is checked or downloaded automatically. Spritz ships **no** content, catalog, or index of any kind — every file,
 link and stream comes from you.
 
-> Status: `2.0.0-rc.17` (release candidate) — macOS 11+ on Apple Silicon (arm64). Read [Status & known limitations](#status--known-limitations) before relying on it.
+> Status: `2.0.0-rc.17` (release candidate) — macOS 27+ on Apple Silicon (arm64). Read [Status & known limitations](#status--known-limitations) before relying on it.
 
 ## What it does
 
@@ -56,7 +56,7 @@ See [Acceptable use](#acceptable-use).
 ## Compatibility
 
 ### Runs on
-- **macOS 11 (Big Sur) or later**
+- **macOS 27 or later.** The bundled media libraries are built for the Mac that builds the app, and that is macOS 27; it has not been run on anything older
 - **Apple Silicon (arm64)** — M1 and newer
 - **Intel Macs are not supported** — Spritz is a native arm64 build and won't run under Rosetta
 
@@ -76,7 +76,7 @@ Any device on the **same local network** (your Mac and the receiver must share t
 
 ## Install
 
-> **Apple Silicon (M1 or newer) · macOS 11+.** Intel Macs are **not** supported — Spritz is a native arm64 app and won't run under Rosetta.
+> **Apple Silicon (M1 or newer) · macOS 27+.** Intel Macs are **not** supported — Spritz is a native arm64 app and won't run under Rosetta.
 
 **Download:** each [release](https://github.com/Oolab-labs/spritz/releases) carries the **Mac app** (an Apple-Silicon `.dmg` and `.zip` — open the `.dmg` and drag **Spritz** to Applications) and the **Spritz Receiver** package for LG TVs (an `.ipk`; see [Spritz Receiver for LG webOS](#spritz-receiver-for-lg-webos)). Install the Mac app first: the TV is paired from it.
 
@@ -88,8 +88,7 @@ Any device on the **same local network** (your Mac and the receiver must share t
   xattr -dr com.apple.quarantine /Applications/Spritz.app
   ```
 
-- **System Settings, macOS 15 (Sequoia) and later.** Try to open Spritz once and dismiss the warning. Then open **System Settings → Privacy & Security**, scroll to the Security section, click **Open Anyway** next to Spritz, and confirm with your password or Touch ID. (Right-clicking and choosing Open no longer works there.)
-- **macOS 11 to 14.** Right-click Spritz → **Open** → **Open**.
+- **System Settings.** Try to open Spritz once and dismiss the warning. Then open **System Settings → Privacy & Security**, scroll to the Security section, click **Open Anyway** next to Spritz, and confirm with your password or Touch ID. (Right-clicking and choosing Open no longer works there.)
 
 These steps follow Apple's documented behaviour. They have not yet been tried on a Mac that has never run Spritz, so if yours differs, please open an issue.
 
@@ -242,7 +241,7 @@ Bug reports and PRs welcome.
 
 ## Requirements
 
-- macOS 11+ on Apple Silicon (arm64)
+- macOS 27+ on Apple Silicon (arm64)
 - [Node.js](https://nodejs.org) 22+ and npm (the test runner's file pattern needs Node 21 or newer; CI uses 22)
 - [Homebrew](https://brew.sh) — to provide `libmpv` and `ffmpeg`
 
@@ -252,7 +251,7 @@ This repository is **source-only**. The GPL media binaries (`libmpv`, `ffmpeg`,
 `ffprobe`) and the compiled native `*.node` addons are **not** committed (see
 [License](#license)); you build or install them locally.
 
-Prerequisites: macOS 11+ on Apple Silicon, [Homebrew](https://brew.sh),
+Prerequisites: macOS 27+ on Apple Silicon, [Homebrew](https://brew.sh),
 [Node.js](https://nodejs.org) 22+, and the Xcode command-line tools
 (`xcode-select --install`) for the Objective-C++ addons.
 

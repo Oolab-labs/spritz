@@ -4,11 +4,10 @@ A Mac media player (libmpv) that casts to your TV, plus an optional **Spritz Rec
 **This is a release candidate, tested by one person on one Mac and one TV.** Please read the caveats.
 
 ### Download
-- **Mac app** — `Spritz-2.0.0-rc.17-arm64.dmg` (Apple Silicon, macOS 11+). Open it and drag Spritz to Applications.
+- **Mac app** — `Spritz-2.0.0-rc.17-arm64.dmg` (Apple Silicon, **macOS 27+**: see *Known problems*). Open it and drag Spritz to Applications.
   Builds are **ad hoc signed and not notarized**, so macOS blocks the first launch. Either run
-  `xattr -dr com.apple.quarantine /Applications/Spritz.app` in Terminal, or on **macOS 15 and later** try to
-  open it and then use **System Settings → Privacy & Security → Open Anyway** (on macOS 11 to 14, right-click →
-  Open works too). Full steps: [README → Install](https://github.com/Oolab-labs/spritz#install).
+  `xattr -dr com.apple.quarantine /Applications/Spritz.app` in Terminal, or try to open it and then use
+  **System Settings → Privacy & Security → Open Anyway**. Full steps: [README → Install](https://github.com/Oolab-labs/spritz#install).
 - **TV app** — `com.spritz.receiver_0.5.0_all.ipk`, also inside the Mac app (Devices → *Show the TV installer
   in Finder*). Installing it needs LG **Developer Mode** on the TV and the webOS CLI; developer sessions
   expire. Details in the README under *Spritz Receiver for LG webOS*. Devices flags a TV still on 0.4.x.
@@ -54,6 +53,9 @@ On an LG 55NANO80T6A (webOS 24), with packaged candidate builds driven from the 
   experimental flags, native leftovers), CI locked to the build tool versions in use, and corrected docs.
 
 ### Known problems (full list in the README)
+- **Needs macOS 27.** Earlier notes named macOS 11 as the minimum, which was wrong: the bundled media libraries were built
+  for the Mac that built the app (macOS 27), and macOS will not load them on an older version. The app may open
+  there, but it cannot play. Supporting older macOS means rebuilding those libraries for an older target.
 - Not notarized. YouTube formats may be missing (no JavaScript runtime bundled for `yt-dlp`).
 - **After Stop, the TV stays on its AirPlay screen** until you quit Spritz or leave AirPlay with the TV remote.
   This is how macOS keeps AirPlay connections; playback itself has stopped.
