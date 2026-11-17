@@ -18,7 +18,7 @@ function fixture() {
     resolveCastable: (url, callback) => callbacks.push({ url, callback }),
     setTimeout: (fn) => { timers.set(++id, fn); return id; },
     clearTimeout: (key) => timers.delete(key),
-    process: { env: {} }, console,
+    process: { env: {} }, console, isTorrentSource: require('../src/main/receiver-playhead').isTorrentSource,
     isCasting: () => casting, castLog() {}, castEngine: 'dlna',
     lan: { cancelActive: () => cleanup.push('lan') },
     torrent: { cancel: () => cleanup.push('torrent') }

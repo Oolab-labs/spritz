@@ -7,7 +7,6 @@
         "<!@(node -p \"require('node-addon-api').include\")"
       ],
       "libraries": [
-        "-framework AppKit",
         "-framework Foundation",
         "-framework MediaPlayer"
       ],

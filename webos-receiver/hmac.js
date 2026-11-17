@@ -116,7 +116,7 @@
     return hex(sha256(outerInput));
   }
 
-  var api = { hmacSha256Hex: hmacSha256Hex, sha256Hex: function (s) { return hex(sha256(utf8(s))); } };
+  var api = { hmacSha256Hex: hmacSha256Hex };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.SpritzHmac = api;
 })(typeof window !== 'undefined' ? window : this);

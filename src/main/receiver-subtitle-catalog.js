@@ -36,4 +36,4 @@ function buildReceiverSubtitleCatalog(subs) {
   });
 }
 
-module.exports = { buildReceiverSubtitleCatalog, MAX_RECEIVER_SUBTITLES };
+module.exports = { buildReceiverSubtitleCatalog };

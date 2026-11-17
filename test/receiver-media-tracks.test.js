@@ -19,17 +19,6 @@ test('track protocol validates lists and selection before authenticated routing'
   assert.equal(protocol.validate(protocol.envelope('tracks', 's', { mediaId: 'film', tracks: { audio: [{}], subtitles: [] } })).ok, false);
   assert.equal(protocol.validate(protocol.envelope('select-track', 's', { mediaId: 'film', kind: 'invalid', trackId: '1' })).ok, false);
 });
-test('TV remote navigates tracks explicitly and exits without a playback command', () => {
-  let closed = 0; const selected = [];
-  const choice = { options: [{}, {}], selectedIndex: 0, get value() { return String(this.selectedIndex); }, blur() { closed++; } };
-  assert.equal(tracks.remoteChoice(choice, 40, id => selected.push(id)), true);
-  assert.deepEqual(selected, []);
-  assert.equal(tracks.remoteChoice(choice, 13, id => selected.push(id)), true);
-  assert.deepEqual(selected, ['1']);
-  assert.equal(tracks.remoteChoice(choice, 39, () => assert.fail('horizontal movement cannot select')), false);
-  for (const key of [461, 27]) assert.equal(tracks.remoteChoice(choice, key, () => assert.fail('exit cannot select')), true);
-  assert.equal(closed, 3);
-});
 test('prepared text subtitles survive LOAD serialization for TV sideloading', () => {
   const subtitles = [{ url: 'http://mac/hls/token/sub_en.vtt', lang: 'en', name: 'English' }];
   const message = protocol.load('s', { mediaId: 'film', url: 'http://mac/hls/token/index.m3u8', subtitles });

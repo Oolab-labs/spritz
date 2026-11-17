@@ -20,7 +20,7 @@
 # against the file doing the loading. Chosen per input from its extension.
 #
 # Signing: rewriting a load command invalidates any existing signature, so every file is re-signed
-# ad-hoc here. The .app itself must still be re-signed afterwards (deploy.sh does that).
+# ad-hoc here. The .app itself must still be re-signed afterwards (electron-builder signs the bundle during npm run dist).
 #
 # Written for the bash macOS actually ships (3.2) — no associative arrays, no mapfile.
 set -euo pipefail

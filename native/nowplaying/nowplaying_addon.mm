@@ -8,7 +8,6 @@
 
 #include <napi.h>
 #import <Foundation/Foundation.h>
-#import <AppKit/AppKit.h>
 #import <MediaPlayer/MediaPlayer.h>
 #include <string>
 

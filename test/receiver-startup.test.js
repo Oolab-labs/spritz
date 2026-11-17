@@ -675,3 +675,19 @@ test('a version that never loads cannot block the TV from connecting', () => {
   assert.equal(hosted.length, 1);
   assert.equal(context.RECEIVER_VERSION, null);
 });
+
+// A first run (nothing remembered) goes straight to discovery. The release .ipk is built from
+// git-tracked files only (build/package-receiver.js) and webos-receiver/host.json never was one, so
+// asking the package for it was a guaranteed miss on every customer TV.
+test('first-run discovery asks the network, not the package, for the Mac', () => {
+  const { context } = receiverHarness();
+  const opened = [];
+  context.XMLHttpRequest = function () {
+    this.open = (method, url) => opened.push(url);
+    this.send = () => {};
+  };
+  context.host(() => {});
+  assert.ok(opened.length > 0, 'discovery must have started');
+  assert.ok(!opened.some((url) => /host\.json/.test(url)), 'first run probed a host.json: ' + opened[0]);
+  assert.match(opened[0], /^http:\/\/\d+\.\d+\.\d+\.\d+:7737\/spritz\/hello$/);
+});

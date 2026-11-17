@@ -23,3 +23,18 @@ test('starved preparation waits only inside the original bounded budget', () => 
     assert.equal(stallAction({ sourceWaiting: true, category, elapsedMs: 25001 }), 'recover');
   }
 });
+
+// One definition of "this is a torrent stream" (receiver-playhead's isTorrentSource). torrent.js always
+// serves 'http://localhost:' + port + '/webtorrent/...', so a portless URL is not one, here or anywhere.
+const { isTorrentSource } = require('../src/main/receiver-playhead');
+test('torrent starvation applies exactly to what isTorrentSource calls a torrent stream', () => {
+  for (const url of ['http://localhost:1234/webtorrent/media', 'http://127.0.0.1:40123/webtorrent/ab/Film.mkv',
+    'HTTP://LOCALHOST:8080/WEBTORRENT/ab/Film.mkv', 'http://localhost/webtorrent/media', 'http://127.0.0.1/webtorrent/x',
+    'http://192.168.1.9:5000/webtorrent/x', 'https://localhost:1234/webtorrent/x', '/movie.mkv']) {
+    assert.equal(sourceWaiting({ ...sample, source: url }, { ...context, source: url }), isTorrentSource(url), url);
+  }
+});
+test('lanserver gates its owned torrent source on the same check', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '../src/main/lanserver.js'), 'utf8');
+  assert.match(src, /registerSourceProducer === 'function' &&\s*isTorrentSource\(input\)/);
+});

@@ -127,7 +127,7 @@ test('native AirPlay resolves a torrent through the token proxy', () => {
   const input = 'http://localhost:1234/webtorrent/' + 'a'.repeat(40) + '/movie.mp4';
   const issued = 'http://192.0.2.1:2345/dlna/secret/movie.mp4';
   const calls = [], results = [];
-  const ctx = { loadGen: 1, AIRPLAY_4K: false, externalSubs: [], ctypeFor: () => 'video/mp4',
+  const ctx = { loadGen: 1, AIRPLAY_4K: false, externalSubs: [], isTorrentSource: require('../src/main/receiver-playhead').isTorrentSource, ctypeFor: () => 'video/mp4',
     lan: { avCompatible: () => true, lanAddress: () => '192.0.2.1', serveDlna: (url, type, cb) => { calls.push({ url, type }); cb(issued); } } };
   vm.createContext(ctx); vm.runInContext(resolver + '\nthis.resolve = resolveCastable;', ctx);
   ctx.resolve(input, url => results.push(url));

@@ -306,17 +306,11 @@ function readToken() { try { return localStorage.getItem(TOKEN_KEY) || null; } c
 function writeToken(t) { try { localStorage.setItem(TOKEN_KEY, t); } catch (e) {} }
 function clearToken() { try { localStorage.removeItem(TOKEN_KEY); } catch (e) {} }
 
-function screenName() {
-  try {
-    if (window.webOS && webOS.deviceInfo) {
-      var d = null;
-      webOS.deviceInfo(function (info) { d = info; });
-      if (d && d.modelName) return d.modelName;
-    }
-  } catch (e) {}
-  return 'webOS TV';
-}
-var NAME = screenName();
+/* The name this television gives itself in hello and pair.request, and that the Mac shows until the
+ * human renames it. A constant, because nothing in this package can ask the TV for its model name:
+ * webOSTV.js (window.webOS) is not bundled. Reading modelName through PalmServiceBridge, as the UHD
+ * query below does, would be the way — new work that needs a hardware check, not a fallback. */
+var NAME = 'webOS TV';
 el('who').textContent = NAME;
 
 /* ---- protocol ------------------------------------------------------------------------------ */
@@ -391,12 +385,10 @@ function sendPosition() {
  * So, in order, cheapest first:
  *   1. the Spritz that last worked, remembered in localStorage. After first run this is the
  *      every-time path and costs a single request.
- *   2. host.json, if the package carries one. DEVELOPMENT ONLY — a real install has no such file,
- *      and it is tried before the sweep purely so a developer's TV connects instantly.
- *   3. a bounded sweep of the television's own /24. webOS will tell us our own address through
- *      luna://com.webos.service.connectionmanager, which turns "search the network" into "probe 254
- *      addresses on one port". LG-specific, and therefore confined to this application.
- *   4. ask the human, on screen.
+ *   2. a bounded sweep of the television's own /24, when WebRTC will tell us our own address
+ *      (ownAddress), which turns "search the network" into "probe 254 addresses on one port";
+ *      otherwise a sweep of a few common home subnets.
+ *   3. ask the human, on screen.
  *
  * A hardcoded address is deliberately NOT in that list any more.
  */
@@ -440,17 +432,15 @@ function readJson(url, done) {
 
 /* The television's own address, so a sweep can be aimed at ONE /24 instead of guessing.
  *
- * Two ways, because neither is dependable alone:
+ * WebRTC: gathering an ICE candidate on a peer connection with no server exposes the host's own
+ * address. Chromium may replace it with an mDNS `.local` name for privacy, in which case this yields
+ * nothing and we fall through — that is a real possibility, not a theoretical one.
  *
- *  1. WebRTC. Gathering an ICE candidate on a peer connection with no server exposes the host's own
- *     address. Chromium may replace it with an mDNS `.local` name for privacy, in which case this
- *     yields nothing and we fall through — that is a real possibility, not a theoretical one.
- *  2. luna://com.webos.service.connectionmanager, which is authoritative but needs LG's webOSTV.js.
- *     That library is NOT in this package and is not in the SDK install here, so `window.webOS` is
- *     undefined and this path is currently dead. Kept because it is the correct answer the moment
- *     the library is bundled — and because discovering it was missing cost a hardware round.
+ * luna://com.webos.service.connectionmanager would be authoritative, but it needs LG's webOSTV.js,
+ * which is NOT in this package (window.webOS is undefined on the TV; finding that out cost a
+ * hardware round). So it is not attempted.
  *
- * If both fail the caller sweeps a small list of common home subnets instead.
+ * If WebRTC yields nothing the caller sweeps a small list of common home subnets instead.
  */
 function ownAddress(done) {
   var finished = false;
@@ -459,7 +449,7 @@ function ownAddress(done) {
     var RTC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
     if (RTC) {
       var pc = new RTC({ iceServers: [] });
-      var timer = setTimeout(function () { try { pc.close(); } catch (e) {} viaLuna(); }, 1200);
+      var timer = setTimeout(function () { try { pc.close(); } catch (e) {} finish(null); }, 1200);
       pc.onicecandidate = function (e) {
         if (!e || !e.candidate || !e.candidate.candidate) return;
         var m = /(\d+\.\d+\.\d+\.\d+)/.exec(e.candidate.candidate);
@@ -471,31 +461,12 @@ function ownAddress(done) {
       };
       try { pc.createDataChannel('x'); } catch (e) {}
       pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).catch(function () {
-        clearTimeout(timer); viaLuna();
+        clearTimeout(timer); finish(null);
       });
       return;
     }
   } catch (e) {}
-  viaLuna();
-
-  function viaLuna() {
-  try {
-    if (!window.webOS || !webOS.service || !webOS.service.request) return finish(null);
-    webOS.service.request('luna://com.webos.service.connectionmanager', {
-      method: 'getStatus',
-      parameters: {},
-      onSuccess: function (r) {
-        var ip = null;
-        try {
-          if (r.wired && r.wired.ipAddress) ip = r.wired.ipAddress;
-          else if (r.wifi && r.wifi.ipAddress) ip = r.wifi.ipAddress;
-        } catch (e) {}
-        finish(ip);
-      },
-      onFailure: function () { finish(null); }
-    });
-  } catch (e) { finish(null); }
-  }
+  finish(null);
 }
 
 /* When the television will not say where it is, sweep the subnets a home network actually uses.
@@ -535,16 +506,10 @@ function host(done) {
   try { remembered = localStorage.getItem(HOST_KEY); } catch (e) {}
   if (remembered) {
     say('Reconnecting to ' + remembered + '…');
-    return probe(remembered, done, function () { fromPackage(); });
+    return probe(remembered, done, function () { fromSweep(); });
   }
-  fromPackage();
+  fromSweep();
 
-  function fromPackage() {
-    readJson('host.json', function (j) {
-      if (j && j.host) return probe(j.host, done, function () { fromSweep(); });
-      fromSweep();
-    });
-  }
   function fromSweep() {
     ownAddress(function (ip) {
       if (ip) return sweep(ip, function (h, port) { if (h) return done(h, port); commonSweep(0); });
@@ -838,11 +803,11 @@ function onMessage(m) {
     return;
   }
 
-  if (m.type === 'ping') return void send('pong', { nonce: m.nonce || null });
   if (m.type === 'select-track') {
     if (m.mediaId !== media.id || (m.epoch || null) !== (media.epoch || null)) return;
     selectMediaTrack(m.kind, m.trackId, false); return;
   }
+  if (m.type === 'subtitles') return void lateSubtitles(m);
   if (m.type === 'load') return void load(m);
   if (m.type === 'play') return void requestPlayback(true);
   if (m.type === 'pause') return void requestPlayback(false);
@@ -1141,6 +1106,50 @@ function clearMetadataLoad() {
   if (pendingMetadataLoad) video.removeEventListener('loadedmetadata', pendingMetadataLoad);
   pendingMetadataLoad = null;
 }
+/* Subtitles learned after the load. A torrent MP4 keeps its track list in an index at the end of the
+ * file, which the Mac reads only once this television has fetched it to start playing; until then
+ * the film has no subtitle bindings and the menu offers none. Only for the film on screen, and only
+ * once: rebuilding bindings could pull a track out from under a viewer who had already chosen one. */
+function lateSubtitles(m) {
+  if (!media.id || m.mediaId !== media.id || (m.epoch || null) !== (media.epoch || null)) return;
+  if (!Array.isArray(m.subtitles) || !m.subtitles.length || (media.subtitleBindings || []).length) return;
+  bindSubtitles(m.subtitles, Math.max(0, filmTime(video.currentTime) || 0), media);
+  lastTrackSnapshot = null; reportMediaTracks();
+}
+
+/* The subtitle tracks of the film on screen: a sidecar <track> each, or a binding the subtitle loader
+ * prepares on selection (prepare: true). From the load, or from a `subtitles` command that arrives
+ * after it — see onMessage. `owner` is the media record they belong to. */
+function bindSubtitles(list, startSec, owner) {
+  (list || []).slice(0, 128).forEach(function (sub, index) {
+    if (!sub || typeof sub.url !== 'string') return;
+    var id = sub.id || 'sideload-subtitle-' + index;
+    if (sub.prepare === true) {
+      media.subtitleBindings.push({ id: id, node: null, prepare: true, url: sub.url, title: sub.name || sub.lang || 'Subtitle', lang: sub.lang || 'und', selected: media.subtitleTrackId === id });
+      return;
+    }
+    var track = document.createElement('track'); track.setAttribute('data-spritz', '1');
+    track.kind = 'subtitles'; track.label = sub.name || sub.lang || 'Subtitle';
+    track.srclang = sub.lang || 'und'; track.setAttribute('data-source-url', sub.url);
+    track.src = sub.url + (sub.url.indexOf('?') === -1 ? '?' : '&') + 'spritzSubPosition=' + Math.max(0, startSec || 0);
+    track.addEventListener('load', function () {
+      if (media !== owner) return;
+      shiftSubtitleCues(track, Number(owner.timelineOrigin) || 0);
+      if (media.subtitleTrackId !== id) return;
+      el('err').textContent = track.track && track.track.cues && track.track.cues.length ? '' : 'No subtitle cues available';
+    });
+    track.addEventListener('error', function () {
+      if (media !== owner || media.subtitleTrackId !== id) return;
+      el('err').textContent = 'Subtitles unavailable. Select the track again to retry.';
+    });
+    media.subtitleBindings.push({ id: id, node: track, title: sub.name || sub.lang || 'Subtitle', lang: sub.lang || 'und' });
+    video.appendChild(track);
+    if (track.track) track.track.mode = media.subtitleTrackId === id ? 'showing' : 'disabled';
+  });
+  var preparedSelected = media.subtitleBindings.find(function (binding) { return binding.prepare && binding.id === media.subtitleTrackId; });
+  if (preparedSelected && subtitleLoader) subtitleLoader.select(preparedSelected, Math.max(0, startSec || 0));
+}
+
 function load(m) {
   if (subtitleLoader) subtitleLoader.stop();
   clearMetadataLoad();
@@ -1164,33 +1173,7 @@ function load(m) {
   report('loading');
   video.querySelectorAll('track[data-spritz]').forEach(function (track) { track.remove(); });
   video.src = media.url;
-  (m.subtitles || []).slice(0, 128).forEach(function (sub, index) {
-    if (!sub || typeof sub.url !== 'string') return;
-    var id = sub.id || 'sideload-subtitle-' + index;
-    if (sub.prepare === true) {
-      media.subtitleBindings.push({ id: id, node: null, prepare: true, url: sub.url, title: sub.name || sub.lang || 'Subtitle', lang: sub.lang || 'und', selected: media.subtitleTrackId === id });
-      return;
-    }
-    var track = document.createElement('track'); track.setAttribute('data-spritz', '1');
-    track.kind = 'subtitles'; track.label = sub.name || sub.lang || 'Subtitle';
-    track.srclang = sub.lang || 'und'; track.setAttribute('data-source-url', sub.url);
-    track.src = sub.url + (sub.url.indexOf('?') === -1 ? '?' : '&') + 'spritzSubPosition=' + Math.max(0, Number(m.startSec) || 0);
-    track.addEventListener('load', function () {
-      if (media !== owner) return;
-      shiftSubtitleCues(track, Number(owner.timelineOrigin) || 0);
-      if (media.subtitleTrackId !== id) return;
-      el('err').textContent = track.track && track.track.cues && track.track.cues.length ? '' : 'No subtitle cues available';
-    });
-    track.addEventListener('error', function () {
-      if (media !== owner || media.subtitleTrackId !== id) return;
-      el('err').textContent = 'Subtitles unavailable. Select the track again to retry.';
-    });
-    media.subtitleBindings.push({ id: id, node: track, title: sub.name || sub.lang || 'Subtitle', lang: sub.lang || 'und' });
-    video.appendChild(track);
-    if (track.track) track.track.mode = media.subtitleTrackId === id ? 'showing' : 'disabled';
-  });
-  var preparedSelected = media.subtitleBindings.find(function (binding) { return binding.prepare && binding.id === media.subtitleTrackId; });
-  if (preparedSelected && subtitleLoader) subtitleLoader.select(preparedSelected, Math.max(0, Number(m.startSec) || 0));
+  bindSubtitles(m.subtitles, Number(m.startSec), owner);
   var rawStart = Number(m.startSec);
   var start = isFinite(rawStart) && rawStart >= 0 ? rawStart : 0;
   /* Re-asserted once the player exposes a usable position — see start-seek.js for the live-edge

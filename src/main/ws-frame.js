@@ -11,8 +11,9 @@
 // That is a real tradeoff: a hand-written frame codec is a classic source of subtle bugs — masking,
 // fragmentation, the three length encodings. It is chosen because this shape (pure, no I/O) is
 // exactly what this codebase tests hard, and every one of those cases is covered in ws-frame.test.js.
-// If binary or fragmented frames are ever needed, swap in `ws` as a DECLARED dependency; receiver-hub
-// is drawn so that costs one file.
+// Inbound fragmented messages are already reassembled (see decode). If binary frames, or SENDING
+// fragmented frames, are ever needed, swap in `ws` as a DECLARED dependency; receiver-hub is drawn so
+// that costs one file.
 
 const crypto = require('crypto');
 
@@ -58,15 +59,6 @@ function encode(opcode, payload) {
 const encodeText = (s) => encode(OP.TEXT, s);
 const encodePong = (payload) => encode(OP.PONG, payload || Buffer.alloc(0));
 const encodePing = (payload) => encode(OP.PING, payload || Buffer.alloc(0));
-
-// Close carries a 2-byte big-endian status code before any reason text.
-function encodeClose(code, reason) {
-  const r = Buffer.from(String(reason || ''), 'utf8');
-  const b = Buffer.alloc(2 + r.length);
-  b.writeUInt16BE(Number(code) || 1000, 0);
-  r.copy(b, 2);
-  return encode(OP.CLOSE, b);
-}
 
 // Decode as many whole frames as `buf` contains.
 //
@@ -149,4 +141,4 @@ function decode(buf, state) {
   return { frames, rest: buf.slice(off), state: st };
 }
 
-module.exports = { MAX_FRAME_BYTES, MAX_MESSAGE_BYTES, MAX_MESSAGE_FRAGMENTS, OP, GUID, acceptKey, encode, encodeText, encodeClose, encodePing, encodePong, decode };
+module.exports = { MAX_FRAME_BYTES, MAX_MESSAGE_FRAGMENTS, OP, acceptKey, encode, encodeText, encodePing, encodePong, decode };

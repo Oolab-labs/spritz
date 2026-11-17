@@ -29,12 +29,6 @@ function selectSourceAudio(info, requested, hint) {
   };
 }
 
-// A near-position transport is qualified only for stream copy with a known timeline.
-// Unsupported sources keep the existing from-zero preparation path.
-function nearInputStart(requested, duration, transcode) {
-  return !transcode && Number.isFinite(requested) && requested > 0 &&
-    Number.isFinite(duration) && duration > requested ? requested : 0;
-}
 // mpv's `aid` is 1-based per stream type; FFmpeg's 0:a:N is 0-based. 'auto'/'no'/unset mean the
 // viewer made no explicit choice.
 function audioOrdinalFromAid(aid) {
@@ -42,4 +36,4 @@ function audioOrdinalFromAid(aid) {
   return Number.isInteger(n) && n >= 1 ? n - 1 : null;
 }
 
-module.exports = { selectSourceAudio, nearInputStart, audioOrdinalFromAid };
+module.exports = { selectSourceAudio, audioOrdinalFromAid };

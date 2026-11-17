@@ -126,7 +126,7 @@ test('shared thumbnail waiter admission is bounded without cancelling admitted r
 
 test('source retirement drains pending thumbnail waiters before late producer completion', async () => {
   const f = fixture(), first = f.run(), second = f.run();
-  f.ctx.loadGen = 1; f.ctx.retireReceiverIntent = () => {}; f.ctx.cancelResolvers = () => {}; f.ctx.clearTimeout = () => {};
+  f.ctx.loadGen = 1; f.ctx.receiverPlan = null; f.ctx.retireReceiverIntent = () => {}; f.ctx.cancelResolvers = () => {}; f.ctx.clearTimeout = () => {};
   vm.runInContext(source.slice(source.indexOf('  let castResolveRetry ='), source.indexOf('  // Default receiver profile')) + '\nthis.invalidate = invalidateLoad;', f.ctx);
   f.ctx.invalidate(); assert.equal(await first, null); assert.equal(await second, null);
   assert.equal(f.child.kills, 1); assert.equal(f.ctx.pendingThumbnail, null);
@@ -142,7 +142,7 @@ test('thumbnail source retirement terminates a real producer and drains shared c
     child = spawn(process.execPath, ['-e', 'process.stdout.write("partial"); setInterval(() => {}, 1000);']);
     child.once('close', () => { closed = true; }); return child;
   };
-  f.ctx.loadGen = 1; f.ctx.retireReceiverIntent = () => {}; f.ctx.cancelResolvers = () => {}; f.ctx.clearTimeout = () => {};
+  f.ctx.loadGen = 1; f.ctx.receiverPlan = null; f.ctx.retireReceiverIntent = () => {}; f.ctx.cancelResolvers = () => {}; f.ctx.clearTimeout = () => {};
   vm.runInContext(source.slice(source.indexOf('  let castResolveRetry ='), source.indexOf('  // Default receiver profile')) + '\nthis.invalidate = invalidateLoad;', f.ctx);
   const first = f.run(), second = f.run(); await once(child.stdout, 'data');
   const close = once(child, 'close'); f.ctx.invalidate();

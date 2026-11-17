@@ -29,22 +29,7 @@ const txtLib = () => (dnsTxt || (dnsTxt = require('dns-txt')()));
 const castLib = () => (castv2 || (castv2 = require('castv2-client')));
 const deviceProfile = require('./device-profile'); // one definition of what a receiver can decode
 const { createDiscoveryHealth } = require('./discovery-health');
-
-// Physical-LAN private IPv4s only (skip loopback + VPN/tunnel interfaces).
-function lanSubnets() {
-  const out = [];
-  const ifaces = os.networkInterfaces();
-  for (const name of Object.keys(ifaces)) {
-    if (!/^(en|eth)/i.test(name)) continue; // physical NICs only
-    for (const a of ifaces[name] || []) {
-      if (a.internal) continue;
-      if (a.family !== 'IPv4' && a.family !== 4) continue;
-      if (!/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(a.address)) continue;
-      out.push(a.address);
-    }
-  }
-  return out;
-}
+const { lanSubnets, parseHosts } = require('./lan-hosts'); // shared with dlna.js: same subnets, same manual-host rule
 
 const { pollStatus } = require('./cast-poll');
 module.exports = function createCast() {
@@ -88,8 +73,8 @@ module.exports = function createCast() {
     if (changed) emitDevices();
   }
   // Audio-only endpoints (Chromecast Audio, Nest/Home speakers, cast groups) can't show video —
-  // don't offer them as a "TV". Match on the mDNS model (md) and friendly name.
-  // (Nest Hub / Hub Max have screens → keep them.)
+  // don't offer them as a "TV". mDNS matches on its model (md) and friendly name; the eureka sweep
+  // passes the model only (see probeEureka). (Nest Hub / Hub Max have screens → keep them.)
   const isAudioOnly = (name, model) => /chromecast audio|google home(?! hub)|nest (mini|audio)|cast group|soundbar/i.test((model || '') + ' ' + (name || ''));
 
   // LG's OWN discovery vector. An LG webOS TV answers an SSDP search for its second-screen
@@ -207,29 +192,20 @@ module.exports = function createCast() {
     } catch (e) { /* malformed mDNS packet — ignore, never crash discovery */ }
   }
 
-  // Manually-specified hosts (comma-separated) for TVs that never auto-discover —
-  // the old app exposed this as 'manual-cast-hosts'. Useful when the TV is on another
-  // subnet or a VPN hijacks multicast.
-  // User-entered TV addresses (Settings) merged with the SPRITZ_CAST_HOSTS env var. These are
-  // probed alongside normal discovery, never instead of it — discovery is best-effort by nature
-  // (multicast can be filtered, a TV's discovery service sleeps, macOS can deny local-network
-  // access silently), so a directly-addressable fallback is what makes casting recoverable.
+  // User-entered TV addresses (Settings). These are probed alongside normal discovery, never
+  // instead of it — discovery is best-effort by nature (multicast can be filtered, a TV's discovery
+  // service sleeps, macOS can deny local-network access silently), so a directly-addressable
+  // fallback is what makes casting recoverable.
   let userHosts = [];
-  const parseHosts = (csv) => String(csv || '').split(',').map((x) => x.trim())
-    .filter((x) => /^\d{1,3}(\.\d{1,3}){3}$/.test(x)); // IPv4 literals only — these get probed directly
   function setManualHosts(csv) { userHosts = parseHosts(csv); }
-  function manualHosts() {
-    const env = String(process.env.SPRITZ_CAST_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean);
-    return [...new Set(userHosts.concat(env))];
-  }
 
   function sweep() {
     const gen = discoveryGeneration;
     // mDNS query (catches standard Chromecasts)
     try { if (mdns) mdns.query({ questions: [{ name: '_googlecast._tcp.local', type: 'PTR' }] }); } catch (e) {}
     // eureka /24 sweep (catches LG webOS + Chromecast-built-in TVs) + any manual hosts
-    const hosts = manualHosts();
-    for (const ip of lanSubnets()) {
+    const hosts = userHosts.slice();
+    for (const ip of lanSubnets(os.networkInterfaces())) {
       const base = ip.replace(/\.\d+$/, '.');
       for (let n = 1; n <= 254; n++) { const h = base + n; if (h !== ip) hosts.push(h); }
     }
@@ -262,7 +238,17 @@ module.exports = function createCast() {
       let body = '';
       res.on('data', (d) => { body += d; });
       res.on('end', () => {
-        if (gen === discoveryGeneration && discovering) { health.reply(); try { const j = JSON.parse(body); if (j && j.name) addDevice(host, String(j.name), capsFromEureka(j)); } catch (e) {} }
+        // Google speakers answer eureka_info too, and devices are keyed by host, so without this
+        // check the sweep re-adds a speaker the mDNS path just skipped. Check the reported model
+        // only, never the friendly name: a video Chromecast its owner called "Living Room Soundbar"
+        // must stay castable. A skipped speaker still counts as a reply and still pumps the sweep.
+        if (gen === discoveryGeneration && discovering) {
+          health.reply();
+          try {
+            const j = JSON.parse(body), info = (j && j.device_info) || {};
+            if (j && j.name && !isAudioOnly('', info.model_name || info.product_name)) addDevice(host, String(j.name), capsFromEureka(j));
+          } catch (e) {}
+        }
         finish();
       });
     });
@@ -307,6 +293,16 @@ module.exports = function createCast() {
     }, STATUS_POLL_MS);
     if (statusTimer.unref) statusTimer.unref();
   }
+  // Is the control connection still open? The TV can close it cleanly, and when it does castv2 nulls
+  // its socket and castv2-client's PlatformSender drops its inner client — and neither emits anything
+  // on the object held here (senders/platform.js onclose). Measured on an LG webOS TV: the next seek
+  // reused the dead pair, p.load threw "Cannot read properties of null (reading 'send')" as an
+  // uncaught exception, and the TV sat frozen on the old stream until the 30 s load timeout.
+  const connectionAlive = (c) => !!(c && c.client && c.client.socket);
+  // The latest load, so a connection that dies under it can be recovered with what is playing NOW. A
+  // reused session outlives the load that opened it, so that load's closure would recover old media.
+  let current = null; // { myGen, host, media, settled, fail }
+
   function teardownClient() {
     stopStatusPoll();
     const retiredPlayer = player, retiredClient = client;
@@ -325,7 +321,8 @@ module.exports = function createCast() {
     let settled = false;
     let to = null;
     let _wokeOnce = false; // one wake-and-retry per load attempt
-    const done = (e, s) => { if (settled) return; settled = true; clearTimeout(to); cb && cb(e, s); };
+    const done = (e, s) => { if (settled) return; settled = true; if (current && current.myGen === myGen) current.settled = true; clearTimeout(to); cb && cb(e, s); };
+    current = { myGen, host, media, settled: false, fail: (e) => failConnection(e), settle: (e) => done(e) };
 
     // Build the LOAD payload. Split out so the fast path below can reuse it verbatim.
     const mediaInfo = () => {
@@ -364,7 +361,7 @@ module.exports = function createCast() {
       // A live pipe starts AT the position the viewer asked for (the server seeks before it streams), so
       // the receiver's own clock starts at zero. Asking it to seek to the film time as well sent the LG
       // looking for a point the stream does not have yet. The app adds the stream's origin back.
-      p.load(mediaInfo(), { autoplay: true, currentTime: (hls || media.livePipe) ? 0 : (media.currentTime || 0) }, (e2, status) => {
+      const onLoaded = (e2, status) => {
         if (myGen !== castGen || loadCompleted) return; // superseded or duplicate completion
         loadCompleted = true;
         if (e2 && onStale) return onStale(e2);
@@ -385,14 +382,24 @@ module.exports = function createCast() {
         if (status) { lastStatus = status; noteTracks(status); reconnectTries = 0; ev.emit('status', status); } // fresh session → reset retries
         if (myGen !== castGen) return;
         done(e2, status);
-      });
+      };
+      // A connection can die between the liveness check and the send. Then castv2 throws from inside
+      // load() rather than answering, and that must become a reconnect, not an uncaught exception.
+      try {
+        p.load(mediaInfo(), { autoplay: true, currentTime: (hls || media.livePipe) ? 0 : (media.currentTime || 0) }, onLoaded);
+      } catch (e) {
+        if (myGen !== castGen || loadCompleted) return;
+        loadCompleted = true;
+        if (onStale) return onStale(e);
+        failConnection(e);
+      }
     };
 
     // FAST PATH — the receiver is already connected and running DefaultMediaReceiver for this host.
     // recastMkv() comes through here on every seek / audio-language change / burn toggle / subDelay
     // nudge; tearing the socket down and re-running connect+launch each time costs seconds of
     // handshake against a session that is already exactly where we want it. Just LOAD the new item.
-    if (!_isReconnect && client && player && connectedHost === host) {
+    if (!_isReconnect && client && player && connectedHost === host && connectionAlive(client)) {
       const p = player;
       to = setTimeout(() => { if (myGen !== castGen) return; ev.emit('error', { message: 'Chromecast load timed out' }); done(new Error('load timeout')); }, 30000);
       sendLoad(p, () => {
@@ -461,11 +468,26 @@ module.exports = function createCast() {
     c.connect(host, () => {
       if (myGen !== castGen) { clearTimeout(to); try { c.removeAllListeners(); c.close(); } catch (x) {} return; } // a newer load/stop won — abandon
       connectedHost = host;
+      // The TV closing the socket reaches only castv2's own client. Our teardown nulls `client` before
+      // it closes anything, so `c !== client` there means we closed it ourselves.
+      const socketClient = c.client;
+      if (socketClient && typeof socketClient.once === 'function') socketClient.once('close', () => { if (c === client) connectionDropped(); });
       c.launch(castLib().DefaultMediaReceiver, (err, p) => {
         if (myGen !== castGen) { clearTimeout(to); try { c.removeAllListeners(); c.close(); } catch (x) {} return; }
         if (err) { ev.emit('error', { message: err.message }); return done(err); }
         player = p;
         startStatusPoll(p);
+        // The TV closed the Cast app: Home on the remote, another input, or another phone casting.
+        // castv2-client reports the receiver's CLOSE as 'close' on the player, and nothing else fires
+        // — the platform heartbeat keeps the socket itself alive — so without this the cast screen
+        // waits on a clock that will never move again. Our own teardown removes this listener before
+        // it closes anything, so only the TV's close reaches here.
+        p.on('close', () => {
+          if (p !== player) return;
+          const at = (lastStatus && Number.isFinite(lastStatus.currentTime)) ? lastStatus.currentTime : null;
+          teardownClient();
+          ev.emit('receiver-closed', { at });
+        });
         p.on('status', (s) => {
           // Guard on identity, NOT on the generation this closure was created with: a reused
           // session (fast path) outlives its original load, so a captured myGen would go stale
@@ -485,6 +507,41 @@ module.exports = function createCast() {
       });
     });
     }
+  }
+
+  // The TV closed the control connection with no error. While a load is still waiting, it fails over
+  // to the load's own error path. Once the cast is playing, it is a dropped connection like any other:
+  // the same bounded silent reconnect at the last position as the 'error' handler in fullConnect.
+  function connectionDropped() {
+    const cur = current;
+    const at = (lastStatus && Number.isFinite(lastStatus.currentTime)) ? lastStatus.currentTime : null;
+    // Said out loud: why the TV drops this connection is not known yet, and only a log will tell.
+    ev.emit('connection-closed', { at, during: !cur || cur.myGen !== castGen ? 'a superseded load' : cur.settled ? 'playback' : 'a load', retries: reconnectTries });
+    if (!cur || cur.myGen !== castGen) { teardownClient(); return; }
+    // Mid-LOAD on the live pipe. Measured on the LG: the TV had already fetched the new stream when it
+    // closed the connection, so failing the load sent a film that was playing back to the Mac. Tell the
+    // waiting caller it is reconnecting (not failed) and reconnect at the position this load was taking
+    // the TV to. The app bounds how often this can happen (main.js mkvReconnects).
+    if (!cur.settled && cur.media.livePipe && reconnectTries < 2) {
+      reconnectTries++;
+      teardownClient();
+      const e = new Error('the TV closed the Cast connection; reconnecting');
+      e.reconnecting = true;
+      cur.settle(e);
+      ev.emit('reconnect', { at: cur.media.currentTime || 0, duringLoad: true });
+      return;
+    }
+    if (!cur.settled) return cur.fail(new Error('the TV closed the Cast connection'));
+    if (reconnectTries >= 2) {
+      teardownClient();
+      ev.emit('error', { message: 'Cast connection lost.' });
+      return;
+    }
+    reconnectTries++;
+    const pos = at != null ? at : (cur.media.currentTime || 0);
+    teardownClient();
+    if (cur.media.livePipe || /x-matroska/i.test(cur.media.contentType || '')) { ev.emit('reconnect', { at: pos }); return; }
+    setTimeout(() => { if (cur.myGen === castGen) load(cur.host, Object.assign({}, cur.media, { currentTime: pos }), () => {}, true); }, 1500);
   }
 
   // --- track selection (Chromecast EDIT_TRACKS_INFO) ---
@@ -529,7 +586,7 @@ module.exports = function createCast() {
 
   return {
     on: (e, fn) => ev.on(e, fn),
-    startDiscovery, stopDiscovery, load, play, pause, seek, stop, setVolume, teardown, wake, setManualHosts,
+    startDiscovery, load, play, pause, seek, stop, setVolume, teardown, setManualHosts,
     tracks, setTrack, connectedHost: () => connectedHost,
     capsFor: (host) => { const d = devices.get(host); return d ? d.caps : null; },
     discoveryState: health.snapshot

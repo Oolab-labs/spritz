@@ -1,8 +1,8 @@
 {
   "name": "spritz",
   "productName": "Spritz",
-  "version": "2.0.0-rc.16",
-  "description": "Spritz \u2014 a modern, arm64-native macOS media player that plays anything (libmpv), streams torrents, and casts to AirPlay, Chromecast, and DLNA. Inspired by classic streaming media players.",
+  "version": "2.0.0-rc.17",
+  "description": "Spritz — a modern, arm64-native macOS media player that plays anything (libmpv), streams torrents, and casts to AirPlay, Chromecast, and DLNA. Inspired by classic streaming media players.",
   "main": "src/main/main.js",
   "author": "Spritz contributors",
   "license": "GPL-3.0-or-later",
@@ -151,6 +151,6 @@
   },
   "overrides": {
     "protobufjs": "^7.6.6",
-    "ip-address": "^10.7.3"
+    "ip-address": "^10.7.6"
   }
 }

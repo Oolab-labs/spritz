@@ -16,8 +16,11 @@ function fixture() {
     resolveCastable: (src, callback) => preparations.push(callback), console: { log() {} },
     ipcMain: { handle: (name, handler) => { handlers[name] = handler; } },
     startReceivers: () => ({ revoke: () => ({ ok: true }), command: (...args) => { commands.push(args); return { ok: true }; },
-      play: (...args) => { loads.push(args); return { ok: true }; } }),
-    lan: { retireReceiverHls() {}, vodEpoch: () => ({ current: { id: 'e1' } }), vodSeek: (target, callback) => callbacks.push(callback) } };
+      play: (...args) => { loads.push(args); return { ok: true }; }, profile: () => null, subtitleSelection: () => 'off', supportsLogicalTimeline: () => false }),
+    receiverSourceWaiting: () => false,
+    lan: { retireReceiverHls() {}, holdReadyAirplayPrep: () => () => {}, vodEpoch: () => ({ current: { id: 'e1' } }), vodSeek: (target, callback) => callbacks.push(callback) } };
+  // Production hands each receiver preparation its own lanserver; the fixture's lan stands in unless a test swaps it.
+  ctx.receiverTransportFor = () => ctx.lan;
   vm.createContext(ctx);
   vm.runInContext(source.slice(source.indexOf('  let receiverIntent ='), source.indexOf('  let castResolveRetry =')) +
     source.slice(source.indexOf('  let castResolveRetry ='), source.indexOf('  // Default receiver profile')) +
@@ -360,12 +363,12 @@ test('same-source receiver handoff reads the latest subtitle intent at LOAD', as
     f.ctx.lan.vodEpoch = () => null;
     vm.runInContext('receiverPlan = { receiverId: "lg", mediaId: "old", epoch: null, src: "/A.mp4" };', f.ctx);
     f.ctx.resolveCastable = (_src, cb, _caps, _cast, extra) => { prepare = cb; preparationOptions = extra; };
-    f.ctx.startReceivers = () => ({ subtitleSelection: () => selection, play: (...args) => { f.loads.push(args); return { ok: true }; } });
+    f.ctx.startReceivers = () => ({ profile: () => null, subtitleSelection: () => selection, play: (...args) => { f.loads.push(args); return { ok: true }; } });
     const pending = f.ctx.play('lg'); selection = latest;
     prepare('http://media/new', []);
     assert.equal((await pending).ok, true);
     assert.equal(f.loads[0][1].subtitleTrackId, latest);
-    assert.equal(preparationOptions.receiverSubtitles, true);
+    assert.equal(preparationOptions.receiver, true, 'a receiver preparation, which resolveCastable turns into receiverSubtitles');
   }
 });
 

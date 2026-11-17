@@ -7,9 +7,11 @@
 > checkpoint existed, so they are preserved as one truthful commit rather than split into synthetic
 > historical ones. Everything below this line is measured on that tree.
 
-Written BEFORE implementation, from a read of the existing code. Branch `webos-receiver`, a
-separate worktree from `772b22d`. The VOD worktree at `<the original VOD checkout>` is frozen and
-untouched.
+A dated design-and-measurement record, kept for its hardware findings and design rationale. It
+began as a pre-implementation read on the `webos-receiver` branch (from `772b22d`); the milestones
+below have since shipped — the receiver is wired into the app through `receiver-service.js` — and
+the VOD work it refers to has landed (see "Where the VOD path came from"). Where an older section
+and the code disagree, the code wins.
 
 ## What already exists, and what it means for this
 
@@ -40,16 +42,6 @@ runs. A new receiver reporting POSITION should flow through `playheadUpdate` rat
 that is the torrent-priority future, already wired, needing only a caller.
 
 **`lanserver.js`** serves the media and the VOD/HLS routes. The receiver does not replace it.
-
-### Scaffolding — do not promote
-
-**`webos/index.html` + `tools/package-spike.sh`** (in the VOD worktree, untracked) are an A/B/C/D
-media-comparison harness: a hardcoded test menu, an IP sweep of `192.168.1.1-254`, and a `post()`
-that fires one-way XHRs at a bespoke log endpoint. It exists to answer "which of four media shapes
-stutters", and it answered that. Its keymap and its `armBackTrap` history trick are worth *reading*;
-its structure is not a receiver. The new app is written fresh.
-
-`tools/vod-isolate.js` is likewise a measurement harness for a question already answered.
 
 ## Direction
 
@@ -343,17 +335,19 @@ window.
 ## Protocol changes (envelope unchanged)
 
 `{v, type, sid, t}` is untouched. Added: `pair.request`, `pair.challenge`, `pair.accepted`,
-`pair.declined`, `auth`, `auth.ok`, `auth.failed`. The controller's `hello` gained `nonce` and
-`auth: 'required'`.
+`pair.declined`, `auth`, `auth.ok`, `auth.failed`. The controller's `hello` gained `nonce`.
 
 **Where authentication happens, and why:** an authenticated FIRST MESSAGE, not the URL and not a
 header. The URL is out because URLs are logged. A header is out because the browser WebSocket API
 cannot set one — decisive, since the receiver is a web application — and smuggling it through
 `Sec-WebSocket-Protocol` is exactly the non-standard cleverness worth avoiding.
 
-`PRE_AUTH_ALLOWED = ['hello','ping','pong','pair.request','auth']` lives beside the message
+`PRE_AUTH_ALLOWED = ['hello','pair.request','auth']` lives beside the message
 definitions rather than inside a socket handler, so someone deciding whether a NEW message type is
-safe before authentication finds the answer where the messages are.
+safe before authentication finds the answer where the messages are. Liveness is not on that list
+because it is not a message: it runs on WebSocket ping/pong control frames, which the hub answers
+before any JSON is parsed. (A JSON `ping`/`pong` pair once existed beside them; nothing ever sent
+it, and it was removed.)
 
 ## Security boundaries
 
@@ -422,36 +416,16 @@ Deliberate breaks, each caught and each restored byte-identically (verified by s
 | revocation check moved after the proof | 1 failure |
 | TV hello `role` removed (milestone 1) | film never sent |
 
-## KNOWN CROSS-WORKSTREAM DEPENDENCY — not copied
-
-`test/lanserver.test.js` "the token is required, and unguessable" fails roughly **1 run in 16** here.
-It is a COMMITTED baseline test, and the fix exists only as an UNCOMMITTED change in the frozen VOD
-worktree. The cause: the test builds a near-miss token by forcing the last character to `'0'`, which
-reconstructs the REAL token whenever it already ends in `'0'`, so the server correctly serves the
-file and the test reports a leak that did not happen.
-
-Per the brief this was NOT copied across. When the VOD branch lands, this flake disappears; until
-then a red run of that one test here means the dice, not a regression.
-
 ## Limitations and remaining risks
 
 - **Plain `ws://`.** Challenge-response keeps the credential off the wire, but everything else —
   media URLs, positions, the pairing code — is readable by a passive listener on the LAN.
 - **The credential is in localStorage in the clear.** Anything with code execution on the TV can
   take it. Revocation is the answer, not prevention.
-- **The Mac-side confirm path is the code's only guessing surface.** It is loopback-only in the
-  harness; production must keep it behind the Electron UI, not an open endpoint.
+- **The Mac-side confirm path is the code's only guessing surface.** It was loopback-only in the
+  first-round dev harness (`tools/receiver-dev.js`, since deleted); production keeps it behind the
+  Electron UI, not an open endpoint.
 - Nothing has been written into `observed` capability state. Still deliberate.
-- The harness control endpoint returns 200 for a command the hub then refuses — cosmetic, but it
-  would mislead someone reading only the HTTP response.
-
-## Next milestone
-
-**Production wiring**, not another receiver feature: move the hub and registry out of
-`tools/receiver-dev.js` into `lanserver`/`main.js`, put the pairing prompt and the receiver list in
-the Electron UI, and add the receiver as a real cast target alongside AirPlay/Chromecast/DLNA. That
-is what makes any of this reachable by a user. Only after that: observed-capability learning, which
-now has a trustworthy identity to hang evidence on.
 
 ---
 
@@ -471,36 +445,25 @@ FIRST-CLASS behaviour instead of workarounds.
 That distinction should drive where effort goes. On the foreign-receiver paths, the goal is to fail
 less. On the native path, the goal is to know more.
 
-# Next milestone — production wiring (scope, agreed)
-
-> Integrate the proven receiver as another Spritz playback target WITHOUT rewriting the proven
-> receiver internals.
-
-```
-Spritz UI -> Cast Target abstraction -> LG Spritz Receiver -> receiver hub/session -> TV
-```
-
-Four things, and only these four:
-
-1. Start the hub and registry from the real Spritz lifecycle rather than `tools/receiver-dev.js`.
-2. Surface paired and online receivers in the Electron UI beside the existing playback targets.
-3. Move pairing confirmation into a real Spritz UI flow (out of the loopback control endpoint —
-   note the harness endpoint is NOT a production surface and must not become one).
-4. Selecting "Living Room LG" sends the EXISTING playback plan through the proven receiver protocol.
-
-Explicitly OUT of that milestone: torrent-specific behaviour, auto-launch / Wake-on-LAN, richer TV
-UI, observed-capability learning, Mac<->TV handoff, and TLS. Each is easier once the receiver is
-reachable from the actual product, and none of them is a prerequisite for that.
+# Production wiring — the rules it was built under
 
 The receiver internals — `ws-frame`, `receiver-protocol`, `receiver-hub`, `receiver-registry`,
-`receiver-session` — are the proven part. Production wiring should CALL them, not edit them. A change
-to any of those files during integration deserves a moment's suspicion and a test.
+`receiver-session` — are the proven part. Production wiring CALLS them, it does not edit them. A
+change to any of those files deserves a moment's suspicion and a test.
+
+The loopback confirm endpoint of the first-round dev harness (`tools/receiver-dev.js`, since
+deleted) was never a production surface and must not come back as one: in the app, pairing is
+confirmed through the Electron UI.
+
+Still out of scope, each easier now the receiver is reachable from the product: torrent-specific
+behaviour, auto-launch / Wake-on-LAN, richer TV UI, observed-capability learning, Mac<->TV handoff,
+and TLS.
 
 ---
 
-# Milestone 3 — production wiring (plan, before implementation)
+# Milestone 3 — production wiring (design record)
 
-Read of the existing application, and what it means for each of the four capabilities.
+Written as the plan from a read of the existing application; it describes the design that shipped.
 
 ## What already exists, and what it decides
 
@@ -555,23 +518,26 @@ What the TV *can* do:
 
 1. **Remember.** The address of the Spritz that last authenticated it, in localStorage. This is the
    common case after first run and costs one connection attempt.
-2. **Ask the platform where it is.** webOS exposes the television's own IP through
-   `luna://com.webos.service.connectionmanager/getStatus`. That gives the /24, which turns "search
-   the internet" into "probe 254 addresses on one port" with bounded concurrency. LG-specific, and
-   therefore confined to the TV application where platform specifics are allowed to live.
+2. **Find out where it is.** WebRTC ICE gathering exposes the television's own IP when Chromium does
+   not hide it behind an mDNS name. That gives the /24, which turns "search the internet" into
+   "probe 254 addresses on one port" with bounded concurrency; failing that, a few common home
+   subnets are swept. (`luna://com.webos.service.connectionmanager/getStatus` would be authoritative,
+   but needs LG's webOSTV.js, which the package does not bundle, so it is not attempted.)
 3. **Ask the human**, as a last resort, on the pairing screen.
 
-So: remembered host, then a bounded subnet probe, then manual entry. `host.json` stays a development
-convenience that is tried FIRST when present and is absent in a real install — it is no longer the
-only way to find Spritz, which is what made it product configuration by accident.
+So: remembered host, then a bounded subnet probe, then manual entry. The development-only
+`host.json` that a dev script once baked into the package, and that was tried first, is gone: a
+release .ipk could never contain it, so every customer TV paid a guaranteed miss for it, and a
+developer TV skipped the first-run discovery customers actually use.
 
 A probe endpoint is needed that an unauthenticated stranger may safely hit. It answers only "a Spritz
 is here, and this is its name" — no media, no library, no receiver list.
 
 ## What is NOT in this milestone
 
-Everything in the brief's exclusion list. Additionally, `registry.observed` stays `null`: pairing
-establishes identity and trust, and says nothing about what the panel can decode.
+Everything in the out-of-scope list above. Additionally, the registry record carries no capability
+field at all: pairing establishes identity and trust, and says nothing about what the panel can
+decode. Capability evidence is device-memory.js's, keyed on the same stable receiver id.
 
 ## `lanserver.test.js` cannot be run one test at a time
 
@@ -579,9 +545,9 @@ Its teardown lives in `test('cleanup', ...)`. Filtering with `--test-name-patter
 test, so the HTTP server is never closed, the process cannot exit, and the run hangs until whatever
 timeout the caller imposed.
 
-Measured while trying to characterise the flake below: 20 filtered runs produced **18 timeouts and
-0 passes**, which says nothing about the flake and everything about the invocation. Run the file
-whole, or the whole suite.
+Measured while trying to characterise a since-fixed token-test flake: 20 filtered runs produced
+**18 timeouts and 0 passes**, which says nothing about the flake and everything about the
+invocation. Run the file whole, or the whole suite.
 
 
 ## What the receiver actually plays in production today — and why it is not the VOD path
@@ -599,10 +565,12 @@ So the receiver works, but it is riding the LIVE HLS path and paying a full H.26
 neither is a defect in this milestone:
 
 1. **`SPRITZ_VOD` is off by default.** The pre-segmented VOD path — finite playlist, stream copy,
-   instant seeks — lives on the frozen `vod-seekable-playback` branch and is not in this worktree's
-   HEAD. `resolveCastable` therefore falls through to `serveHls`.
-2. **The receiver is handed the CONSERVATIVE capability profile**, because `registry.observed` stays
-   null this milestone. Pairing proves identity, not codecs, so the plan assumes 1080p H.264 and
+   instant seeks — lived on the frozen `vod-seekable-playback` branch and was not in this
+   worktree's HEAD at the time, so `resolveCastable` fell through to `serveHls`. (It has since
+   landed, but a receiver still gets `serveHls` while source-selected audio is on, the default.)
+2. **The receiver is handed the CONSERVATIVE capability profile**, because nothing has written
+   observed capability evidence for it this milestone. Pairing proves identity, not codecs, so the
+   plan assumes 1080p H.264 and
    re-encodes.
 
 The costs are real and worth naming rather than discovering later:
@@ -633,8 +601,10 @@ receiver was handed.
 | errors | 1 fatal | **0** |
 
 The preseg playlist came from the FROZEN worktree's own `SPRITZ_VOD_PRESEG` implementation, run in
-place from a scratchpad script — nothing was copied into this branch, and
-`grep -R SPRITZ_VOD_PRESEG src/` still returns nothing here. Gate on that playlist: 989 entries,
+place from a scratchpad script — nothing was copied into this branch at the time. (Historical:
+the VOD code, `SPRITZ_VOD_PRESEG` included, has since landed in `lanserver.js`. But
+`resolveCastable` hands a receiver live HLS before trying `serveVod` while source-selected audio is
+on — the default — so with the defaults a receiver still does not reach `/vod/`.) Gate on that playlist: 989 entries,
 ENDLIST, silent.
 
 **Conclusion: production wiring is correct.** It asks Spritz's existing planner for a plan and plays

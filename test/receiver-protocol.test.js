@@ -28,6 +28,20 @@ test('a parse failure explains itself', () => {
   assert.match(p.parse(JSON.stringify({ v: 1, type: 'nope' })).why, /unknown type/);
 });
 
+// Liveness is the WebSocket's own ping/pong control frames (receiver-hub.js), which work before
+// trust without any JSON. No Mac or TV build ever sent a JSON ping, so the protocol does not carry
+// one, and it must not quietly widen what an unauthenticated socket may say.
+test('liveness is not a protocol message', () => {
+  assert.match(p.parse(JSON.stringify(p.envelope('ping', 's', { nonce: 'n' }))).why, /unknown type/);
+  assert.match(p.parse(JSON.stringify(p.envelope('pong', 's', { nonce: 'n' }))).why, /unknown type/);
+  assert.deepEqual(p.PRE_AUTH_ALLOWED, ['hello', 'pair.request', 'auth']);
+});
+
+// The receiver reads only sid and nonce from the controller's greeting (webos-receiver/index.html).
+test('the controller greeting carries its role, name and nonce and nothing the receiver ignores', () => {
+  assert.deepEqual(Object.keys(p.hello('s', { nonce: 'n', now: 1 })).sort(), ['name', 'nonce', 'role', 'sid', 't', 'type', 'v']);
+});
+
 test('round-trips through serialize/parse', () => {
   const sent = p.position('s1', { mediaId: 'm', currentTime: 12.5, durationSec: 100, paused: false, bufferedUntil: 30 });
   const got = p.parse(p.serialize(sent));

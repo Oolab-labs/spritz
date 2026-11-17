@@ -20,7 +20,7 @@ Everything runs on your own machine and your own network. No account, nothing up
 no telemetry. The only time Spritz contacts GitHub (api.github.com) is when you choose **Help → Check for Updates…**; nothing is checked or downloaded automatically. Spritz ships **no** content, catalog, or index of any kind — every file,
 link and stream comes from you.
 
-> Status: `2.0.0-rc.16` (release candidate) — macOS 11+ on Apple Silicon (arm64). Read [Status & known limitations](#status--known-limitations) before relying on it.
+> Status: `2.0.0-rc.17` (release candidate) — macOS 11+ on Apple Silicon (arm64). Read [Status & known limitations](#status--known-limitations) before relying on it.
 
 ## What it does
 
@@ -33,8 +33,7 @@ link and stream comes from you.
   audio, only the audio is converted — surround stays surround rather than being
   flattened to stereo.
 - **Handles subtitles** — embedded, external files, styled ASS, burn-in for image-based
-  subtitles that receivers can't render, OpenSubtitles lookup, optional Whisper
-  generation.
+  subtitles that receivers can't render, and OpenSubtitles lookup.
 - **Remembers where you were** — Continue Watching, playlists and queues, per-title
   audio/subtitle language preferences, keyboard shortcuts, Anime4K upscaling.
 
@@ -157,8 +156,8 @@ Archive material, Creative Commons and public-domain films, independent releases
 
 Embedded and external subtitles are picked up automatically, including sidecar files
 next to the video (`Movie.en.srt`, a `Subs/` folder). Image-based subtitles that a
-receiver can't render are burned into the picture instead. OpenSubtitles lookup and
-Whisper generation are available for files that have none.
+receiver can't render are burned into the picture instead. Files that have none can
+fetch a match from OpenSubtitles.
 
 ## Spritz Receiver for LG webOS
 
@@ -176,7 +175,7 @@ Spritz Receiver is a small web app that runs on an LG webOS TV and plays what yo
 
 **If the TV can't find your Mac:** it searches its own network first, then a short list of common home ranges (`192.168.1.x`, `192.168.0.x`, `10.0.0.x`, `10.0.1.x`). A TV on a guest network, a separate VLAN, or an unusual range won't find the Mac. Put both on the same network. If the search finds nothing (it can take about a minute), the TV shows **Can't find Spritz** with a box for the Mac's address, which Spritz shows under **Devices**.
 
-**Where it has been tested:** one TV (LG 55NANO80T6A). Receiver 0.3.2 was exercised on it (webOS firmware 33.31.61) for the search, typed-address, pairing, code-refresh and pair-again flows, and for playing a local file and a streaming torrent with audio and subtitles switched from both the Mac and the TV's own menu. Receiver 0.4.0 was checked on the same TV on webOS 24 (firmware 33.31.75): pairing from the Mac's code field, the start and end times on screen, the launcher icon and launch screen, and a cast started at a position that used to freeze. This was driven over the TV's web inspector and the Mac, not by a person holding the remote. Other models and webOS versions are untested. Receiver and Mac app versions are meant to be used together: **Devices** shows the receiver's version and flags a TV running an older one, but the Mac app does not update it for you.
+**Where it has been tested:** one TV (LG 55NANO80T6A). Receiver 0.3.2 was exercised on it (webOS firmware 33.31.61) for the search, typed-address, pairing, code-refresh and pair-again flows, and for playing a local file and a streaming torrent with audio and subtitles switched from both the Mac and the TV's own menu. Receiver 0.4.0 was checked on the same TV on webOS 24 (firmware 33.31.75): pairing from the Mac's code field, the start and end times on screen, the launcher icon and launch screen, and a cast started at a position that used to freeze. Receiver 0.5.0 was checked on the same TV with a torrent MP4 carrying two embedded subtitle tracks: both appeared in the TV's menu and showed the right lines after seeking. This was driven over the TV's web inspector and the Mac, not by a person holding the remote. Other models and webOS versions are untested. Receiver and Mac app versions are meant to be used together: **Devices** shows the receiver's version and flags a TV running an older one, but the Mac app does not update it for you.
 
 ## Acceptable use
 
@@ -351,18 +350,39 @@ The script picks the reference base from the file's extension — `@loader_path`
 `@executable_path` would resolve against Electron's own directory instead of the addon's.
 `otool -L` on the result should show no `/opt/homebrew` entries.
 
-### Deploying into an installed .app
+### Testing casting on a real TV
 
-`./deploy.sh` rsyncs `src/`, `vendor/` and the native *sources* into
-`/Applications/Spritz.app` and re-signs it, for fast iteration without a full repackage.
-Compiled addons and `node_modules` stay in the bundle — they are ABI-bound to the
-Electron inside it. **Never edit inside the `.app`**: an unsigned modification breaks the
-signature, and macOS then silently revokes the Local Network grant, which looks exactly
-like cast discovery being broken.
+Iterate with `npm start`; for a packaged check, build with `npm run dist` and install the
+result. **Never edit inside an installed `.app`**: the packaged app only loads its signed
+`app.asar` (the `onlyLoadAppFromAsar` and asar-integrity fuses in `package.json`), and an
+unsigned modification breaks the signature, after which macOS silently revokes the Local
+Network grant — which looks exactly like cast discovery being broken.
 
-Re-signing can also drop that grant on its own. If casting goes quiet after a deploy,
-toggle **System Settings → Privacy & Security → Local Network** off and on before
-suspecting the code.
+Installing or re-signing a new build can also drop that grant on its own. If discovery goes
+completely quiet (zero devices) while the TV answers from Terminal, toggle **System
+Settings → Privacy & Security → Local Network** off and on for Spritz, then quit (⌘Q) and
+relaunch it. Always quit and relaunch after installing a new build: a running instance
+keeps the old code in memory and gives a false pass.
+
+Before blaming the code for a cast failure, check the TV is actually there. The LG sleeps,
+moves its DLNA port on reboot and changes IP on DHCP renewal, and each of those looks like
+a regression. ICMP `ping` is unreliable on webOS, so probe TCP:
+
+```sh
+TV=192.168.1.x   # the TV's current IP
+for p in 8008 8009 7000; do
+  nc -z -G 2 -w 2 "$TV" $p && echo "$p OPEN" || echo "$p closed"
+done
+curl -s -m 8 "http://$TV:8008/setup/eureka_info?options=detail" | head -c 200; echo
+```
+
+Awake and castable: at least one of 8008/8009 open and the `curl` returns JSON with a
+`name` field. All closed, or `curl` hangs: the TV is asleep (wake it, wait ~20 s, re-probe)
+or has moved IP (`arp -a | grep -i lg`, or `dns-sd -B _googlecast._tcp`). Eureka answers
+but the DLNA device is missing from the list: webOS moved its UPnP port; restart Spritz to
+rediscover it by SSDP.
+
+### Packaging
 
 To produce a distributable `.app`/`.dmg`: `npm run dist` (electron-builder is a dev
 dependency). That runs `build/preflight-dist.js` first, which
@@ -394,13 +414,16 @@ Developer account ($99/yr):
    [GPL binaries and corresponding source](#gpl-binaries-and-corresponding-source)) and
    `SHA256SUMS`; use `RELEASE-NOTES-v<version>.md` as the notes:
    ```sh
-   V=2.0.0-rc.16
+   V=2.0.0-rc.17
    gh release create v$V --target <build-commit> --prerelease --title "Spritz $V" \
      --notes-file RELEASE-NOTES-v$V.md \
      dist/Spritz-$V-arm64.dmg dist/Spritz-$V-arm64-mac.zip \
      dist-receiver/com.spritz.receiver_<receiver-version>_all.ipk \
      Spritz-$V-corresponding-source.tar SHA256SUMS
    ```
+   Only the current version's notes file stays in the repo. Once `gh release view v<previous>
+   --json body` shows the previous release's notes are published, delete its
+   `RELEASE-NOTES-v<previous>.md`; the release page keeps the history.
 
 ## License
 
