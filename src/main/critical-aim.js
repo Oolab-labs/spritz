@@ -9,27 +9,26 @@
 // decision about what the tick aims at lives here, where it can be tested against a fake torrent.
 // (torrent.js cannot be instantiated outside Electron and has no seam for injecting a torrent.)
 //
-// Producer LIFECYCLE belongs to the packaging run — setProducerActive — and never to HTTP
-// requests. Measured against a real ffmpeg: one run makes several Range requests (the header, the
-// container index at the tail, the seek target, then one long read) and closes each before the
-// next, so a Range closing says nothing about whether the producer stopped. The transport epoch
-// that owns the ffmpeg is the caller that knows; until it exists, the producer is simply never
-// active and this behaves exactly as the viewer-only scheduler did.
+// Each packaging run that reads the torrent holds a PRODUCER LEASE (registerProducer): its source
+// reads arrive through the lease, and its LIFECYCLE is the lease's setActive/dispose, called by the
+// run's owner — never inferred from HTTP requests. Measured against a real ffmpeg: one run makes
+// several Range requests (the header, the container index at the tail, the seek target, then one
+// long read) and closes each before the next, so a Range closing says nothing about whether the
+// producer stopped. With no active lease holding a position, this behaves exactly as the
+// viewer-only scheduler did.
 
 const { criticalWindow } = require('./buffer-plan');
 const { criticalAuthority } = require('./critical-authority');
 
 const finite = (n) => typeof n === 'number' && Number.isFinite(n);
 
-// tlog — diagnostic logger, torrent.js's tlog in production.
-// now  — clock, injectable so freshness can be tested without waiting.
-function createCriticalAim({ tlog = () => {}, now = Date.now } = {}) {
+// now — clock, injectable; it only timestamps a lease's last read for the log.
+function createCriticalAim({ now = Date.now } = {}) {
   // The viewer. Same two numbers torrent.js always kept: a 0..1 fraction of the file, and the
   // duration that turns the window from a piece count into playback time.
   let viewerFrac = 0, mediaDuration = 0;
-  // The producer: the last observed source-read position, when it was seen, and whether the run
-  // that made it is still going.
-  let producer = { byteStart: null, at: null, active: false };
+  // The producers: one entry per registered lease — the last observed source-read position, when it
+  // was seen, and whether the run that made it is still going.
   const owners = new Map();
   let ownerSequence = 0;
   function registerProducer() {
@@ -51,7 +50,7 @@ function createCriticalAim({ tlog = () => {}, now = Date.now } = {}) {
     const live = [...owners.values()].filter(p => p.active && finite(p.byteStart));
     // Registration order is authority: late events from a retained rollback
     // producer cannot steal priority from the newer candidate.
-    return live.length ? live[live.length - 1] : producer;
+    return live.length ? live[live.length - 1] : null;
   }
   // What refresh() last decided and marked, for the log and for anyone asking who is in charge.
   let decision = null, window = null;
@@ -61,35 +60,9 @@ function createCriticalAim({ tlog = () => {}, now = Date.now } = {}) {
     if (finite(durationSec) && durationSec > 0) mediaDuration = durationSec;
   }
 
-  // A read observed at the source proxy. Only the PRODUCER's reads are demand: a television reading
-  // the same file through the DLNA route is the viewer, and its position already arrives as playhead
-  // status. Attribution is the proxy's, by token; nothing here re-derives it. Since serveSource was
-  // deleted, producer reads arrive only through a registered lease (registerProducer above, fed by
-  // lanserver's producerOwner.noteSourceRead); lanserver's onSourceRead now carries viewer reads
-  // alone, so on this path they are all dropped by the reader check below.
-  //
-  // open and progress both carry `position` — the range start at open, the advancing delivered
-  // position after — and that is the number wanted. close is recorded for the position too (the
-  // read got that far) and deliberately does NOT touch `active`: see the module comment.
-  function noteSourceRead(o) {
-    if (!o || o.reader !== 'producer') return;
-    const pos = finite(o.position) ? o.position : (finite(o.byteStart) ? o.byteStart : null);
-    if (pos === null || pos < 0) return;
-    producer = { byteStart: pos, at: now(), active: producer.active };
-  }
-
-  // The packaging run's lifecycle. true when its ffmpeg starts, false when it exits or is killed.
-  // Turning it off does not forget the last position — the log still wants to say where the
-  // producer got to — but authority returns to the viewer on the very next refresh.
-  function setProducerActive(active) {
-    producer = Object.assign({}, producer, { active: !!active });
-    tlog('producer ' + (active ? 'ACTIVE' : 'inactive') + (producer.byteStart !== null ? ' (last read at byte ' + producer.byteStart + ')' : ''));
-  }
-
   function reset() {
     owners.clear();
     viewerFrac = 0;
-    producer = { byteStart: null, at: null, active: false };
     decision = null; window = null;
   }
 
@@ -103,10 +76,7 @@ function createCriticalAim({ tlog = () => {}, now = Date.now } = {}) {
     const selectedProducer = currentProducer();
     decision = criticalAuthority({
       viewer: { frac: viewerFrac, fileLength: file.length },
-      // Owned runs have explicit lifecycle cleanup. Silence while blocked must
-      // not expire their demand; the legacy path retains its freshness backstop.
-      producer: selectedProducer === producer ? producer : { ...selectedProducer, at: null },
-      now: now()
+      producer: selectedProducer
     });
     // No usable position from either authority: leave whatever window is there alone. Byte 0 is a
     // real position, and "nobody knows" must not become "the head of the film".
@@ -134,13 +104,13 @@ function createCriticalAim({ tlog = () => {}, now = Date.now } = {}) {
   function state() {
     return {
       viewer: { frac: viewerFrac, durationSec: mediaDuration },
-      producer: Object.assign({}, currentProducer()),
+      producer: currentProducer() ? Object.assign({}, currentProducer()) : null,
       decision: decision ? Object.assign({}, decision) : null,
       window: window ? Object.assign({}, window) : null
     };
   }
 
-  return { registerProducer, setPlayhead, noteSourceRead, setProducerActive, reset, refresh, state,
+  return { registerProducer, setPlayhead, reset, refresh, state,
     viewerFrac: () => viewerFrac, duration: () => mediaDuration, READAHEAD_SECONDS };
 }
 

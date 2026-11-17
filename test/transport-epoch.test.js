@@ -8,9 +8,8 @@
 // evidence is settled: five ways of forcing boundaries corrupted an open-GOP source at the same
 // packet, and one continuous muxer choosing its own cuts was clean.
 //
-// Producer lifecycle belongs to the run. This module is the first production caller of
-// setProducerActive: the epoch's ffmpeg starting makes the producer active, and its exit, error,
-// stop or supersession makes it inactive. Never an HTTP request.
+// Producer lifecycle belongs to the run (active()): the epoch's ffmpeg starting makes the producer
+// active, and its exit, error, stop or supersession makes it inactive. Never an HTTP request.
 //
 // Lifecycle is driven here with a fake spawn; the real ffmpeg is exercised end to end in
 // transport-epoch-ffmpeg.test.js.
@@ -41,10 +40,8 @@ function fakeSpawn() {
 function rig() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'spritz-epoch-'));
   const { spawn, spawned } = fakeSpawn();
-  const active = [];
-  const epochs = createEpochs({ spawn, ffmpeg: '/fake/ffmpeg', root, onActive: (a) => active.push(a),
-    probeFirstPts: (file, cb) => cb(null) });
-  return { root, spawn, spawned, active, epochs, done: () => fs.rmSync(root, { recursive: true, force: true }) };
+  const epochs = createEpochs({ spawn, ffmpeg: '/fake/ffmpeg', root, probeFirstPts: (file, cb) => cb(null) });
+  return { root, spawn, spawned, epochs, done: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
 const tick = () => new Promise((r) => setImmediate(r));
 
@@ -107,7 +104,7 @@ test('the first playable timestamp is recorded against what was asked for', () =
   const r = rig();
   try {
     const probed = [];
-    const epochs = createEpochs({ spawn: r.spawn, ffmpeg: '/fake/ffmpeg', root: r.root, onActive: () => {},
+    const epochs = createEpochs({ spawn: r.spawn, ffmpeg: '/fake/ffmpeg', root: r.root,
       probeFirstPts: (file, cb) => { probed.push(file); cb(297.5); } });
     const e = epochs.open({ mediaId: 'goat', input: '/f.mkv', logicalStart: 300 });
     fs.writeFileSync(path.join(e.dir, '0.ts'), 'x');
@@ -124,8 +121,9 @@ test('the first playable timestamp is recorded against what was asked for', () =
 test('starting an epoch makes the producer active', () => {
   const r = rig();
   try {
+    assert.equal(r.epochs.active(), false, 'nothing is producing yet');
     r.epochs.open({ mediaId: 'goat', input: '/f.mkv', logicalStart: 0 });
-    assert.deepEqual(r.active, [true]);
+    assert.equal(r.epochs.active(), true);
   } finally { r.done(); }
 });
 
@@ -133,8 +131,9 @@ test('a normal exit clears producer active', () => {
   const r = rig();
   try {
     const e = r.epochs.open({ mediaId: 'goat', input: '/f.mkv', logicalStart: 0 });
+    assert.equal(r.epochs.active(), true);
     r.spawned[0].emit('close', 0);
-    assert.deepEqual(r.active, [true, false]);
+    assert.equal(r.epochs.active(), false);
     assert.equal(r.epochs.get(e.id).state, 'done');
   } finally { r.done(); }
 });
@@ -144,12 +143,13 @@ test('an error clears producer active', () => {
   try {
     const e = r.epochs.open({ mediaId: 'goat', input: '/f.mkv', logicalStart: 0 });
     r.spawned[0].emit('error', new Error('ENOENT'));
-    assert.deepEqual(r.active, [true, false]);
+    assert.equal(r.epochs.active(), false);
     assert.equal(r.epochs.get(e.id).state, 'failed');
     const f = r.epochs.open({ mediaId: 'goat', input: '/f.mkv', logicalStart: 0 });
+    assert.equal(r.epochs.active(), true);
     r.spawned[1].emit('close', 1);
     assert.equal(r.epochs.get(f.id).state, 'failed', 'a non-zero exit is a failure too');
-    assert.deepEqual(r.active, [true, false, true, false]);
+    assert.equal(r.epochs.active(), false);
   } finally { r.done(); }
 });
 
@@ -159,7 +159,7 @@ test('an explicit stop clears producer active, and so does being superseded', as
     const a = r.epochs.open({ mediaId: 'goat', input: '/f.mkv', logicalStart: 0 });
     r.epochs.stop(a.id);
     await tick();
-    assert.deepEqual(r.active, [true, false]);
+    assert.equal(r.epochs.active(), false);
     assert.ok(r.spawned[0].killed, 'its ffmpeg was killed');
 
     const b = r.epochs.open({ mediaId: 'goat', input: '/f.mkv', logicalStart: 100 });
@@ -169,7 +169,7 @@ test('an explicit stop clears producer active, and so does being superseded', as
     assert.ok(!r.spawned[2].killed, 'the new one runs');
     // Superseding is one continuous production: b ends and c begins, and the producer stays active
     // throughout because a packager is still reading.
-    assert.equal(r.active[r.active.length - 1], true);
+    assert.equal(r.epochs.active(), true);
     assert.equal(r.epochs.get(b.id).state, 'superseded'); assert.equal(r.epochs.get(c.id).state, 'producing');
   } finally { r.done(); }
 });
@@ -181,7 +181,7 @@ test('several Range-style events on the source are not lifecycle: only the run d
   try {
     const e = r.epochs.open({ mediaId: 'goat', input: 'http://127.0.0.1:1/dlna/t/f.mkv', logicalStart: 0 });
     assert.equal(typeof e.onRangeClose, 'undefined');
-    assert.deepEqual(r.active, [true]);
+    assert.equal(r.epochs.active(), true);
   } finally { r.done(); }
 });
 
@@ -212,7 +212,7 @@ test('closing the set stops every run and removes every epoch directory, nothing
     await tick();
     assert.ok(!fs.existsSync(a.dir) && !fs.existsSync(b.dir));
     assert.ok(fs.existsSync(unrelated));
-    assert.equal(r.active[r.active.length - 1], false);
+    assert.equal(r.epochs.active(), false);
     assert.ok(r.spawned.every((p) => p.killed || true));
   } finally { r.done(); }
 });

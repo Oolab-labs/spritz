@@ -621,17 +621,6 @@ module.exports = function createLanServer(opts) {
   // Fire-and-forget by design: see the range handling in serveDlnaProxy for why this must not be
   // waited on. No hook (a build with no torrent engine attached) simply means no prioritisation.
   const onSeekBytes = (opts && opts.onSeekBytes) || (() => {});
-  // Where a VIEWER's proxied source read IS, as it happens — a television on the DLNA route; see
-  // serveDlnaProxy. Reports carry `reader: 'viewer'`. Producer reads (the packager's ffmpeg on a
-  // createOwnedSource URL) never come here: they go to that source's registerSourceProducer lease
-  // (lease.noteSourceRead), because the two are different authorities and must not be confused —
-  // critical-authority.js is what tells them apart. Coalesced by SOURCE_READ_COALESCE_BYTES;
-  // fire-and-forget like onSeekBytes.
-  const onSourceRead = (opts && opts.onSourceRead) || (() => {});
-  // The packaging run's lifecycle — true when an epoch's ffmpeg starts, false when it exits, fails,
-  // is stopped or is superseded. Forwarded to torrent.setProducerActive: this is the ONLY thing
-  // that makes the producer the authority for the critical window. Never derived from a request.
-  const onProducerActive = (opts && opts.onProducerActive) || (() => {});
   const registerSourceProducer = opts && opts.registerSourceProducer;
   // Sweep leftover transcode segments / subtitle sidecars from previous runs at startup. A long cast
   // keeps every fMP4 segment (a full transcoded copy) — crashes can orphan gigabytes here. Active
@@ -820,7 +809,7 @@ module.exports = function createLanServer(opts) {
   }
   // The same proxy, for the PACKAGER. ffmpeg reads a torrent-backed source through this so that its
   // reads are observable and prioritisable through the registerSourceProducer lease, whose
-  // noteSourceRead receives every read (never onSourceRead or onSeekBytes: those are the viewer's).
+  // noteSourceRead receives every read (never onSeekBytes: that is the viewer's).
   // A file path straight into webtorrent's own server would not give us that. Loopback, because the
   // only reader is an ffmpeg on this machine: it is never handed to a television, and
   // serveDlnaProxy refuses it from anywhere else.
@@ -941,13 +930,16 @@ module.exports = function createLanServer(opts) {
     // visible as bytes relayed through it: that is what the progress reports below carry. Delivered
     // runs AHEAD of what the reader has consumed by the socket buffers, so the position is an upper
     // bound in the ahead direction — the harmless direction for aiming a swarm.
+    //
+    // Only a PRODUCER's reads are reported, to the lease of the source it is reading. A television's
+    // reads on the DLNA route are the viewer, whose position arrives as playhead status and whose
+    // seeks go through onSeekBytes above; there is nobody to tell about them here.
     const rm = /^bytes=(\d+)-/.exec(String(req.headers.range || ''));
     const readStart = rm ? Number(rm[1]) : 0;
     let relayed = 0, lastReport = 0;
-    const observe = (event, extra) => { try {
-      const observation = Object.assign({ reader, token, event, byteStart: readStart, position: readStart + relayed }, extra || {});
-      if (ent.producerOwner) ent.producerOwner.noteSourceRead(observation);
-      else onSourceRead(observation);
+    const owner = ent.producerOwner;
+    const observe = !owner ? () => {} : (event, extra) => { try {
+      owner.noteSourceRead(Object.assign({ reader, token, event, byteStart: readStart, position: readStart + relayed }, extra || {}));
     } catch (e) {} };
     observe('open');
     res.once('close', () => observe('close', { complete: !!res.writableEnded }));
@@ -3428,7 +3420,6 @@ module.exports = function createLanServer(opts) {
     };
     sess.epochs = createEpochs({
       spawn, ffmpeg: FFMPEG, root: dir, namespace: token,
-      onActive: (a) => { try { onProducerActive(a); } catch (e) {} },
       probeFirstPts: probeFirstPts,
       log: (m) => clog('vod epoch: ' + m)
     });

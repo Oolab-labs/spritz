@@ -60,14 +60,16 @@ const untilDone = (epochs, id, ms = 60000) => new Promise((resolve) => {
 test('epochs at 0 and at 300 each package cleanly with ffmpeg-chosen boundaries', { skip: SKIP, timeout: 300000 }, async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'spritz-epochff-'));
   const active = [];
-  const epochs = createEpochs({ spawn, ffmpeg: FFMPEG, root: work, onActive: (a) => active.push(a), probeFirstPts: firstPts });
+  const epochs = createEpochs({ spawn, ffmpeg: FFMPEG, root: work, probeFirstPts: firstPts });
   try {
     const src = film(work);
     const results = {};
     for (const T of [0, 300]) {
       const e = epochs.open({ mediaId: 'film', input: src, logicalStart: T });
       assert.ok(e, 'epoch opened at ' + T);
+      active.push(epochs.active());
       const done = await untilDone(epochs, e.id);
+      active.push(epochs.active());
       assert.equal(done.state, 'done', 'the run finished cleanly at ' + T + ' (exit ' + done.exitCode + ')');
       assert.ok(fs.existsSync(e.playlist), 'a playlist was written');
 

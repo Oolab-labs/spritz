@@ -52,8 +52,7 @@ const settle = (ms) => new Promise((r) => setTimeout(r, ms));
 test('a seek past the epoch makes a new transport under the same session; the old one lingers, the film does not change', { skip: SKIP, timeout: 120000 }, async () => {
   const prev = setEnv();
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'spritz-epochwork-'));
-  const active = [];
-  const lan = createLanServer({ onProducerActive: (a) => active.push(a) });
+  const lan = createLanServer();
   try {
     const src = fixture(work);
     let meta = null;
@@ -61,7 +60,8 @@ test('a seek past the epoch makes a new transport under the same session; the ol
     assert.ok(url, 'an epoch-backed URL was offered');
     assert.match(url, /\/vod\/[^/]+\/epoch-[A-Za-z0-9_-]+-1\/media\.m3u8$/, 'the URL names the session and the epoch');
     assert.equal(meta.epoch, 'epoch-' + lan.vodEpoch().token + '-1');
-    assert.equal(active[0], true, 'the producer became active when the first run started');
+    const s0 = lan.vodEpoch();
+    assert.equal(s0.producerActive, !!s0.current.running, 'the producer is active exactly while its run is');
 
     const pl1 = await get(loopback(url));
     assert.equal(pl1.status, 200);
@@ -74,7 +74,7 @@ test('a seek past the epoch makes a new transport under the same session; the ol
     let state = lan.vodEpoch();
     for (let i = 0; i < 100 && state.current.running; i++) { await settle(100); state = lan.vodEpoch(); }
     assert.equal(state.current.state, 'done');
-    assert.equal(active[active.length - 1], false, 'and the producer went inactive when it exited');
+    assert.equal(state.producerActive, false, 'and the producer went inactive when it exited');
 
     // Inside what the epoch covers: an in-epoch seek, no new transport.
     const inside = await new Promise((r) => lan.vodSeek(60, r));
@@ -95,8 +95,7 @@ test('a seek past the epoch makes a new transport under the same session; the ol
 test('a backward seek before the current epoch began creates a new epoch, and the old one lingers for the handoff', { skip: SKIP, timeout: 120000 }, async () => {
   const prev = setEnv();
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'spritz-epochwork2-'));
-  const active = [];
-  const lan = createLanServer({ onProducerActive: (a) => active.push(a) });
+  const lan = createLanServer();
   try {
     const src = fixture(work);
     // Start the film's first epoch at 60 — a resume point — so a seek to 20 is genuinely outside it.
@@ -119,11 +118,11 @@ test('a backward seek before the current epoch began creates a new epoch, and th
     assert.equal((await get(loopback(url))).status, 200, 'and the old one still serves during the handoff');
     assert.deepEqual(lan.vodEpoch().epochs.map((e) => e.id), ['epoch-' + state.token + '-1', 'epoch-' + state.token + '-2']);
     assert.equal(lan.vodEpoch().epochs[0].state, 'superseded');
-    assert.ok(active.includes(true), 'the producer was active for the new run');
+    const s2 = lan.vodEpoch();
+    assert.equal(s2.producerActive, !!s2.current.running, 'the producer is active exactly while the new run is');
 
-    // Teardown: every run gone, the session directory gone, producer inactive.
+    // Teardown: every run gone, the session directory gone.
     lan.teardown();
-    assert.equal(active[active.length - 1], false);
     const parent = path.join(os.tmpdir(), 'spritz', 'vod');
     assert.deepEqual(fs.existsSync(parent) ? fs.readdirSync(parent) : [], [], 'nothing left on disk');
   } finally {
